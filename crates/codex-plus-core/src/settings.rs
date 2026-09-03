@@ -482,6 +482,50 @@ pub struct BackendSettings {
         deserialize_with = "deserialize_stepwise_timeout_ms"
     )]
     pub codex_app_stepwise_timeout_ms: u64,
+    #[serde(rename = "codexAppPromptOptimizeEnabled", default)]
+    pub codex_app_prompt_optimize_enabled: bool,
+    #[serde(
+        rename = "codexAppPromptOptimizeProtocol",
+        default = "default_prompt_optimize_protocol",
+        deserialize_with = "deserialize_prompt_optimize_protocol"
+    )]
+    pub codex_app_prompt_optimize_protocol: String,
+    #[serde(rename = "codexAppPromptOptimizeBaseUrl", default)]
+    pub codex_app_prompt_optimize_base_url: String,
+    #[serde(rename = "codexAppPromptOptimizeApiKey", default)]
+    pub codex_app_prompt_optimize_api_key: String,
+    #[serde(
+        rename = "codexAppPromptOptimizeApiKeyEnv",
+        default = "default_prompt_optimize_api_key_env",
+        deserialize_with = "empty_as_default_prompt_optimize_api_key_env"
+    )]
+    pub codex_app_prompt_optimize_api_key_env: String,
+    #[serde(rename = "codexAppPromptOptimizeModel", default)]
+    pub codex_app_prompt_optimize_model: String,
+    #[serde(
+        rename = "codexAppPromptOptimizeStyle",
+        default = "default_prompt_optimize_style",
+        deserialize_with = "deserialize_prompt_optimize_style"
+    )]
+    pub codex_app_prompt_optimize_style: String,
+    #[serde(
+        rename = "codexAppPromptOptimizeMaxInputChars",
+        default = "default_prompt_optimize_max_input_chars",
+        deserialize_with = "deserialize_prompt_optimize_max_input_chars"
+    )]
+    pub codex_app_prompt_optimize_max_input_chars: u32,
+    #[serde(
+        rename = "codexAppPromptOptimizeMaxOutputTokens",
+        default = "default_prompt_optimize_max_output_tokens",
+        deserialize_with = "deserialize_prompt_optimize_max_output_tokens"
+    )]
+    pub codex_app_prompt_optimize_max_output_tokens: u32,
+    #[serde(
+        rename = "codexAppPromptOptimizeTimeoutMs",
+        default = "default_prompt_optimize_timeout_ms",
+        deserialize_with = "deserialize_prompt_optimize_timeout_ms"
+    )]
+    pub codex_app_prompt_optimize_timeout_ms: u64,
     #[serde(rename = "codexAppImageOverlayEnabled", default)]
     pub codex_app_image_overlay_enabled: bool,
     #[serde(rename = "codexAppImageOverlayPath", default)]
@@ -606,6 +650,17 @@ impl Default for BackendSettings {
             codex_app_stepwise_max_input_chars: default_stepwise_max_input_chars(),
             codex_app_stepwise_max_output_tokens: default_stepwise_max_output_tokens(),
             codex_app_stepwise_timeout_ms: default_stepwise_timeout_ms(),
+            codex_app_prompt_optimize_enabled: false,
+            codex_app_prompt_optimize_protocol: default_prompt_optimize_protocol(),
+            codex_app_prompt_optimize_base_url: String::new(),
+            codex_app_prompt_optimize_api_key: String::new(),
+            codex_app_prompt_optimize_api_key_env: default_prompt_optimize_api_key_env(),
+            codex_app_prompt_optimize_model: String::new(),
+            codex_app_prompt_optimize_style: default_prompt_optimize_style(),
+            codex_app_prompt_optimize_max_input_chars: default_prompt_optimize_max_input_chars(),
+            codex_app_prompt_optimize_max_output_tokens: default_prompt_optimize_max_output_tokens(
+            ),
+            codex_app_prompt_optimize_timeout_ms: default_prompt_optimize_timeout_ms(),
             codex_app_image_overlay_enabled: false,
             codex_app_image_overlay_path: String::new(),
             codex_app_image_overlay_opacity: default_image_overlay_opacity(),
@@ -985,6 +1040,56 @@ pub fn clamp_stepwise_timeout_ms(value: u64) -> u64 {
     value.clamp(1000, 60000)
 }
 
+pub fn default_prompt_optimize_protocol() -> String {
+    "openai".to_string()
+}
+
+pub fn normalize_prompt_optimize_protocol(value: &str) -> String {
+    match value.trim() {
+        "anthropic" => "anthropic".to_string(),
+        _ => default_prompt_optimize_protocol(),
+    }
+}
+
+pub fn default_prompt_optimize_api_key_env() -> String {
+    "CODEX_PROMPT_OPTIMIZE_API_KEY".to_string()
+}
+
+pub fn default_prompt_optimize_style() -> String {
+    "structured".to_string()
+}
+
+pub fn normalize_prompt_optimize_style(value: &str) -> String {
+    match value.trim() {
+        "concise" | "structured" | "coding" => value.trim().to_string(),
+        _ => default_prompt_optimize_style(),
+    }
+}
+
+pub fn default_prompt_optimize_max_input_chars() -> u32 {
+    24000
+}
+
+pub fn default_prompt_optimize_max_output_tokens() -> u32 {
+    4096
+}
+
+pub fn default_prompt_optimize_timeout_ms() -> u64 {
+    60000
+}
+
+pub fn clamp_prompt_optimize_max_input_chars(value: u32) -> u32 {
+    value.clamp(1000, 100000)
+}
+
+pub fn clamp_prompt_optimize_max_output_tokens(value: u32) -> u32 {
+    value.clamp(100, 8192)
+}
+
+pub fn clamp_prompt_optimize_timeout_ms(value: u64) -> u64 {
+    value.clamp(1000, 120000)
+}
+
 pub fn default_true() -> bool {
     true
 }
@@ -1015,6 +1120,63 @@ pub fn default_relay_profiles() -> Vec<RelayProfile> {
 
 pub fn default_aggregate_member_weight() -> u32 {
     1
+}
+
+pub fn empty_as_default_prompt_optimize_api_key_env<'de, D>(
+    deserializer: D,
+) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(value
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_prompt_optimize_api_key_env))
+}
+
+fn deserialize_prompt_optimize_protocol<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_prompt_optimize_protocol(&value))
+        .unwrap_or_else(default_prompt_optimize_protocol))
+}
+
+fn deserialize_prompt_optimize_style<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?
+        .map(|value| normalize_prompt_optimize_style(&value))
+        .unwrap_or_else(default_prompt_optimize_style))
+}
+
+fn deserialize_prompt_optimize_max_input_chars<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u32>::deserialize(deserializer)?
+        .map(clamp_prompt_optimize_max_input_chars)
+        .unwrap_or_else(default_prompt_optimize_max_input_chars))
+}
+
+fn deserialize_prompt_optimize_max_output_tokens<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u32>::deserialize(deserializer)?
+        .map(clamp_prompt_optimize_max_output_tokens)
+        .unwrap_or_else(default_prompt_optimize_max_output_tokens))
+}
+
+fn deserialize_prompt_optimize_timeout_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?
+        .map(clamp_prompt_optimize_timeout_ms)
+        .unwrap_or_else(default_prompt_optimize_timeout_ms))
 }
 
 pub fn empty_as_default_stepwise_api_key_env<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -1363,6 +1525,100 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::Number(serde_json::Number::from(clamp_stepwise_timeout_ms(value))),
         );
     }
+    merge_bool_setting(target, source, "codexAppPromptOptimizeEnabled");
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeProtocol")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeProtocol".to_string(),
+            Value::String(normalize_prompt_optimize_protocol(value)),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeBaseUrl")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeBaseUrl".to_string(),
+            Value::String(value.trim().trim_end_matches('/').to_string()),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeApiKey")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeApiKey".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeApiKeyEnv")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeApiKeyEnv".to_string(),
+            Value::String(if value.trim().is_empty() {
+                default_prompt_optimize_api_key_env()
+            } else {
+                value.trim().to_string()
+            }),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeModel")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeModel".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeStyle")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeStyle".to_string(),
+            Value::String(normalize_prompt_optimize_style(value)),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeMaxInputChars")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        target.insert(
+            "codexAppPromptOptimizeMaxInputChars".to_string(),
+            Value::Number(serde_json::Number::from(
+                clamp_prompt_optimize_max_input_chars(value),
+            )),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeMaxOutputTokens")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        target.insert(
+            "codexAppPromptOptimizeMaxOutputTokens".to_string(),
+            Value::Number(serde_json::Number::from(
+                clamp_prompt_optimize_max_output_tokens(value),
+            )),
+        );
+    }
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeTimeoutMs")
+        .and_then(Value::as_u64)
+    {
+        target.insert(
+            "codexAppPromptOptimizeTimeoutMs".to_string(),
+            Value::Number(serde_json::Number::from(clamp_prompt_optimize_timeout_ms(
+                value,
+            ))),
+        );
+    }
     merge_bool_setting(target, source, "codexAppImageOverlayEnabled");
     if let Some(value) = source
         .get("codexAppImageOverlayPath")
@@ -1692,6 +1948,40 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
+    settings.codex_app_prompt_optimize_protocol =
+        normalize_prompt_optimize_protocol(&settings.codex_app_prompt_optimize_protocol);
+    settings.codex_app_prompt_optimize_base_url = settings
+        .codex_app_prompt_optimize_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    settings.codex_app_prompt_optimize_api_key = settings
+        .codex_app_prompt_optimize_api_key
+        .trim()
+        .to_string();
+    settings.codex_app_prompt_optimize_api_key_env = if settings
+        .codex_app_prompt_optimize_api_key_env
+        .trim()
+        .is_empty()
+    {
+        default_prompt_optimize_api_key_env()
+    } else {
+        settings
+            .codex_app_prompt_optimize_api_key_env
+            .trim()
+            .to_string()
+    };
+    settings.codex_app_prompt_optimize_model =
+        settings.codex_app_prompt_optimize_model.trim().to_string();
+    settings.codex_app_prompt_optimize_style =
+        normalize_prompt_optimize_style(&settings.codex_app_prompt_optimize_style);
+    settings.codex_app_prompt_optimize_max_input_chars =
+        clamp_prompt_optimize_max_input_chars(settings.codex_app_prompt_optimize_max_input_chars);
+    settings.codex_app_prompt_optimize_max_output_tokens = clamp_prompt_optimize_max_output_tokens(
+        settings.codex_app_prompt_optimize_max_output_tokens,
+    );
+    settings.codex_app_prompt_optimize_timeout_ms =
+        clamp_prompt_optimize_timeout_ms(settings.codex_app_prompt_optimize_timeout_ms);
     settings
 }
 

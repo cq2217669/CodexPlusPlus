@@ -1087,7 +1087,6 @@
       }
       .codex-plus-toggle,
       .codex-plus-action-button,
-      .codex-plus-issue-button,
       .codex-plus-backend-status {
         flex-shrink: 0;
         align-self: center;
@@ -1146,13 +1145,11 @@
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
-      .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
       .codex-plus-tab-button[data-active="true"] { background: #10a37f; color: white; border-color: #10a37f; }
       .codex-plus-panel[hidden] { display: none; }
-      .codex-plus-action-button,
-      .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
+      .codex-plus-action-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
       .codex-plus-worktree-actions {
         display: inline-flex;
         align-items: center;
@@ -1198,20 +1195,6 @@
       .codex-plus-user-script-error { margin-top: 2px; color: #f87171; font-size: 11px; word-break: break-all; }
       .codex-plus-user-script-actions { display: grid; justify-items: end; gap: 8px; min-width: 120px; }
       .codex-plus-user-script-reload { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
-      .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
-      .codex-plus-ad-section { display: grid; gap: 10px; margin-top: 12px; }
-      .codex-plus-ad-section:first-of-type { margin-top: 0; }
-      .codex-plus-ad-section-title { color: #f8fafc; font-size: 15px; margin: 0; }
-      .codex-plus-ad-list { display: grid; gap: 14px; }
-      .codex-plus-ad-card { border: 1px solid rgba(96,165,250,.26); border-radius: 16px; background: linear-gradient(135deg, rgba(37,99,235,.18), rgba(255,255,255,.05)); box-shadow: 0 14px 36px rgba(0,0,0,.22); }
-      .codex-plus-ad-image { display: block; width: calc(100% - 28px); aspect-ratio: 16 / 5; margin: 14px 14px 0; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: #080808; object-fit: cover; }
-      .codex-plus-ad-content { padding: 14px; }
-      .codex-plus-ad-title { margin: 0; overflow: hidden; color: #f8fafc; font-size: 17px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-ad-description { display: -webkit-box; margin: 6px 0 10px; overflow: hidden; color: #dbeafe; font-size: 13px; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-height: 1.55; }
-      .codex-plus-ad-highlights { display: flex; flex-wrap: wrap; gap: 6px; max-height: 56px; margin-bottom: 12px; overflow: hidden; }
-      .codex-plus-ad-highlights span { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(255,255,255,.08); color: #f3f4f6; font-size: 12px; padding: 4px 8px; }
-      .codex-plus-ad-link { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: #2563eb; color: #ffffff; font-size: 13px; font-weight: 650; text-decoration: none; padding: 8px 12px; }
-      .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
       /* Keep injected surfaces on Codex's own semantic palette in both themes. */
       :root {
         --codex-plus-bg-primary: var(--color-token-bg-primary, var(--token-bg-primary, #fff));
@@ -1285,16 +1268,13 @@
       }
       .codex-delete-confirm-message,
       .codex-plus-row-description,
-      .codex-plus-about,
       .codex-plus-service-tier-thread-label,
       .codex-plus-backend-label,
       .codex-plus-form-message,
       .codex-plus-user-script-dirs,
-      .codex-plus-user-script-meta,
-      .codex-plus-sponsor-text { color: var(--codex-plus-text-secondary); }
+      .codex-plus-user-script-meta { color: var(--codex-plus-text-secondary); }
       .codex-delete-confirm-actions button,
       .codex-plus-action-button,
-      .codex-plus-issue-button,
       .codex-plus-service-tier-button,
       .codex-plus-user-script-reload {
         min-height: 32px;
@@ -1311,8 +1291,6 @@
       .codex-delete-confirm-actions button:focus-visible,
       .codex-plus-action-button:hover,
       .codex-plus-action-button:focus-visible,
-      .codex-plus-issue-button:hover,
-      .codex-plus-issue-button:focus-visible,
       .codex-plus-service-tier-button:hover,
       .codex-plus-service-tier-button:focus-visible,
       .codex-plus-user-script-reload:hover,
@@ -1380,15 +1358,6 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
-      .codex-plus-ad-card { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); box-shadow: none; }
-      .codex-plus-ad-image { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-primary); }
-      .codex-plus-ad-title,
-      .codex-plus-ad-section-title { color: var(--codex-plus-text); }
-      .codex-plus-ad-description { color: var(--codex-plus-text-secondary); }
-      .codex-plus-ad-highlights span { border-color: var(--codex-plus-border); border-radius: var(--border-radius-sm, 6px); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text-secondary); }
-      .codex-plus-ad-link { border-radius: var(--border-radius-lg, 8px); background: var(--color-background-primary-solid, #10a37f); color: var(--color-text-on-accent, #fff); }
-      .codex-plus-ad-link:hover { background: var(--color-background-primary-solid-hover, var(--color-background-primary-solid, #10a37f)); }
-      .codex-plus-ad-empty { border-color: var(--codex-plus-border); border-radius: var(--border-radius-lg, 8px); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
       .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
@@ -3883,7 +3852,7 @@
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
-        node.textContent = `Codex++ ${codexPlusVersion}`;
+        node.textContent = `轩智万象 ${codexPlusVersion}`;
       });
     }
     const label = document.querySelector("[data-codex-backend-status]");
@@ -3979,114 +3948,6 @@
     if (result?.scripts) {
       codexPlusUserScripts = result;
       renderUserScripts();
-    }
-  }
-
-  const codexPlusAdsUrl = "/ads";
-  let codexPlusAds = [];
-  let codexPlusAdsLoaded = false;
-
-  function isCodexPlusAdExpired(ad) {
-    if (!ad.expires_at) return false;
-    const expiresAt = Date.parse(ad.expires_at);
-    return Number.isFinite(expiresAt) && expiresAt < Date.now();
-  }
-
-  function normalizeCodexPlusAds(payload) {
-    if (!payload || !Array.isArray(payload.ads)) return [];
-    return payload.ads.filter((ad) => {
-      return ad && ["sponsor", "normal"].includes(ad.type) && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
-    }).map((ad) => ({
-      id: String(ad.id || ad.title),
-      type: ad.type,
-      title: String(ad.title),
-      description: String(ad.description),
-      url: String(ad.url),
-      image: ad.image ? String(ad.image) : "",
-      expires_at: ad.expires_at ? String(ad.expires_at) : "",
-      highlights: Array.isArray(ad.highlights) ? ad.highlights.map((item) => String(item)).filter(Boolean) : [],
-    }));
-  }
-
-  function formatCodexPlusAdTitle(title) {
-    const value = String(title || "");
-    return value.split(/[｜|]/, 1)[0].trim() || value;
-  }
-
-  function renderCodexPlusAdGroup(type, emptyText) {
-    const ads = codexPlusAds.filter((ad) => ad.type === type);
-    if (!ads.length) return `<div class="codex-plus-ad-empty">${escapeHtml(emptyText)}</div>`;
-    return ads.map((ad) => `
-      <article class="codex-plus-ad-card">
-        ${ad.image ? `<img class="codex-plus-ad-image" src="${escapeHtml(ad.image)}" alt="">` : ""}
-        <div class="codex-plus-ad-content">
-          <h3 class="codex-plus-ad-title">${escapeHtml(formatCodexPlusAdTitle(ad.title))}</h3>
-          <p class="codex-plus-ad-description">${escapeHtml(ad.description)}</p>
-          <div class="codex-plus-ad-highlights">
-            ${ad.highlights.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-          </div>
-          <a class="codex-plus-ad-link" href="${escapeHtml(ad.url)}" target="_blank" rel="noreferrer">访问 ${escapeHtml(new URL(ad.url).hostname)}</a>
-        </div>
-      </article>
-    `).join("");
-  }
-
-  function renderCodexPlusAds() {
-    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
-    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
-    return `
-      <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">赞助商推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("sponsor", "暂无赞助商推荐。")}</div>
-      </section>
-      <section class="codex-plus-ad-section">
-        <h3 class="codex-plus-ad-section-title">普通推荐</h3>
-        <div class="codex-plus-ad-list">${renderCodexPlusAdGroup("normal", "暂无普通推荐。")}</div>
-      </section>
-    `;
-  }
-
-  function cacheBustCodexPlusAdUrl(url, version) {
-    return `${url}${url.includes("?") ? "&" : "?"}v=${version}`;
-  }
-
-  async function directFetchCodexPlusAds() {
-    const urls = [
-      "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
-      "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
-    ];
-    let lastError = null;
-    const cacheBust = Date.now();
-    for (const url of urls) {
-      try {
-        const response = await fetch(cacheBustCodexPlusAdUrl(url, cacheBust), {
-          headers: { "Accept": "application/json" },
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await response.json();
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError || new Error("ad list unavailable");
-  }
-
-  async function fetchCodexPlusAds() {
-    try {
-      const localPayload = await postJson(codexPlusAdsUrl, {});
-      codexPlusAds = normalizeCodexPlusAds(localPayload?.ads ? localPayload : localPayload?.payload);
-      if (!codexPlusAds.length) codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
-    } catch (error) {
-      sendCodexPlusDiagnostic("ads_fetch_failed", {
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-      codexPlusAds = [];
-    } finally {
-      codexPlusAdsLoaded = true;
-      const panel = document.querySelector('[data-codex-plus-panel="sponsor"] .codex-plus-ad-remote');
-      if (panel) panel.innerHTML = renderCodexPlusAds();
     }
   }
 
@@ -4193,15 +4054,14 @@
     overlay.dataset.codexPlusPage = String(pageMode);
     applyCodexPlusTheme(overlay);
     overlay.innerHTML = `
-      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="Codex++">
+      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="轩智万象">
         <div class="codex-plus-modal-header">
-          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">Codex++ ${codexPlusVersion}</span></div>
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">轩智万象 ${codexPlusVersion}</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="${pageMode ? "返回" : "关闭"}">${pageMode ? "返回" : "×"}</button>
         </div>
-        <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
+        <div class="codex-plus-tabs" role="tablist" aria-label="轩智万象">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
-          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="sponsor" data-active="false">推荐内容</button>
         </div>
         <div class="codex-plus-modal-body">
           <div class="codex-plus-panel" data-codex-plus-panel="home">
@@ -4307,28 +4167,13 @@
               <div><div class="codex-plus-row-title">打开 DevTools</div><div class="codex-plus-row-description">打开当前 Codex 页面开发者工具，方便查看用户脚本报错。</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-devtools="true">打开 DevTools</button>
             </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">关于 Codex++</div><div class="codex-plus-about">Codex++ 是通过外部 launcher 注入的增强菜单，不修改 Codex App 原始安装文件。<br>Build: <span data-codex-plus-build="true">${codexPlusBuild}</span><br>GitHub: <a href="https://github.com/BigPizzaV3/CodexPlusPlus" target="_blank" rel="noreferrer">https://github.com/BigPizzaV3/CodexPlusPlus</a><br>Discord: <a href="https://discord.gg/y96kX7A76v" target="_blank" rel="noreferrer">https://discord.gg/y96kX7A76v</a><br>Telegram: <a href="https://t.me/CodexPlusPlus" target="_blank" rel="noreferrer">https://t.me/CodexPlusPlus</a></div></div>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">加入 Discord 获取更新消息、反馈问题或交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">打开 Discord</button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">加入 Telegram 获取更新消息和交流使用体验。</div></div>
-              <button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">打开 Telegram</button>
-            </div>
-            <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
-              <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
-            </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="userScripts" hidden>
             <div class="codex-plus-row" data-codex-user-scripts-section="true">
               <div>
                 <div class="codex-plus-row-title">用户脚本</div>
                 <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启 Codex++ 才能完全移除已执行效果。</div>
+                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启轩智万象才能完全移除已执行效果。</div>
                 <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
                 <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
               </div>
@@ -4336,12 +4181,6 @@
                 <button type="button" class="codex-plus-toggle" data-codex-user-scripts-enabled="true"><span></span></button>
                 <button type="button" class="codex-plus-user-script-reload" data-codex-user-scripts-reload="true">重新加载用户脚本</button>
               </div>
-            </div>
-          </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-sponsor-text">推荐内容分为赞助商推荐和普通推荐。赞助商推荐来自支持 Codex++ 继续维护的合作方；普通推荐用于展示适合 Codex 用户的服务与信息。</div>
-            <div class="codex-plus-ad-remote">
-              ${renderCodexPlusAds()}
             </div>
           </div>
         </div>
@@ -4385,20 +4224,6 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
-        return;
-      }
-      if (target?.closest("[data-codex-plus-discord]")) {
-        window.open("https://discord.gg/y96kX7A76v", "_blank");
-        return;
-      }
-      if (target?.closest("[data-codex-plus-telegram]")) {
-        window.open("https://t.me/CodexPlusPlus", "_blank");
-        return;
-      }
-      const issueButton = target?.closest("[data-codex-plus-issue]");
-      if (issueButton) {
-        const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
-        window.open(issueUrl, "_blank");
         return;
       }
       const userScriptsEnabled = target?.closest("[data-codex-user-scripts-enabled]");
@@ -4474,7 +4299,6 @@
         window.addEventListener("resize", window.__codexPlusPageResizeHandler);
       }
     }
-    if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab("home");
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
@@ -4529,9 +4353,9 @@
       button.removeAttribute("aria-current");
       button.removeAttribute("disabled");
       button.removeAttribute("aria-disabled");
-      button.setAttribute("aria-label", "Codex++");
+      button.setAttribute("aria-label", "轩智万象");
       button.textContent = "";
-      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">Codex++</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
+      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">轩智万象</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -4623,14 +4447,14 @@
   }
 
   function displayNameForPluginMarketplaceName(name, fallback) {
-    if (name === "openai-bundled") return "OpenAI插件1(Codex++)";
-    if (name === "openai-curated") return "OpenAI插件2(Codex++)";
-    if (name === "openai-primary-runtime") return "OpenAI插件3(Codex++)";
-    if (name === "openai-api-curated") return "OpenAI插件4(Codex++)";
+    if (name === "openai-bundled") return "OpenAI插件1(轩智万象)";
+    if (name === "openai-curated") return "OpenAI插件2(轩智万象)";
+    if (name === "openai-primary-runtime") return "OpenAI插件3(轩智万象)";
+    if (name === "openai-api-curated") return "OpenAI插件4(轩智万象)";
     // 内置插件包的注册名。曾经叫 openai-curated-remote，但那是 codex 的保留名，
     // 注册在它下面会被静默忽略，已改为 codex-plus-curated；旧名保留以兼容
     // 尚未升级的配置。
-    if (name === "codex-plus-curated" || name === "openai-curated-remote") return "OpenAI插件5(Codex++)";
+    if (name === "codex-plus-curated" || name === "openai-curated-remote") return "OpenAI插件5(轩智万象)";
     return fallback;
   }
 
@@ -8243,7 +8067,7 @@
     if (!trigger) return false;
     const payload = upstreamWorktreePayloadFromSelection(trigger) || upstreamWorktreeNativePayloadFromElement(trigger);
     if (!payload) {
-      showToast("无法安全识别 Codex 原生 worktree 表单，请使用 Codex++ 菜单创建。", null);
+      showToast("无法安全识别 Codex 原生 worktree 表单，请使用轩智万象菜单创建。", null);
       return false;
     }
     event.preventDefault();
@@ -8796,7 +8620,7 @@
         }));
       }
       if (sessionMenuEnabled) {
-        const sessionCopyItem = createSessionMoreMenuItem("原地复制会话 - Codex++", "⧉", activateSessionCopyMenuItem);
+        const sessionCopyItem = createSessionMoreMenuItem("原地复制会话 - 轩智万象", "⧉", activateSessionCopyMenuItem);
         sessionCopyItem.dataset.codexSessionCopyMenu = "true";
         sessionCopyItem.dataset.codexSessionCopyVersion = sessionCopyMenuItemVersion;
         sessionCopyItem.__codexSessionCopyRow = row;
@@ -10258,7 +10082,7 @@
     item.setAttribute("data-codex-session-copy-menu", "true");
     item.dataset.codexSessionCopyVersion = sessionCopyMenuItemVersion;
     item.__codexSessionCopyRow = row;
-    item.innerHTML = `<div class="flex w-full items-center gap-1.5"><span class="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-75 group-focus:opacity-100 group-hover:opacity-100">${sessionCopyMenuItemIcon()}</span><span class="flex-1 min-w-0 truncate">原地复制会话 - Codex++</span></div>`;
+    item.innerHTML = `<div class="flex w-full items-center gap-1.5"><span class="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-75 group-focus:opacity-100 group-hover:opacity-100">${sessionCopyMenuItemIcon()}</span><span class="flex-1 min-w-0 truncate">原地复制会话 - 轩智万象</span></div>`;
     item.addEventListener("pointerup", activateSessionCopyMenuItem, true);
     item.addEventListener("click", activateSessionCopyMenuItem, true);
     item.addEventListener("keydown", activateSessionCopyMenuItem, true);

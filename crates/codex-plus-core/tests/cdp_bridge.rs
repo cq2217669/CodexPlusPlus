@@ -66,8 +66,6 @@ fn injection_script_prefixes_helper_url_and_metadata() {
     assert!(!script.contains("window.__CODEX_PLUS_SPONSOR_IMAGES__"));
     assert!(script.contains("window.__CODEX_PLUS_VERSION__"));
     assert!(script.contains(codex_plus_core::version::VERSION));
-    assert!(script.contains("https://discord.gg/y96kX7A76v"));
-    assert!(script.contains("data-codex-plus-discord"));
 }
 
 /// 注入永远早于 Codex 渲染左侧面板：注入时 readyState 已是 complete，但
@@ -102,7 +100,7 @@ fn injection_script_maps_the_renamed_bundled_marketplace_display_name() {
     assert!(
         script.contains(r#"name === "codex-plus-curated" || name === "openai-curated-remote""#)
     );
-    assert!(script.contains("OpenAI插件5(Codex++)"));
+    assert!(script.contains("OpenAI插件5(轩智万象)"));
 }
 
 #[test]
@@ -820,20 +818,6 @@ fn injection_script_marks_diagnostic_build_and_reports_script_loaded() {
     assert!(script.contains("window.__CODEX_PLUS_BUILD__"));
     assert!(script.contains(codex_plus_core::assets::DIAGNOSTIC_BUILD_ID));
     assert!(script.contains("script_loaded"));
-    assert!(script.contains("data-codex-plus-build"));
-}
-
-#[test]
-fn injection_script_fetches_ads_without_bridge() {
-    let script = assets::injection_script(57321);
-
-    assert!(script.contains("directFetchCodexPlusAds"));
-    assert!(script.contains("cacheBustCodexPlusAdUrl"));
-    assert!(script.contains("Date.now()"));
-    assert!(script.contains("BigPizzaV3/Ad-List"));
-    assert!(
-        !script.contains("codexPlusAds = normalizeCodexPlusAds(await postJson(\"/ads\", {}));")
-    );
 }
 
 #[test]
@@ -2185,7 +2169,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
     );
-    assert!(script.contains("if (name === \"openai-bundled\") return \"OpenAI插件1(Codex++)\""));
+    assert!(script.contains("if (name === \"openai-bundled\") return \"OpenAI插件1(轩智万象)\""));
 }
 
 #[test]
@@ -2245,23 +2229,23 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
         "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
     ));
     assert!(!script.contains("marketplace.name = alias"));
-    assert!(script.contains("if (name === \"openai-curated\") return \"OpenAI插件2(Codex++)\""));
+    assert!(script.contains("if (name === \"openai-curated\") return \"OpenAI插件2(轩智万象)\""));
     assert!(
-        script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(Codex++)\"")
+        script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(轩智万象)\"")
     );
     assert!(script.contains("restored === \"openai-api-curated\""));
     assert!(script.contains("restored === \"openai-curated-remote\""));
     // 内置包的注册名已从 openai-curated-remote 换成 codex-plus-curated（前者是
     // codex 保留名会被静默忽略），显示名映射同时认新旧两个名字。
     assert!(script.contains(
-        "if (name === \"codex-plus-curated\" || name === \"openai-curated-remote\") return \"OpenAI插件5(Codex++)\""
+        "if (name === \"codex-plus-curated\" || name === \"openai-curated-remote\") return \"OpenAI插件5(轩智万象)\""
     ));
     assert!(script.contains(
         "if (name === \"codex-plus-openai-curated-remote\") return \"openai-curated-remote\""
     ));
-    assert!(script.contains("OpenAI插件1(Codex++)"));
-    assert!(script.contains("OpenAI插件2(Codex++)"));
-    assert!(script.contains("OpenAI插件3(Codex++)"));
+    assert!(script.contains("OpenAI插件1(轩智万象)"));
+    assert!(script.contains("OpenAI插件2(轩智万象)"));
+    assert!(script.contains("OpenAI插件3(轩智万象)"));
     assert!(script.contains("method === \"install-plugin\""));
     assert!(script.contains("plugin_marketplace_response_expanded"));
     assert!(script.contains("plugin_build_flavor_filter_bypassed"));

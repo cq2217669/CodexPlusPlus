@@ -1,4 +1,3 @@
-pub mod ads;
 pub mod app_paths;
 pub mod assets;
 pub mod bridge;
@@ -30,6 +29,7 @@ pub mod native_menu;
 pub mod paths;
 pub mod plugin_marketplace;
 pub mod ports;
+pub mod prompt_optimize;
 pub mod protocol_proxy;
 pub mod provider_import;
 pub mod proxy;

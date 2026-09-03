@@ -24,7 +24,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Camera,
-  CircleArrowUp,
   Copy,
   Download,
   Edit3,
@@ -263,6 +262,16 @@ type BackendSettings = {
   codexAppStepwiseMaxInputChars: number;
   codexAppStepwiseMaxOutputTokens: number;
   codexAppStepwiseTimeoutMs: number;
+  codexAppPromptOptimizeEnabled: boolean;
+  codexAppPromptOptimizeProtocol: "openai" | "anthropic";
+  codexAppPromptOptimizeBaseUrl: string;
+  codexAppPromptOptimizeApiKey: string;
+  codexAppPromptOptimizeApiKeyEnv: string;
+  codexAppPromptOptimizeModel: string;
+  codexAppPromptOptimizeStyle: "concise" | "structured" | "coding";
+  codexAppPromptOptimizeMaxInputChars: number;
+  codexAppPromptOptimizeMaxOutputTokens: number;
+  codexAppPromptOptimizeTimeoutMs: number;
   codexAppImageOverlayEnabled: boolean;
   codexAppImageOverlayPath: string;
   codexAppImageOverlayOpacity: number;
@@ -562,6 +571,10 @@ type StepwiseTestResult = CommandResult<{
   error: string;
 }>;
 
+type PromptOptimizeTestResult = CommandResult<{
+  error: string;
+}>;
+
 type RelayProfileModelsResult = CommandResult<{
   models: string[];
   endpoint: string;
@@ -730,18 +743,6 @@ type TaskProgress = {
   message: string;
 };
 
-type LogsResult = CommandResult<{
-  path: string;
-  text: string;
-  lines: number;
-  truncated: boolean;
-  fileSize: number;
-}>;
-
-type DiagnosticsResult = CommandResult<{
-  report: string;
-}>;
-
 type WatcherResult = CommandResult<{
   enabled: boolean;
   disabled_flag: string;
@@ -750,33 +751,6 @@ type WatcherResult = CommandResult<{
 type InstallResult = CommandResult<{
   silent_shortcut: { installed: boolean; path: string | null };
   management_shortcut: { installed: boolean; path: string | null };
-}>;
-
-type UpdateResult = CommandResult<{
-  currentVersion: string;
-  latestVersion?: string | null;
-  releaseSummary?: string;
-  assetName?: string | null;
-  assetUrl?: string | null;
-  updateAvailable?: boolean;
-  installedPath?: string;
-  progress?: number;
-}>;
-
-type AdItem = {
-  id?: string;
-  type: "sponsor" | "normal" | string;
-  title: string;
-  description: string;
-  url: string;
-  image?: string;
-  highlights?: string[];
-  expires_at?: string;
-};
-
-type AdsResult = CommandResult<{
-  version: number;
-  ads: AdItem[];
 }>;
 
 type ScriptMarketItem = {
@@ -868,20 +842,17 @@ function syncMarketInstalledState(current: ScriptMarketResult | null, userScript
   };
 }
 
-type StartupResult = CommandResult<{
-  showUpdate: boolean;
-}>;
-
 type ManagerNavigationIntent = {
   page: "settings";
   section?: "stepwise";
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "maintenance" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
+const SETTINGS_PROMPT_OPTIMIZE_SECTION_ID = "settings-prompt-optimize";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
@@ -893,9 +864,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
   { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
-  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
   { id: "maintenance", label: t("安装维护"), icon: Wrench },
-  { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
   { id: "relayEnvironment", label: t("中转站环境配置检测"), icon: ShieldCheck },
 ];
@@ -911,7 +880,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("系统"),
-    routes: ["recommendations", "maintenance", "about", "settings"],
+    routes: ["maintenance", "settings"],
     placement: "bottom",
   },
 ];
@@ -957,6 +926,16 @@ const defaultSettings: BackendSettings = {
   codexAppStepwiseMaxInputChars: 6000,
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
+  codexAppPromptOptimizeEnabled: false,
+  codexAppPromptOptimizeProtocol: "openai",
+  codexAppPromptOptimizeBaseUrl: "",
+  codexAppPromptOptimizeApiKey: "",
+  codexAppPromptOptimizeApiKeyEnv: "CODEX_PROMPT_OPTIMIZE_API_KEY",
+  codexAppPromptOptimizeModel: "",
+  codexAppPromptOptimizeStyle: "structured",
+  codexAppPromptOptimizeMaxInputChars: 24000,
+  codexAppPromptOptimizeMaxOutputTokens: 4096,
+  codexAppPromptOptimizeTimeoutMs: 60000,
   codexAppImageOverlayEnabled: false,
   codexAppImageOverlayPath: "",
   codexAppImageOverlayOpacity: 35,
@@ -1051,8 +1030,6 @@ export function App() {
   const [sessionShareUrl, setSessionShareUrl] = useState("");
   const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
-  const [logs, setLogs] = useState<LogsResult | null>(null);
-  const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
   const [dreamSkinStatus, setDreamSkinStatus] = useState<DreamSkinRuntimeResult | null>(null);
   const [dreamSkinVerification, setDreamSkinVerification] = useState<DreamSkinVerificationResult | null>(null);
@@ -1066,13 +1043,6 @@ export function App() {
   const [pendingDreamSkinRestart, setPendingDreamSkinRestart] = useState<PendingDreamSkinRestart | null>(null);
   const [dreamSkinUnsavedDialog, setDreamSkinUnsavedDialog] = useState(false);
   const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
-  const [update, setUpdate] = useState<UpdateResult | null>(null);
-  const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未运行安装包更新。"),
-  });
-  const [ads, setAds] = useState<AdsResult | null>(null);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
@@ -1309,7 +1279,7 @@ export function App() {
     const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
     if (result) {
       setPendingProviderImport(result.pending);
-      if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
+      if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("轩智万象 导入"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -1320,7 +1290,7 @@ export function App() {
       setPendingProviderImport(null);
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showResultNotice(t("Codex++ 导入"), result);
+      showResultNotice(t("轩智万象 导入"), result);
       await refreshCcsProviders(true);
     }
   };
@@ -1329,7 +1299,7 @@ export function App() {
     const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
     if (result) {
       setPendingProviderImport(null);
-      showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
+      showResultNotice(t("轩智万象 导入"), result, { silentSuccess: true });
     }
   };
 
@@ -1382,7 +1352,7 @@ export function App() {
   const importSessionUrl = async (value = sessionShareUrl) => {
     const url = value.trim();
     if (!url) {
-      showNotice(t("会话导入"), t("请粘贴 Codex++ 分享链接。"), "failed");
+      showNotice(t("会话导入"), t("请粘贴轩智万象分享链接。"), "failed");
       return;
     }
     const result = await run(() => call<SessionImportResult>("import_session_url", { url }));
@@ -1894,30 +1864,6 @@ export function App() {
     return result;
   };
 
-  const refreshLogs = async (silent = false) => {
-    const result = await run(() => call<LogsResult>("read_latest_logs", { request: { lines: 240 } }));
-    if (result) {
-      setLogs(result);
-      if (!silent) showResultNotice(t("日志已刷新"), result, { silentSuccess: true });
-    }
-  };
-
-  const clearLogs = async () => {
-    const result = await run(() => call<LogsResult>("clear_logs"));
-    if (result) {
-      setLogs(result);
-      showResultNotice(t("日志清理"), result, { silentSuccess: false });
-    }
-  };
-
-  const refreshDiagnostics = async (silent = false) => {
-    const result = await run(() => call<DiagnosticsResult>("copy_diagnostics"));
-    if (result) {
-      setDiagnostics(result);
-      if (!silent) showResultNotice(t("诊断已生成"), result, { silentSuccess: true });
-    }
-  };
-
   const refreshWatcher = async (silent = false) => {
     const result = await run(() => call<WatcherResult>("load_watcher_state"));
     if (result) {
@@ -1975,12 +1921,6 @@ export function App() {
       await refreshScriptMarket(true);
       await refreshUserScriptInventory();
     }
-    if (next === "recommendations") await refreshAds(true);
-    if (next === "about") {
-      await refreshOverview(true);
-      await refreshLogs(true);
-      await refreshDiagnostics(true);
-    }
     if (next === "maintenance") {
       await refreshOverview(true);
       await refreshWatcher(true);
@@ -2019,12 +1959,12 @@ export function App() {
     const result = await launchCommand("restart_codex_plus", syncActiveRelay);
     if (!result) return false;
     if (!isSuccessStatus(result.status)) {
-      showNotice(t("重启 Codex++"), result.message, result.status);
+      showNotice(t("重启轩智万象"), result.message, result.status);
       return false;
     }
-    showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
+    showNotice(t("重启轩智万象"), t("正在等待 Codex 重新启动…"), "accepted");
     const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-    showLaunchCompletionNotice(t("重启 Codex++"), completion);
+    showLaunchCompletionNotice(t("重启轩智万象"), completion);
     const succeeded = Boolean(
       completion
       && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
@@ -2215,79 +2155,6 @@ export function App() {
     }
   };
 
-  const checkUpdate = async (silent = false) => {
-    const result = await run(() => call<UpdateResult>("check_update"));
-    if (result) {
-      setUpdate(result);
-      if (!silent || result.updateAvailable) {
-        showNotice(t("GitHub Release 检查"), result.message, result.status);
-      }
-    }
-  };
-
-  const performUpdate = async () => {
-    if (updateInstallProgress.active) return;
-    const release =
-      update?.latestVersion && update.assetName && update.assetUrl
-        ? {
-            version: update.latestVersion,
-            url: "",
-            body: update.releaseSummary ?? "",
-            asset_name: update.assetName,
-            asset_url: update.assetUrl,
-          }
-        : null;
-    setUpdateInstallProgress({
-      active: true,
-      percent: 8,
-      message: t("正在准备安装包下载…"),
-    });
-    const startedAt = Date.now();
-    const progressTimer = window.setInterval(() => {
-      setUpdateInstallProgress((current) => {
-        if (!current.active) return current;
-        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-        const nextPercent =
-          elapsedSeconds < 3
-            ? Math.min(24, current.percent + 4)
-            : elapsedSeconds < 15
-              ? Math.min(68, current.percent + 3)
-              : elapsedSeconds < 45
-                ? Math.min(86, current.percent + 1)
-                : Math.min(99, current.percent + 0.2);
-        const message =
-          elapsedSeconds < 3
-            ? t("正在获取 GitHub Release 信息…")
-            : elapsedSeconds < 15
-              ? t("正在下载安装包…")
-              : elapsedSeconds < 45
-                ? t("正在写入安装包…")
-                : t("下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 500);
-    try {
-      const result = await run(() => call<UpdateResult>("perform_update", { release }));
-      if (result) {
-        setUpdate(result);
-        setUpdateInstallProgress({
-          active: false,
-          percent: result.progress ?? 100,
-          message: result.message,
-        });
-        showNotice(t("更新安装"), result.message, result.status);
-      } else {
-        setUpdateInstallProgress({
-          active: false,
-          percent: 100,
-          message: t("安装包更新失败，请查看错误提示后重试。"),
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
-    }
-  };
-
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
@@ -2386,14 +2253,6 @@ export function App() {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       showNotice(t("图片覆盖层"), result.message, result.status);
-    }
-  };
-
-  const refreshAds = async (silent = false) => {
-    const result = await run(() => call<AdsResult>("load_ads"));
-    if (result) {
-      setAds(result);
-      if (!silent) showResultNotice(t("推荐内容"), result, { silentSuccess: true });
     }
   };
 
@@ -2683,6 +2542,13 @@ export function App() {
     if (result) showNotice("Stepwise 测试", result.message, result.status);
   };
 
+  const testPromptOptimizeSettings = async (settings: BackendSettings) => {
+    const result = await run(() =>
+      call<PromptOptimizeTestResult>("test_prompt_optimize_settings", { settings }),
+    );
+    if (result) showNotice("Prompt Optimize 测试", result.message, result.status);
+  };
+
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice(t("模型列表"), result.message, result.status);
@@ -2854,14 +2720,7 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
-      const startup = await run(() => call<StartupResult>("startup_options"));
       const handledNavigation = await consumePendingManagerNavigation();
-      if (!handledNavigation && startup?.showUpdate) {
-        setRoute("about");
-        void checkUpdate(false);
-      } else {
-        void checkUpdate(true);
-      }
       await refreshOverview(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
@@ -2916,7 +2775,7 @@ export function App() {
         showLabel: "Show window",
         applySkinLabel: "Apply Dream Skin",
         quitLabel: "Quit",
-        windowTitle: "Codex++ Manager",
+        windowTitle: "轩智万象",
       });
     }
   }, []);
@@ -3057,8 +2916,6 @@ export function App() {
       installEntrypoints,
       uninstallEntrypoints,
       repairShortcuts,
-      checkUpdate,
-      performUpdate,
       saveSettings,
       saveSettingsValue,
       refreshSettings,
@@ -3198,7 +3055,6 @@ export function App() {
       importCcsProviders,
       refreshLiveContextEntries,
       syncLiveContextEntries,
-      refreshAds,
       refreshScriptMarket,
       refreshUserScriptInventory,
       installMarketScript,
@@ -3227,19 +3083,14 @@ export function App() {
       testRelayProfile,
       diagnoseRelayProfile,
       testStepwiseSettings,
+      testPromptOptimizeSettings,
       fetchRelayProfileModels,
       fetchSub2ApiBilling,
       switchRelayProfile,
       relaySwitching,
       switchOfficialMode,
       switchPureApiMode,
-      refreshLogs,
-      clearLogs,
-      refreshDiagnostics,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
-      copyLogs: () => copyText(logs?.text ?? "", t("日志已复制。")),
-      copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
-      goLogs: () => navigate("about"),
       checkHealth: async () => {
         await refreshOverview(true);
         await refreshRelay(true);
@@ -3252,9 +3103,8 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
   );
-  const hasUpdate = update?.updateAvailable === true;
 
   return (
     <div className={`shell ${theme}`}>
@@ -3262,20 +3112,7 @@ export function App() {
         <div className="brand">
           <div className="brand-copy">
             <div className="brand-title-row">
-              <div className="brand-title">Codex++</div>
-              {hasUpdate ? (
-                <button
-                  className="update-dot"
-                  onClick={() => {
-                    setRoute("about");
-                    void checkUpdate(false);
-                  }}
-                  title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}
-                  type="button"
-                >
-                  <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
-                </button>
-              ) : null}
+              <div className="brand-title">轩智万象</div>
             </div>
             <div className="brand-subtitle">{t("管理控制台")}</div>
           </div>
@@ -3331,9 +3168,9 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
+            <Button onClick={() => void actions.restart()} title={t("重启轩智万象")} variant="outline">
               <Rocket className="h-4 w-4" />
-              {t("重启 Codex++")}
+              {t("重启轩智万象")}
             </Button>
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title={t("刷新当前页面")} variant="outline">
               <RefreshCw className="h-4 w-4" />
@@ -3432,7 +3269,6 @@ export function App() {
             <ZedRemoteScreen projects={zedRemoteProjects} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
-          {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
@@ -3442,16 +3278,6 @@ export function App() {
               onLaunchFormChange={setLaunchForm}
               removeOwnedData={removeOwnedData}
               onRemoveOwnedDataChange={setRemoveOwnedData}
-              actions={actions}
-            />
-          ) : null}
-          {route === "about" ? (
-            <AboutScreen
-              overview={overview}
-              update={update}
-              updateInstallProgress={updateInstallProgress}
-              logs={logs}
-              diagnostics={diagnostics}
               actions={actions}
             />
           ) : null}
@@ -3551,8 +3377,6 @@ type Actions = {
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
   repairShortcuts: () => Promise<void>;
-  checkUpdate: () => Promise<void>;
-  performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
@@ -3594,7 +3418,6 @@ type Actions = {
   importCcsProviders: () => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
-  refreshAds: () => Promise<void>;
   refreshScriptMarket: () => Promise<void>;
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
   installMarketScript: (id: string) => Promise<void>;
@@ -3628,19 +3451,14 @@ type Actions = {
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
+  testPromptOptimizeSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   fetchSub2ApiBilling: (profile: RelayProfile) => Promise<Sub2ApiBillingResult | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
-  refreshLogs: () => Promise<void>;
-  clearLogs: () => Promise<void>;
-  refreshDiagnostics: () => Promise<void>;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
-  copyLogs: () => Promise<void>;
-  copyDiagnostics: () => Promise<void>;
-  goLogs: () => Promise<void>;
   installWatcher: () => Promise<void>;
   uninstallWatcher: () => Promise<void>;
   enableWatcher: () => Promise<void>;
@@ -4111,40 +3929,6 @@ function OverviewScreen({
   const health = healthItems(overview);
   return (
     <>
-      <Panel className="jojocode-overview">
-        <CardContent>
-          <div className="jojocode-overview-layout">
-            <div className="jojocode-overview-main">
-              <div className="jojocode-overview-mark">
-                <Network className="h-5 w-5" />
-              </div>
-              <div>
-                <span className="eyebrow">{t("项目赞助商")}</span>
-                <h2>JOJO Code</h2>
-                <p>
-                  {t("JOJO Code 提供稳定、价格合理的 API 中转服务，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
-                </p>
-              </div>
-            </div>
-            <div className="jojocode-overview-side">
-              <div className="jojocode-model-tags">
-                <span>GPT-5.6 全系列</span>
-                <span>Fable 5</span>
-                <span>Sonnet 5</span>
-                <span>GPT-5.5</span>
-                <span>GPT-5.4</span>
-                <span>Opus 4.8</span>
-                <span>Opus 4.7</span>
-                <span>gpt-image-2</span>
-              </div>
-              <Button onClick={() => void actions.openExternalUrl("https://jojocode.com/")}>
-                <ExternalLink className="h-4 w-4" />
-                {t("打开 JOJO Code")}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
       <Panel>
         <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
         <CardContent>
@@ -4191,10 +3975,7 @@ function OverviewScreen({
           <Toolbar>
             <Button onClick={() => void actions.launch()}>
               <Rocket className="h-4 w-4" />
-              {t("启动 Codex++")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.goLogs()}>
-              {t("打开关于")}
+              {t("启动轩智万象")}
             </Button>
           </Toolbar>
         </CardContent>
@@ -4228,7 +4009,7 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
       passed: result ? proxyVariables.length === 0 : false,
       detail: result
         ? proxyVariables.length
-          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex++。", [proxyVariableLabels.join(t("、"))])
+          ? tf("检测到代理环境变量：{0}。请清理后重新启动轩智万象。", [proxyVariableLabels.join(t("、"))])
           : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
         : t("等待检测。"),
     },
@@ -4523,7 +4304,7 @@ function EnhanceScreen({
         String(remotePluginMarketplace.pluginCount),
         String(remotePluginMarketplace.skillCount),
       ])
-    : t("未发现本地缓存；点击按钮会从 Codex++ 内置快照释放并注册，无需官方账号预缓存。");
+    : t("未发现本地缓存；点击按钮会从轩智万象内置快照释放并注册，无需官方账号预缓存。");
   return (
     <>
       <Panel className="enhance-panel">
@@ -4570,7 +4351,7 @@ function EnhanceScreen({
               <div className="feature-action-row">
                 <div>
                   <strong>{t("官方远端插件缓存")}</strong>
-                  <small>{t("使用 Codex++ 内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
+                  <small>{t("使用轩智万象内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
                   <small>{remoteMarketplaceSummary}</small>
                 </div>
                 <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
@@ -4603,6 +4384,9 @@ function EnhanceScreen({
               <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppStepwiseEnabled", value)} />
               <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
             </FeatureGroup>
+            <FeatureGroup title={t("输入增强")} detail={t("控制发送前的输入框增强能力。")}>
+              <FeatureToggle title="Prompt Optimize" detail={t("在输入框旁提供 ✨ 一键优化：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启轩智万象生效。")} checked={form.codexAppPromptOptimizeEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPromptOptimizeEnabled", value)} />
+            </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
@@ -4611,7 +4395,7 @@ function EnhanceScreen({
             </FeatureGroup>
             <FeatureGroup title={t("远程项目")} detail={t("连接 Zed Remote 和 upstream worktree 辅助能力。")}>
               <FeatureToggle title="Zed Remote open" detail={t("远程 SSH 文件引用可直接用 Zed Remote Development 打开。")} checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
-              <FeatureToggle title={t("Zed 项目记录")} detail={t("维护 Codex++ 自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
+              <FeatureToggle title={t("Zed 项目记录")} detail={t("维护轩智万象自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
               <FeatureToggle title={t("同步 Zed settings")} detail={t("高级选项，默认关闭；当前实现不主动改写 Zed settings。")} checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
               <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
               <div className="feature-select-row">
@@ -4783,7 +4567,7 @@ function DreamSkinScreen({
       </Panel>
 
       <Panel className="dream-skin-panel">
-        <CardHead title={t("运行状态")} detail={t("配置保存在 Codex++，实时操作通过本机回环 CDP 执行")} />
+        <CardHead title={t("运行状态")} detail={t("配置保存在轩智万象，实时操作通过本机回环 CDP 执行")} />
         <CardContent>
           <div className="dream-skin-runtime-grid">
             <label className="switch-row compact">
@@ -4850,7 +4634,7 @@ function DreamSkinScreen({
       </Panel>
 
       <Panel className="dream-skin-panel">
-        <CardHead title={t("图片与主题")} detail={t("自定义图片会被导入 Codex++ 托管目录；主题字段与目标项目 theme.json 对齐")} />
+        <CardHead title={t("图片与主题")} detail={t("自定义图片会被导入轩智万象托管目录；主题字段与目标项目 theme.json 对齐")} />
         <CardContent>
           <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
             <button
@@ -5642,7 +5426,7 @@ function ZedRemoteScreen({
   return (
     <>
       <Panel>
-        <CardHead title={t("Zed 远程项目")} detail={tf("{0} 个 Codex++ 可识别项目，默认策略：{1}", [allProjects.length, zedStrategyLabel(form.zedRemoteOpenStrategy)])} />
+        <CardHead title={t("Zed 远程项目")} detail={tf("{0} 个轩智万象可识别项目，默认策略：{1}", [allProjects.length, zedStrategyLabel(form.zedRemoteOpenStrategy)])} />
         <CardContent>
           <div className="metric-list">
             <Metric label="Current" value={String(currentProjects.length)} />
@@ -5670,7 +5454,7 @@ function ZedRemoteScreen({
               />
               <span>
                 <strong>{t("记录最近打开")}</strong>
-                <small>{t("保存到 Codex++ state，不改写 Zed settings。")}</small>
+                <small>{t("保存到轩智万象 state，不改写 Zed settings。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -6030,7 +5814,7 @@ function SessionsScreen({
               <Input
                 aria-label={t("会话分享链接")}
                 onChange={(event) => actions.setSessionShareUrl(event.currentTarget.value)}
-                placeholder={t("粘贴 Codex++ 会话分享链接")}
+                placeholder={t("粘贴轩智万象会话分享链接")}
                 value={actions.sessionShareUrl}
               />
               <Button disabled={!actions.sessionShareUrl.trim()} onClick={() => void actions.importSessionUrl()} variant="outline">
@@ -6154,43 +5938,6 @@ function SessionsScreen({
   );
 }
 
-function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
-  const sponsors = items.filter((ad) => ad.type === "sponsor");
-  const normal = items.filter((ad) => ad.type === "normal");
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("推荐内容")} detail={t("与 Codex 内插件菜单使用同一个远端广告源")} />
-        <CardContent>
-          <div className="recommend-hero">
-            <div>
-              <strong>{ads ? tf("已加载 {0} 条推荐", [items.length]) : t("尚未加载推荐内容")}</strong>
-              <span>{t("内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。")}</span>
-            </div>
-            <Button onClick={() => void actions.refreshAds()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新推荐")}
-            </Button>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("赞助商推荐")} detail={tf("{0} 条", [sponsors.length])} />
-        <CardContent>
-          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("普通推荐")} detail={tf("{0} 条", [normal.length])} />
-        <CardContent>
-          <AdGrid actions={actions} ads={normal} empty={t("暂无普通推荐。")} />
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
 function MaintenanceScreen({
   overview,
   watcher,
@@ -6233,7 +5980,7 @@ function MaintenanceScreen({
         <CardContent>
           <label className="check-row">
             <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>{t("卸载时移除 Codex++ 托管数据")}</span>
+            <span>{t("卸载时移除轩智万象托管数据")}</span>
           </label>
           <Toolbar>
             <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
@@ -6243,7 +5990,7 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex++ 接管状态")} />
+        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持轩智万象接管状态")} />
         <CardContent>
           <Toolbar>
             <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
@@ -6299,83 +6046,13 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
+            <Button onClick={() => void actions.launch()}>{t("启动轩智万象")}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               {t("保存为默认路径")}
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
-    </>
-  );
-}
-
-function AboutScreen({
-  overview,
-  update,
-  updateInstallProgress,
-  logs,
-  diagnostics,
-  actions,
-}: {
-  overview: OverviewResult | null;
-  update: UpdateResult | null;
-  updateInstallProgress: TaskProgress;
-  logs: LogsResult | null;
-  diagnostics: DiagnosticsResult | null;
-  actions: Actions;
-}) {
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("Codex++ 版本")} value={overview?.current_version ?? update?.currentVersion ?? "-"} />
-            <Metric label={t("Codex 版本")} value={overview?.codex_version ?? t("未检测到")} />
-            <Metric label={t("项目地址")} value="github.com/BigPizzaV3/CodexPlusPlus" />
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("打开项目主页")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("反馈问题")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
-              <MessageCircle className="h-4 w-4" />
-              Discord
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} variant="secondary">
-              <MessageCircle className="h-4 w-4" />
-              Telegram
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("GitHub Release 更新")} detail={tf("当前版本 {0}", [overview?.current_version ?? update?.currentVersion ?? "-"])} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("状态")} value={update?.status ?? "not_checked"} />
-            <Metric label={t("最新版本")} value={update?.latestVersion ?? t("未检查")} />
-            <Metric label={t("资源")} value={update?.assetName ?? "-"} />
-            <Metric label={t("进度")} value={`${formatProgressPercent(update?.progress ?? 0)}%`} />
-          </div>
-          <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} />
-          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
-          <Toolbar>
-            <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
-            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
-              {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <LogsPanel logs={logs} actions={actions} />
-      <DiagnosticsPanel diagnostics={diagnostics} actions={actions} />
     </>
   );
 }
@@ -6522,6 +6199,102 @@ function SettingsScreen({
               <Button variant="secondary" onClick={() => void actions.testStepwiseSettings(form)}>{t("测试连接")}</Button>
             </div>
           </div>
+          <div className="settings-block prompt-optimize-settings-block" id={SETTINGS_PROMPT_OPTIMIZE_SECTION_ID}>
+            <div className="section-title">Prompt Optimize</div>
+            <div className="stepwise-settings-section">{t("连接")}</div>
+            <div className="form-row">
+              <Field label={t("协议")}>
+                <AppSelect
+                  value={form.codexAppPromptOptimizeProtocol}
+                  onChange={(value) => onFormChange({ ...form, codexAppPromptOptimizeProtocol: value })}
+                  options={[
+                    { value: "openai", label: t("OpenAI 兼容") },
+                    { value: "anthropic", label: "Anthropic" },
+                  ]}
+                />
+              </Field>
+              <Field label={t("风格")}>
+                <AppSelect
+                  value={form.codexAppPromptOptimizeStyle}
+                  onChange={(value) => onFormChange({ ...form, codexAppPromptOptimizeStyle: value })}
+                  options={[
+                    { value: "concise", label: t("简洁") },
+                    { value: "structured", label: t("结构化") },
+                    { value: "coding", label: t("编码任务") },
+                  ]}
+                />
+              </Field>
+            </div>
+            <div className="form-row">
+              <Field label="Base URL">
+                <Input
+                  value={form.codexAppPromptOptimizeBaseUrl}
+                  onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeBaseUrl: event.currentTarget.value })}
+                  placeholder="https://api.openai.com/v1"
+                />
+              </Field>
+              <Field label="Model">
+                <Input
+                  value={form.codexAppPromptOptimizeModel}
+                  onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeModel: event.currentTarget.value })}
+                  placeholder={t("例如 gpt-4o-mini")}
+                />
+              </Field>
+            </div>
+            <Field label="API Key">
+              <Input
+                type="password"
+                value={form.codexAppPromptOptimizeApiKey}
+                onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeApiKey: event.currentTarget.value })}
+              />
+            </Field>
+            <details className="stepwise-advanced">
+              <summary>{t("高级参数")}</summary>
+              <div className="form-row">
+                <Field label={t("API Key 环境变量")}>
+                  <Input
+                    value={form.codexAppPromptOptimizeApiKeyEnv}
+                    onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeApiKeyEnv: event.currentTarget.value })}
+                  />
+                </Field>
+                <Field label={t("最大输入字符")}>
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppPromptOptimizeMaxInputChars}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppPromptOptimizeMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 100000) })
+                    }
+                  />
+                </Field>
+              </div>
+              <div className="form-row">
+                <Field label={t("最大输出 tokens")}>
+                  <Input
+                    min={100}
+                    type="number"
+                    value={form.codexAppPromptOptimizeMaxOutputTokens}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppPromptOptimizeMaxOutputTokens: clampNumber(Number(event.currentTarget.value), 100, 8192) })
+                    }
+                  />
+                </Field>
+                <Field label={t("超时毫秒")}>
+                  <Input
+                    min={1000}
+                    type="number"
+                    value={form.codexAppPromptOptimizeTimeoutMs}
+                    onChange={(event) =>
+                      onFormChange({ ...form, codexAppPromptOptimizeTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 120000) })
+                    }
+                  />
+                </Field>
+              </div>
+            </details>
+            <div className="toolbar stepwise-settings-actions">
+              <Button variant="secondary" onClick={() => void actions.testPromptOptimizeSettings(form)}>{t("测试连接")}</Button>
+            </div>
+          </div>
           <div className="settings-block">
             <label className="check-row">
               <input
@@ -6617,61 +6390,6 @@ function SettingsScreen({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
-  const lines = splitLogLines(logs?.text ?? "");
-  const logDetail = logs
-    ? logs.truncated
-      ? tf("日志大小 {0}，仅显示末尾 {1} 行", [formatBytes(logs.fileSize), logs.lines])
-      : tf("日志大小 {0}", [formatBytes(logs.fileSize)])
-    : "";
-  return (
-    <Panel>
-      <CardHead title={t("最近日志")} detail={logs?.path ?? ""} />
-      <CardContent>
-        {logDetail ? <p className="field-hint">{logDetail}</p> : null}
-        <div className="log-lines">
-          {lines.length ? (
-            lines.map((line, index) => (
-              <div className="log-line" key={`${index}-${line.slice(0, 12)}`}>
-                <span>{index + 1}</span>
-                <code>{line || " "}</code>
-              </div>
-            ))
-          ) : (
-            <div className="empty">{t("暂无日志。")}</div>
-          )}
-        </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshLogs()}>{t("刷新")}</Button>
-          <Button variant="secondary" onClick={() => void actions.clearLogs()}>
-            {t("清理日志")}
-          </Button>
-          <Button variant="secondary" onClick={() => void actions.copyLogs()}>
-            {t("复制")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
-  );
-}
-
-function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
-  return (
-    <Panel>
-      <CardHead title={t("诊断报告")} detail={t("包含版本、路径、设置和平台信息")} />
-      <CardContent>
-        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
-        <Toolbar>
-          <Button onClick={() => void actions.refreshDiagnostics()}>{t("重新生成")}</Button>
-          <Button variant="secondary" onClick={() => void actions.copyDiagnostics()}>
-            {t("复制报告")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
   );
 }
 
@@ -7774,13 +7492,13 @@ function RelayProfileEditor({
                             }
                             setMetadataImportPreview(parsed.value);
                           }}
-                          placeholder={t("需要补充供应商模型信息时填写；不填则使用 Codex++ 默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
+                          placeholder={t("需要补充供应商模型信息时填写；不填则使用轩智万象默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
                           rows={7}
                         />
                         {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
                         {metadataImportPreview?.ignoredFields.length ? (
                           <div className="relay-model-metadata-import-warning" role="status">
-                            {tf("以下字段由 Codex++ 计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
+                            {tf("以下字段由轩智万象计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
                           </div>
                         ) : null}
                         <div className="relay-model-metadata-import-actions">
@@ -7828,7 +7546,7 @@ function RelayProfileEditor({
             <div className="relay-config-section-head">
               <div>
                 <strong>{t("单模型路由")}</strong>
-                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}</span>
+                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从轩智万象启动。")}</span>
               </div>
               <div className="relay-model-list-tools">
                 <Button
@@ -7946,7 +7664,7 @@ function RelayProfileEditor({
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}</span>
+          <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从轩智万象启动 Codex。")}</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">
@@ -9118,8 +8836,8 @@ function PendingProviderImportDialog({
       <div className="modal-card provider-import-modal">
         <div className="modal-head">
           <div>
-            <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。")}</p>
+            <h2>{t("导入轩智万象供应商")}</h2>
+            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机轩智万象管理工具。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
@@ -9369,44 +9087,6 @@ function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventor
   );
 }
 
-function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
-  if (!ads.length) return <div className="empty">{empty}</div>;
-  return (
-    <div className="ad-grid">
-      {ads.map((ad) => (
-        <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
-          {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
-          <div className="ad-content">
-            <strong>{formatAdTitle(ad.title)}</strong>
-            <p>{ad.description}</p>
-          </div>
-          {ad.highlights?.length ? (
-            <div className="ad-tags">
-              {ad.highlights.map((item) => (
-                <span key={item}>{item}</span>
-              ))}
-            </div>
-          ) : null}
-          <span className="ad-link">
-            {t("打开")}
-            <ExternalLink className="h-4 w-4" />
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function formatAdTitle(title: string) {
-  return title.split(/[｜|]/, 1)[0].trim() || title;
-}
-
-function isExpiredAd(ad: AdItem) {
-  if (!ad.expires_at) return false;
-  const expiresAt = Date.parse(ad.expires_at);
-  return Number.isFinite(expiresAt) && expiresAt < Date.now();
-}
-
 function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
 }
@@ -9425,9 +9105,7 @@ function routeSubtitle(route: Route) {
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
     zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
     userScripts: t("内置和用户自定义脚本清单"),
-    recommendations: t("赞助商推荐与普通推荐"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
-    about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };
   return subtitles[route];
@@ -10069,7 +9747,7 @@ function healthItems(overview: OverviewResult | null) {
       title: t("静默启动入口"),
       status: overview?.silent_shortcut.status ?? "not_checked",
       ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || t("缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。"),
+      detail: overview?.silent_shortcut.path || t("缺少轩智万象静默启动快捷方式时可在安装维护页修复。"),
     },
     {
       title: t("管理工具入口"),
@@ -10152,6 +9830,27 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
     codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
     codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
+    codexAppPromptOptimizeProtocol:
+      settings.codexAppPromptOptimizeProtocol === "anthropic" ? "anthropic" : "openai",
+    codexAppPromptOptimizeStyle:
+      settings.codexAppPromptOptimizeStyle === "concise" || settings.codexAppPromptOptimizeStyle === "coding"
+        ? settings.codexAppPromptOptimizeStyle
+        : "structured",
+    codexAppPromptOptimizeMaxInputChars: clampNumber(
+      settings.codexAppPromptOptimizeMaxInputChars || 24000,
+      1000,
+      100000,
+    ),
+    codexAppPromptOptimizeMaxOutputTokens: clampNumber(
+      settings.codexAppPromptOptimizeMaxOutputTokens || 4096,
+      100,
+      8192,
+    ),
+    codexAppPromptOptimizeTimeoutMs: clampNumber(
+      settings.codexAppPromptOptimizeTimeoutMs || 60000,
+      1000,
+      120000,
+    ),
     relayCommonConfigContents,
     relayContextConfigContents,
     relayProfiles: profiles,
@@ -11349,9 +11048,5 @@ function loadInitialTheme(): Theme {
 
 function loadInitialRoute(): Route {
   if (typeof window === "undefined") return "overview";
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
-    return "about";
-  }
   return "overview";
 }

@@ -45,6 +45,8 @@ const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
 const DREAM_SKIN_DEFAULT_IMAGE: &[u8] =
     include_bytes!("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png");
 const PET_REAL_MOUSE_SCRIPT: &str = include_str!("../../../assets/inject/pet-real-mouse-inject.js");
+const PROMPT_OPTIMIZE_SCRIPT: &str =
+    include_str!("../../../assets/inject/prompt-optimize-inject.js");
 const STEPWISE_SCRIPT: &str = concat!(
     "(() => {\n",
     include_str!("../../../assets/inject/floating-panel/runtime/state.js"),
@@ -293,6 +295,10 @@ pub fn stepwise_script() -> &'static str {
     STEPWISE_SCRIPT
 }
 
+pub fn prompt_optimize_script() -> &'static str {
+    PROMPT_OPTIMIZE_SCRIPT
+}
+
 pub fn pet_real_mouse_script() -> &'static str {
     PET_REAL_MOUSE_SCRIPT
 }
@@ -433,8 +439,13 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         } else {
             ""
         };
+    let prompt_optimize_runtime = if settings.codex_app_prompt_optimize_enabled {
+        prompt_optimize_script()
+    } else {
+        ""
+    };
     format!(
-        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
+        "window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_PLUGIN_MARKETPLACES__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_FAST_STARTUP__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}\n{}",
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
@@ -456,6 +467,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         renderer_script(),
         stepwise_runtime,
         dream_skin_target_runtime,
+        prompt_optimize_runtime,
     )
 }
 

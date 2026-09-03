@@ -39,7 +39,6 @@ async fn bridge_routes_cover_all_current_paths() {
             "/llm-proxy",
             json!({"url": "http://example.com", "method": "POST"}),
         ),
-        ("/ads", json!({})),
         ("/zed-remote/status", json!({})),
         (
             "/zed-remote/resolve-host",
@@ -247,6 +246,27 @@ async fn settings_get_does_not_expose_stepwise_api_key_to_renderer() {
 }
 
 #[tokio::test]
+async fn settings_get_does_not_expose_prompt_optimize_api_key_to_renderer() {
+    let settings = BackendSettings {
+        codex_app_prompt_optimize_api_key: "sk-prompt-secret".to_string(),
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert!(result.get("codexAppPromptOptimizeApiKey").is_none());
+    assert_eq!(
+        result["codexAppPromptOptimizeApiKeyEnv"],
+        json!("CODEX_PROMPT_OPTIMIZE_API_KEY")
+    );
+}
+
+#[tokio::test]
 async fn settings_set_does_not_persist_runtime_codex_app_version() {
     let settings = Arc::new(FakeSettings::with_codex_app_version("26.601.21317"));
     let ctx = BridgeContext::new(
@@ -403,6 +423,54 @@ async fn stepwise_routes_use_settings_service() {
 }
 
 #[tokio::test]
+async fn prompt_optimize_routes_use_settings_service() {
+    let settings = BackendSettings {
+        codex_app_prompt_optimize_enabled: false,
+        codex_app_prompt_optimize_protocol: "anthropic".to_string(),
+        codex_app_prompt_optimize_base_url: "https://api.anthropic.test/v1".to_string(),
+        codex_app_prompt_optimize_api_key: "sk-prompt-secret".to_string(),
+        codex_app_prompt_optimize_model: "claude-test-mini".to_string(),
+        codex_app_prompt_optimize_max_input_chars: 12000,
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let public_settings =
+        handle_bridge_request(ctx.clone(), "/prompt-optimize/settings", json!({})).await;
+    assert_eq!(public_settings["settings"]["enabled"], json!(false));
+    assert_eq!(public_settings["settings"]["protocol"], json!("anthropic"));
+    assert_eq!(
+        public_settings["settings"]["model"],
+        json!("claude-test-mini")
+    );
+    assert_eq!(public_settings["settings"]["maxInputChars"], json!(12000));
+    assert_eq!(
+        public_settings["settings"]["baseUrlConfigured"],
+        json!(true)
+    );
+    assert_eq!(public_settings["settings"]["apiKeyConfigured"], json!(true));
+    assert!(public_settings["settings"].get("apiKey").is_none());
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/prompt-optimize/generate",
+            json!({"text": "请帮我润色"}),
+        )
+        .await,
+        json!({
+            "status": "ok",
+            "disabled": true,
+            "protocol": "anthropic",
+            "text": ""
+        })
+    );
+}
+
+#[tokio::test]
 async fn unknown_bridge_path_preserves_empty_session_id_shape() {
     let result = handle_bridge_request(
         test_context(),
@@ -468,7 +536,7 @@ async fn runtime_routes_keep_user_script_inventory_shape() {
 }
 
 #[tokio::test]
-async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
+async fn runtime_status_devtools_and_repair_routes_are_dispatched() {
     let runtime = Arc::new(FakeRuntime::default());
     let ctx = BridgeContext::new(
         Arc::new(FakeSettings::default()),
@@ -501,10 +569,6 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/backend/status", json!({})).await,
         json!({"status": "ok", "message": "后端已连接", "version": codex_plus_core::version::VERSION, "hideOfficialUsageAlert": false})
-    );
-    assert_eq!(
-        handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
-        json!({"version": 1, "ads": [{"id": "runtime-ad"}]})
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/zed-remote/status", json!({})).await,
@@ -1298,10 +1362,6 @@ impl BridgeRuntimeService for FakeRuntime {
             "models": ["qwen3-coder"],
             "sources": []
         }))
-    }
-
-    async fn ads(&self) -> anyhow::Result<Value> {
-        Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
     }
 
     async fn zed_remote_status(&self) -> anyhow::Result<Value> {

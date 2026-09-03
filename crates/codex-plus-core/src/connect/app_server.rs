@@ -291,7 +291,7 @@ impl CodexAppServer {
             json!({
                 "clientInfo": {
                     "name": "codex-plus-weixin",
-                    "title": "Codex++ Weixin Connect",
+                    "title": "轩智万象 微信连接",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {

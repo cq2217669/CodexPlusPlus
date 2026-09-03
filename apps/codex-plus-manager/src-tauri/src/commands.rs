@@ -328,6 +328,11 @@ pub struct StepwiseTestPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PromptOptimizeTestPayload {
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfileModelsPayload {
     pub models: Vec<String>,
@@ -468,12 +473,6 @@ pub struct DiagnosticsPayload {
 pub struct WatcherPayload {
     pub enabled: bool,
     pub disabled_flag: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AdsPayload {
-    pub version: u64,
-    pub ads: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -682,7 +681,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     if let Err(error) = save_requested_launch_status(
         &request,
         "starting",
-        "Codex++ launcher is starting",
+        "轩智万象启动器正在启动",
         launch_started_at_ms,
     ) {
         return failed(
@@ -706,7 +705,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         },
         Err(error) => {
-            let message = format!("重启 Codex++ 失败：{error}");
+            let message = format!("重启轩智万象失败：{error}");
             let _ =
                 save_requested_launch_status(&request, "failed", &message, launch_started_at_ms);
             failed(
@@ -907,7 +906,7 @@ fn spawn_codex_plus_launch(
     if let Err(error) = save_requested_launch_status(
         &request,
         "starting",
-        "Codex++ launcher is starting",
+        "轩智万象启动器正在启动",
         launch_started_at_ms,
     ) {
         return failed(
@@ -2160,7 +2159,7 @@ fn managed_dream_skin_image_backup(
     state_dir: &Path,
 ) -> anyhow::Result<ManagedDreamSkinImageBackup> {
     if !codex_plus_core::dream_skin::is_managed_dream_skin_image(path, state_dir) {
-        anyhow::bail!("Dream Skin image is not managed by Codex++");
+        anyhow::bail!("Dream Skin 图片不受轩智万象管理");
     }
     Ok(ManagedDreamSkinImageBackup {
         path: path.to_path_buf(),
@@ -2412,7 +2411,7 @@ pub fn import_local_session(path: String) -> CommandResult<SessionImportPayload>
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     match codex_plus_core::session_share::import_rollout_file(&home, &source_path) {
         Ok(result) => ok(
-            "会话已导入 Codex++。请刷新会话列表；如果仍未显示，请重启 Codex。",
+            "会话已导入轩智万象。请刷新会话列表；如果仍未显示，请重启 Codex。",
             SessionImportPayload {
                 session_id: result
                     .get("session_id")
@@ -2458,7 +2457,7 @@ pub async fn import_session_url(url: String) -> CommandResult<SessionImportPaylo
         Ok(result) => {
             let _ = codex_plus_core::session_share::clear_pending_session_share();
             ok(
-                "会话已导入 Codex++。请刷新会话列表；如果仍未显示，请重启 Codex。",
+                "会话已导入轩智万象。请刷新会话列表；如果仍未显示，请重启 Codex。",
                 SessionImportPayload {
                     session_id: result
                         .get("session_id")
@@ -3166,20 +3165,6 @@ fn persist_provider_sync_selection(provider: &str) {
     settings.provider_sync_saved_providers =
         normalize_provider_sync_provider_list(settings.provider_sync_saved_providers);
     let _ = store.save(&settings);
-}
-
-#[tauri::command]
-pub async fn load_ads() -> CommandResult<AdsPayload> {
-    match codex_plus_core::ads::fetch_ad_list().await {
-        Ok(payload) => ok("推荐内容已加载。", ads_payload(payload)),
-        Err(error) => failed(
-            &format!("推荐内容加载失败：{error}"),
-            AdsPayload {
-                version: 1,
-                ads: Vec::new(),
-            },
-        ),
-    }
 }
 
 #[tauri::command]
@@ -4749,6 +4734,43 @@ pub async fn test_stepwise_settings(
     }
 }
 
+#[tauri::command]
+pub async fn test_prompt_optimize_settings(
+    settings: BackendSettings,
+) -> CommandResult<PromptOptimizeTestPayload> {
+    match codex_plus_core::prompt_optimize::test_connection(&settings).await {
+        Ok(result) => {
+            let error = result
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if status == "ok" && error.is_empty() {
+                ok(
+                    "Prompt Optimize 连接正常，测试润色已返回。",
+                    PromptOptimizeTestPayload { error },
+                )
+            } else {
+                failed(
+                    &format!("Prompt Optimize 测试失败：{error}"),
+                    PromptOptimizeTestPayload { error },
+                )
+            }
+        }
+        Err(error) => failed(
+            &format!("Prompt Optimize 测试失败：{error}"),
+            PromptOptimizeTestPayload {
+                error: error.to_string(),
+            },
+        ),
+    }
+}
+
 fn stepwise_protocol_label(protocol: &str) -> &str {
     match protocol {
         "chat_completions" => "Chat Completions",
@@ -5568,17 +5590,6 @@ fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
         Ok(contents) => Ok(contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(error) => Err(error.into()),
-    }
-}
-
-fn ads_payload(payload: Value) -> AdsPayload {
-    AdsPayload {
-        version: payload.get("version").and_then(Value::as_u64).unwrap_or(1),
-        ads: payload
-            .get("ads")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
     }
 }
 
@@ -7566,18 +7577,6 @@ model_reasoning_effort = "high"
                 .relay_context_config_contents
                 .contains("[mcp_servers.context7]")
         );
-    }
-
-    #[test]
-    fn ads_payload_keeps_version_and_ad_items() {
-        let payload = ads_payload(json!({
-            "version": 1,
-            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}]
-        }));
-
-        assert_eq!(payload.version, 1);
-        assert_eq!(payload.ads.len(), 1);
-        assert_eq!(payload.ads[0]["id"], json!("ad-1"));
     }
 
     #[test]

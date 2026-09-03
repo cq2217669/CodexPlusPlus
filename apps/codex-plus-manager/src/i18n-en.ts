@@ -5,6 +5,12 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "输入增强": "Composer enhancements",
+  "在输入框旁提供 ✨ 一键优化：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启 Codex++ 生效。": "Adds an ✨ button beside the composer that optimizes your draft with an external LLM and restores the original with one more click. Restart Codex++ after toggling.",
+  "OpenAI 兼容": "OpenAI compatible",
+  "简洁": "Concise",
+  "结构化": "Structured",
+  "编码任务": "Coding task",
   "主导航": "Main navigation",
   "工作区": "Workspace",
   "扩展": "Extensions",

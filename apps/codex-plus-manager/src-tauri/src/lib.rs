@@ -51,7 +51,7 @@ pub fn run() {
             };
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("Codex++ 管理工具")
+                    .title("轩智万象")
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -120,7 +120,6 @@ pub fn run() {
             commands::preview_session_index_cleanup,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,
-            commands::load_ads,
             commands::refresh_script_market,
             commands::refresh_user_script_inventory,
             commands::install_market_script,
@@ -177,6 +176,7 @@ pub fn run() {
             commands::test_relay_profile,
             commands::diagnose_relay_profile,
             commands::test_stepwise_settings,
+            commands::test_prompt_optimize_settings,
             commands::fetch_relay_profile_models,
             commands::fetch_sub2api_billing,
             commands::switch_relay_profile,

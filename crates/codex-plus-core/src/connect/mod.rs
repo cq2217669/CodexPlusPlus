@@ -227,7 +227,7 @@ pub async fn run_weixin_connect(
                     let _ = client
                         .send_text_chunks(
                             &message.from_user_id,
-                            "Codex 处理失败，请在 Codex++ 管理器中查看连接状态。",
+                            "Codex 处理失败，请在轩智万象管理器中查看连接状态。",
                             &message.context_token,
                         )
                         .await;
