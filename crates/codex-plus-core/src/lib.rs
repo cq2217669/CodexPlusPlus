@@ -33,6 +33,7 @@ pub mod prompt_optimize;
 pub mod protocol_proxy;
 pub mod provider_import;
 pub mod proxy;
+pub mod relay_balance;
 pub mod relay_config;
 pub mod relay_environment;
 pub mod relay_rotation;

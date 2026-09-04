@@ -108,6 +108,18 @@ pub trait BridgeRuntimeService: Send + Sync {
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
+    async fn preview_unexecuted_workspace_tasks(
+        &self,
+        _workspace_path: String,
+    ) -> anyhow::Result<Value> {
+        anyhow::bail!("未执行任务清理不可用")
+    }
+    async fn delete_unexecuted_workspace_tasks(
+        &self,
+        _workspace_path: String,
+    ) -> anyhow::Result<Value> {
+        anyhow::bail!("未执行任务清理不可用")
+    }
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
@@ -230,6 +242,19 @@ pub async fn handle_bridge_request(
         }
         "/prompt-optimize/generate" => {
             prompt_optimize_generate_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
+        "/relay-balance/query" => {
+            relay_balance_query_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
+        "/workspace/unexecuted-tasks/preview" => {
+            ctx.data
+                .preview_unexecuted_workspace_tasks(workspace_path_from_payload(&payload))
+                .await
+        }
+        "/workspace/unexecuted-tasks/delete" => {
+            ctx.data
+                .delete_unexecuted_workspace_tasks(workspace_path_from_payload(&payload))
+                .await
         }
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
@@ -724,6 +749,23 @@ async fn prompt_optimize_generate_value(
         .unwrap_or_default()
         .to_string();
     crate::prompt_optimize::generate(&text, &settings).await
+}
+
+fn workspace_path_from_payload(payload: &Value) -> String {
+    payload
+        .get("workspace_path")
+        .or_else(|| payload.get("workspacePath"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+async fn relay_balance_query_value(
+    result: anyhow::Result<BackendSettings>,
+    payload: Value,
+) -> anyhow::Result<Value> {
+    crate::relay_balance::query(payload, &result?).await
 }
 
 async fn llm_proxy_value(payload: Value) -> anyhow::Result<Value> {

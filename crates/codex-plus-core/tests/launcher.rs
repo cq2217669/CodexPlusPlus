@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_bundled_codex_cli, find_latest_codex_app_dir,
-    find_latest_codex_app_dir_from_roots, find_macos_codex_app, normalize_codex_app_path,
-    packaged_app_user_model_id, resolve_codex_app_dir_with_saved, user_data_candidates_from,
+    find_latest_codex_app_dir_from_roots, find_macos_codex_app,
+    find_standalone_codex_cli_from_root, normalize_codex_app_path, packaged_app_user_model_id,
+    resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -315,6 +316,19 @@ fn app_paths_finds_windows_bundled_codex_cli() {
     std::fs::write(&cli, "").unwrap();
 
     assert_eq!(find_bundled_codex_cli(&app).as_deref(), Some(cli.as_path()));
+}
+
+#[test]
+fn app_paths_finds_hashed_windows_desktop_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let cli = temp.path().join("bin/runtime-hash/codex.exe");
+    std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    std::fs::write(&cli, "").unwrap();
+
+    assert_eq!(
+        find_standalone_codex_cli_from_root(temp.path()).as_deref(),
+        Some(cli.as_path())
+    );
 }
 
 #[test]

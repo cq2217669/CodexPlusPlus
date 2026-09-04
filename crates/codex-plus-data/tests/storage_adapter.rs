@@ -1,5 +1,8 @@
 use codex_plus_core::models::{DeleteStatus, SessionRef};
-use codex_plus_data::{BackupStore, SQLiteStorageAdapter, delete_local_from_paths};
+use codex_plus_data::{
+    BackupStore, SQLiteStorageAdapter, count_unexecuted_automation_runs_from_paths,
+    delete_local_from_paths, delete_unexecuted_automation_runs_from_paths,
+};
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -930,6 +933,132 @@ fn delete_local_session_removes_codex_automation_run_and_inbox_items() {
         .unwrap(),
         0
     );
+}
+
+fn create_pending_automation_runs_db(path: &Path, rows: &[(&str, &str, &str)]) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE automation_runs (
+            thread_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            thread_title TEXT,
+            source_cwd TEXT NOT NULL
+        )",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE inbox_items (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, title TEXT)",
+        [],
+    )
+    .unwrap();
+    for (thread_id, status, workspace_path) in rows {
+        db.execute(
+            "INSERT INTO automation_runs (thread_id, status, thread_title, source_cwd)
+             VALUES (?1, ?2, ?1, ?3)",
+            [thread_id, status, workspace_path],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO inbox_items (id, thread_id, title) VALUES (?1, ?1, ?1)",
+            [thread_id],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn delete_unexecuted_automation_runs_removes_all_pending_tasks_in_workspace() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("codex-dev.db");
+    create_pending_automation_runs_db(
+        &db_path,
+        &[("pending-1", "pending", "C:/workspace"), ("pending-2", "pending", "C:/workspace")],
+    );
+
+    assert_eq!(
+        count_unexecuted_automation_runs_from_paths(vec![db_path.clone()], "C:/workspace").unwrap(),
+        2
+    );
+    let result = delete_unexecuted_automation_runs_from_paths(
+        vec![db_path.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        "C:/workspace",
+    )
+    .unwrap();
+
+    assert_eq!(result.deleted_count, 2);
+    let db = Connection::open(&db_path).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM automation_runs", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM inbox_items", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn delete_unexecuted_automation_runs_keeps_other_statuses_and_workspaces() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("codex-dev.db");
+    create_pending_automation_runs_db(
+        &db_path,
+        &[
+            ("pending", "pending", "C:/workspace"),
+            ("running", "running", "C:/workspace"),
+            ("completed", "completed", "C:/workspace"),
+            ("failed", "failed", "C:/workspace"),
+            ("other-workspace", "pending", "C:/other"),
+        ],
+    );
+
+    let result = delete_unexecuted_automation_runs_from_paths(
+        vec![db_path.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        "C:/workspace",
+    )
+    .unwrap();
+
+    assert_eq!(result.deleted_count, 1);
+    let db = Connection::open(&db_path).unwrap();
+    for thread_id in ["running", "completed", "failed", "other-workspace"] {
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM automation_runs WHERE thread_id = ?1",
+                [thread_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "{thread_id} should remain"
+        );
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM inbox_items WHERE thread_id = 'pending'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn delete_unexecuted_automation_runs_is_a_noop_when_workspace_has_no_pending_tasks() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("codex-dev.db");
+    create_pending_automation_runs_db(
+        &db_path,
+        &[("running", "running", "C:/workspace"), ("completed", "completed", "C:/workspace")],
+    );
+
+    let result = delete_unexecuted_automation_runs_from_paths(
+        vec![db_path.clone()],
+        BackupStore::new(tmp.path().join("backups")),
+        "C:/workspace",
+    )
+    .unwrap();
+
+    assert_eq!(result.deleted_count, 0);
+    let db = Connection::open(&db_path).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM automation_runs", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
 }
 
 #[test]

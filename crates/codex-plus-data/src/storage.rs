@@ -3,12 +3,87 @@ use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+pub const UNEXECUTED_AUTOMATION_RUN_STATUS: &str = "pending";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnexecutedTaskDeleteResult {
+    pub workspace_path: String,
+    pub deleted_count: usize,
+}
+
+pub fn count_unexecuted_automation_runs_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    workspace_path: &str,
+) -> anyhow::Result<usize> {
+    let mut task_ids = HashSet::new();
+    for db_path in db_paths {
+        if !db_path.exists() {
+            continue;
+        }
+        let db = Connection::open(&db_path)?;
+        task_ids.extend(unexecuted_automation_run_ids(&db, workspace_path)?);
+    }
+    Ok(task_ids.len())
+}
+
+pub fn delete_unexecuted_automation_runs_from_paths(
+    db_paths: impl IntoIterator<Item = PathBuf>,
+    backup_store: BackupStore,
+    workspace_path: &str,
+) -> anyhow::Result<UnexecutedTaskDeleteResult> {
+    let workspace_path = workspace_path.trim();
+    if workspace_path.is_empty() {
+        anyhow::bail!("工作区路径不能为空。");
+    }
+
+    let mut deleted_task_ids = HashSet::new();
+    let mut completed = Vec::new();
+    for db_path in db_paths {
+        if !db_path.exists() {
+            continue;
+        }
+        let adapter = SQLiteStorageAdapter::new(&db_path, backup_store.clone());
+        match adapter.delete_unexecuted_automation_runs(workspace_path) {
+            Ok(outcome) => {
+                deleted_task_ids.extend(outcome.task_ids);
+                if let Some(undo_token) = outcome.undo_token {
+                    completed.push((adapter, undo_token));
+                }
+            }
+            Err(error) => {
+                let rollback_errors = completed
+                    .iter()
+                    .rev()
+                    .filter_map(|(adapter, undo_token)| {
+                        let rollback = adapter.undo(undo_token);
+                        (!matches!(rollback.status, DeleteStatus::Undone))
+                            .then_some(rollback.message)
+                    })
+                    .collect::<Vec<_>>();
+                if rollback_errors.is_empty() {
+                    anyhow::bail!("删除失败，数据已回滚：{error}");
+                }
+                anyhow::bail!(
+                    "{error}；已删除的数据回滚失败：{}",
+                    rollback_errors.join("; ")
+                );
+            }
+        }
+    }
+
+    Ok(UnexecutedTaskDeleteResult {
+        workspace_path: workspace_path.to_string(),
+        deleted_count: deleted_task_ids.len(),
+    })
+}
 
 pub fn delete_local_from_paths(
     db_paths: impl IntoIterator<Item = PathBuf>,
@@ -116,6 +191,33 @@ fn sqlite_limit(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(i64::MAX)
 }
 
+fn unexecuted_automation_run_ids(
+    db: &Connection,
+    workspace_path: &str,
+) -> anyhow::Result<Vec<String>> {
+    let workspace_path = workspace_path.trim();
+    if workspace_path.is_empty() {
+        anyhow::bail!("工作区路径不能为空。");
+    }
+    if !has_table(db, "automation_runs")?
+        || !has_columns(
+            db,
+            "automation_runs",
+            &["thread_id", "status", "source_cwd"],
+        )?
+    {
+        return Ok(Vec::new());
+    }
+    let mut stmt = db.prepare(
+        "SELECT thread_id FROM automation_runs
+         WHERE status = ?1 AND source_cwd = ?2 AND COALESCE(thread_id, '') <> ''",
+    )?;
+    let rows = stmt.query_map([UNEXECUTED_AUTOMATION_RUN_STATUS, workspace_path], |row| {
+        row.get::<_, String>(0)
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalSession {
@@ -127,6 +229,12 @@ pub struct LocalSession {
     pub updated_at_ms: Option<i64>,
     pub rollout_path: String,
     pub db_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct UnexecutedTaskDeleteOutcome {
+    task_ids: Vec<String>,
+    undo_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +269,96 @@ impl SQLiteStorageAdapter {
     pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
         self.codex_home = Some(codex_home.into());
         self
+    }
+
+    fn delete_unexecuted_automation_runs(
+        &self,
+        workspace_path: &str,
+    ) -> anyhow::Result<UnexecutedTaskDeleteOutcome> {
+        let workspace_path = workspace_path.trim();
+        if workspace_path.is_empty() {
+            anyhow::bail!("工作区路径不能为空。");
+        }
+        let db = Connection::open(&self.db_path)?;
+        if !has_table(&db, "automation_runs")?
+            || !has_columns(
+                &db,
+                "automation_runs",
+                &["thread_id", "status", "source_cwd"],
+            )?
+        {
+            return Ok(UnexecutedTaskDeleteOutcome {
+                task_ids: Vec::new(),
+                undo_token: None,
+            });
+        }
+
+        db.execute_batch("BEGIN IMMEDIATE")?;
+        let delete_result = (|| -> anyhow::Result<UnexecutedTaskDeleteOutcome> {
+            let status = UNEXECUTED_AUTOMATION_RUN_STATUS;
+            let params: [&dyn ToSql; 2] = [&status, &workspace_path];
+            let task_rows = select_dicts(
+                &db,
+                "SELECT * FROM automation_runs
+                 WHERE status = ?1 AND source_cwd = ?2 AND COALESCE(thread_id, '') <> ''",
+                &params,
+            )?;
+            if task_rows.is_empty() {
+                db.execute_batch("COMMIT")?;
+                return Ok(UnexecutedTaskDeleteOutcome {
+                    task_ids: Vec::new(),
+                    undo_token: None,
+                });
+            }
+
+            let task_ids = task_rows
+                .iter()
+                .filter_map(|row| row.get("thread_id").and_then(Value::as_str))
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            let mut tables = Map::new();
+            tables.insert("automation_runs".to_string(), Value::Array(task_rows));
+            if has_table(&db, "inbox_items")? && has_columns(&db, "inbox_items", &["thread_id"])? {
+                let inbox_items = select_dicts(
+                    &db,
+                    "SELECT inbox_items.* FROM inbox_items
+                     INNER JOIN automation_runs ON automation_runs.thread_id = inbox_items.thread_id
+                     WHERE automation_runs.status = ?1 AND automation_runs.source_cwd = ?2",
+                    &params,
+                )?;
+                tables.insert("inbox_items".to_string(), Value::Array(inbox_items));
+            }
+            let token = self.backup_store.write_backup(
+                "pending-automation-runs",
+                &self.db_path,
+                Value::Object(tables),
+            )?;
+
+            if has_table(&db, "inbox_items")? && has_columns(&db, "inbox_items", &["thread_id"])? {
+                db.execute(
+                    "DELETE FROM inbox_items
+                     WHERE thread_id IN (
+                        SELECT thread_id FROM automation_runs
+                        WHERE status = ?1 AND source_cwd = ?2
+                     )",
+                    [status, workspace_path],
+                )?;
+            }
+            db.execute(
+                "DELETE FROM automation_runs
+                 WHERE status = ?1 AND source_cwd = ?2 AND COALESCE(thread_id, '') <> ''",
+                [status, workspace_path],
+            )?;
+            db.execute_batch("COMMIT")?;
+            Ok(UnexecutedTaskDeleteOutcome {
+                task_ids,
+                undo_token: Some(token),
+            })
+        })();
+        if delete_result.is_err() {
+            let _ = db.execute_batch("ROLLBACK");
+        }
+        delete_result
     }
 
     pub fn delete_local(&self, session: &SessionRef) -> DeleteResult {

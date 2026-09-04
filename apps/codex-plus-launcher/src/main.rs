@@ -639,6 +639,48 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("delete task failed: {error}"))
     }
 
+    async fn preview_unexecuted_workspace_tasks(
+        &self,
+        workspace_path: String,
+    ) -> anyhow::Result<Value> {
+        let db_paths = self.candidate_db_paths();
+        tokio::task::spawn_blocking(move || {
+            let count = codex_plus_data::count_unexecuted_automation_runs_from_paths(
+                db_paths,
+                &workspace_path,
+            )?;
+            Ok(json!({
+                "status": "ok",
+                "workspace_path": workspace_path,
+                "count": count,
+            }))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("preview unexecuted tasks failed: {error}"))?
+    }
+
+    async fn delete_unexecuted_workspace_tasks(
+        &self,
+        workspace_path: String,
+    ) -> anyhow::Result<Value> {
+        let db_paths = self.candidate_db_paths();
+        let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
+        tokio::task::spawn_blocking(move || {
+            let result = codex_plus_data::delete_unexecuted_automation_runs_from_paths(
+                db_paths,
+                backup_store,
+                &workspace_path,
+            )?;
+            Ok(json!({
+                "status": "ok",
+                "workspace_path": result.workspace_path,
+                "deleted_count": result.deleted_count,
+            }))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("delete unexecuted tasks failed: {error}"))?
+    }
+
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
         let adapter = self.storage_adapter();
         tokio::task::spawn_blocking(move || adapter.undo(&undo_token))

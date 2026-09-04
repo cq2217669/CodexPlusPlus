@@ -157,12 +157,13 @@ fn stepwise_runtime_bumps_version_when_reinjection_contract_changes() {
 }
 
 #[test]
-fn prompt_optimize_button_is_anchored_before_the_model_selector() {
+fn prompt_optimize_button_is_anchored_before_the_model_selector_with_spacing() {
     let script = assets::prompt_optimize_script();
 
     assert!(script.contains("function modelSelectorBeforeSend(clickables, send)"));
     assert!(script.contains("return { node: modelSelector.parentElement, before: modelSelector };"));
     assert!(script.contains("return { node: send.parentElement || send.parentNode, before: send };"));
+    assert!(script.contains("margin-right:8px"));
 }
 
 #[test]
@@ -174,6 +175,22 @@ fn prompt_optimize_shortcut_is_scoped_to_the_composer_and_cleaned_up() {
     assert!(script.contains("return input === target || input.contains(target);"));
     assert!(script.contains("window.addEventListener(\"keydown\", runtime.shortcutHandler, true);"));
     assert!(script.contains("window.removeEventListener(\"keydown\", runtime.shortcutHandler, true);"));
+}
+
+#[test]
+fn relay_balance_runtime_is_opt_in_and_keeps_credentials_in_rust() {
+    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    assert!(!disabled.contains("__codexPlusRelayBalance"));
+
+    let settings = BackendSettings {
+        codex_app_relay_balance_enabled: true,
+        ..BackendSettings::default()
+    };
+    let enabled = assets::injection_script_with_settings(57321, &settings);
+    assert!(enabled.contains("__codexPlusRelayBalance"));
+    assert!(enabled.contains("/relay-balance/query"));
+    assert!(!assets::relay_balance_script().contains("Authorization:"));
+    assert!(!assets::relay_balance_script().contains("apiKey"));
 }
 
 #[test]

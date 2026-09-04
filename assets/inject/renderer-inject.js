@@ -382,6 +382,7 @@
   const actionGroupClass = "codex-session-actions";
   const moreButtonClass = "codex-session-more-button";
   const moreMenuClass = "codex-session-more-menu";
+  const workspaceUnexecutedTasksMenuClass = "codex-workspace-unexecuted-tasks-menu";
   const actionTooltipClass = "codex-session-action-tooltip";
   const threadIdBadgeClass = "codex-thread-id-badge";
   const conversationViewMinWidth = 320;
@@ -649,6 +650,41 @@
       .${moreMenuClass}[hidden] { display: none !important; }
       .${moreMenuClass}.codex-session-more-menu-open-up {
         transform: translateY(calc(-100% - 34px));
+      }
+      .${workspaceUnexecutedTasksMenuClass} {
+        position: fixed;
+        z-index: 2147483201;
+        min-width: 164px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-elevated);
+        color: var(--codex-plus-text);
+        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+        padding: 4px;
+      }
+      .${workspaceUnexecutedTasksMenuClass} button {
+        width: 100%;
+        border: 0;
+        border-radius: var(--border-radius-sm, 6px);
+        background: transparent;
+        color: inherit;
+        cursor: default;
+        display: flex;
+        align-items: center;
+        font: inherit;
+        font-size: 13px;
+        line-height: 18px;
+        padding: 6px 8px;
+        text-align: left;
+      }
+      .${workspaceUnexecutedTasksMenuClass} button:hover,
+      .${workspaceUnexecutedTasksMenuClass} button:focus-visible {
+        background: var(--codex-plus-bg-hover);
+        outline: none;
+      }
+      .${workspaceUnexecutedTasksMenuClass} button:disabled {
+        cursor: not-allowed;
+        opacity: .5;
       }
       .codex-session-more-menu-item {
         width: 100%;
@@ -8255,6 +8291,144 @@
     });
   }
 
+  function confirmDeleteUnexecutedTasks(projectLabel, count) {
+    document.querySelectorAll(".codex-delete-confirm-overlay").forEach((node) => node.remove());
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "codex-delete-confirm-overlay";
+      overlay.innerHTML = `
+        <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除未执行任务">
+          <div class="codex-delete-confirm-title">删除未执行任务</div>
+          <div class="codex-delete-confirm-message">将删除当前工作区“${escapeHtml(projectLabel)}”下 ${count} 个未执行任务，此操作不可恢复，是否继续？</div>
+          <div class="codex-delete-confirm-actions">
+            <button type="button" data-codex-delete-cancel="true">取消</button>
+            <button type="button" data-codex-delete-confirm="true">删除</button>
+          </div>
+        </div>
+      `;
+      const finish = (value, event) => {
+        event?.preventDefault();
+        event?.stopPropagation();
+        event?.target?.blur?.();
+        overlay.remove();
+        resolve(value);
+      };
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay || event.target.closest("[data-codex-delete-cancel]")) {
+          finish(false, event);
+          return;
+        }
+        if (event.target.closest("[data-codex-delete-confirm]")) finish(true, event);
+      }, true);
+      overlay.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") finish(false, event);
+      }, true);
+      document.body.appendChild(overlay);
+      overlay.querySelector("[data-codex-delete-cancel]")?.focus();
+    });
+  }
+
+  function workspacePathForUnexecutedTasks(row) {
+    const path = projectRowPath(row).trim();
+    return /^(?:[a-z]:[\\/]|\/)/i.test(path) ? path : "";
+  }
+
+  function closeWorkspaceUnexecutedTasksMenus() {
+    document.querySelectorAll(`.${workspaceUnexecutedTasksMenuClass}`).forEach((menu) => menu.remove());
+  }
+
+  async function deleteUnexecutedWorkspaceTasks(row) {
+    const workspacePath = workspacePathForUnexecutedTasks(row);
+    const project = projectContextFromRow(row);
+    if (!workspacePath || !project) {
+      showToast("当前工作区没有可删除的未执行任务", null);
+      return;
+    }
+    let preview;
+    try {
+      preview = await postJson("/workspace/unexecuted-tasks/preview", { workspace_path: workspacePath });
+    } catch (error) {
+      showToast(error?.message || "读取未执行任务失败", null);
+      return;
+    }
+    if (preview?.status !== "ok") {
+      showToast(preview?.message || "读取未执行任务失败", null);
+      return;
+    }
+    const count = Number(preview.count) || 0;
+    if (count <= 0) {
+      showToast("当前工作区没有可删除的未执行任务", null);
+      return;
+    }
+    if (!await confirmDeleteUnexecutedTasks(project.label || displayProjectName(workspacePath), count)) return;
+
+    let result;
+    try {
+      result = await postJson("/workspace/unexecuted-tasks/delete", { workspace_path: workspacePath });
+    } catch (error) {
+      showToast(error?.message || "删除未执行任务失败，数据未发生变更", null);
+      return;
+    }
+    if (result?.status !== "ok") {
+      showToast(result?.message || "删除未执行任务失败，数据已回滚", null);
+      return;
+    }
+    const deletedCount = Number(result.deleted_count) || 0;
+    if (deletedCount <= 0) {
+      showToast("当前工作区没有可删除的未执行任务", null);
+      return;
+    }
+    showToast(`已删除 ${deletedCount} 个未执行任务`, null);
+    window.setTimeout(() => window.location.reload(), 900);
+  }
+
+  function openWorkspaceUnexecutedTasksMenu(row, clientX, clientY) {
+    closeWorkspaceUnexecutedTasksMenus();
+    const workspacePath = workspacePathForUnexecutedTasks(row);
+    const menu = document.createElement("div");
+    menu.className = workspaceUnexecutedTasksMenuClass;
+    menu.setAttribute("role", "menu");
+    const action = document.createElement("button");
+    action.type = "button";
+    action.setAttribute("role", "menuitem");
+    action.textContent = "删除未执行任务";
+    action.disabled = !workspacePath;
+    if (!workspacePath) action.title = "当前工作区没有可删除的未执行任务";
+    action.addEventListener("click", () => {
+      closeWorkspaceUnexecutedTasksMenus();
+      void deleteUnexecutedWorkspaceTasks(row);
+    });
+    menu.appendChild(action);
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8))}px`;
+    action.focus();
+  }
+
+  function installWorkspaceUnexecutedTasksMenu() {
+    document.removeEventListener("contextmenu", window.__codexWorkspaceUnexecutedTasksContextMenuHandler, true);
+    document.removeEventListener("pointerdown", window.__codexWorkspaceUnexecutedTasksDismissHandler, true);
+    document.removeEventListener("keydown", window.__codexWorkspaceUnexecutedTasksDismissHandler, true);
+    window.__codexWorkspaceUnexecutedTasksContextMenuHandler = (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const row = target?.closest?.('[data-app-action-sidebar-project-row][data-app-action-sidebar-project-id]');
+      if (!row || isExtensionUiNode(row)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openWorkspaceUnexecutedTasksMenu(row, event.clientX, event.clientY);
+    };
+    window.__codexWorkspaceUnexecutedTasksDismissHandler = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (target?.closest?.(`.${workspaceUnexecutedTasksMenuClass}`)) return;
+      closeWorkspaceUnexecutedTasksMenus();
+    };
+    document.addEventListener("contextmenu", window.__codexWorkspaceUnexecutedTasksContextMenuHandler, true);
+    document.addEventListener("pointerdown", window.__codexWorkspaceUnexecutedTasksDismissHandler, true);
+    document.addEventListener("keydown", window.__codexWorkspaceUnexecutedTasksDismissHandler, true);
+  }
+
   function rowHref(row) {
     return row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
   }
@@ -10234,7 +10408,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, .${workspaceUnexecutedTasksMenuClass}, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {
@@ -10350,6 +10524,7 @@
   installUpstreamWorktreeNativeAdapter();
   scan();
   scheduleSidebarNavStartupRetry();
+  installWorkspaceUnexecutedTasksMenu();
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {

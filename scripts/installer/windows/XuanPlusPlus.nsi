@@ -15,6 +15,9 @@ SetCompressor /SOLID lzma
 
 !define MUI_ICON "${ROOT}\apps\codex-plus-manager\src-tauri\icons\icon.ico"
 !define MUI_UNICON "${ROOT}\apps\codex-plus-manager\src-tauri\icons\icon.ico"
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_TEXT "安装完成后运行 Xuan++"
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchApplication
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -24,6 +27,12 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
+
+Function LaunchApplication
+  IfSilent done
+  Exec '"$INSTDIR\codex-plus-plus.exe"'
+done:
+FunctionEnd
 
 Section "Install"
   SetOutPath "$INSTDIR"

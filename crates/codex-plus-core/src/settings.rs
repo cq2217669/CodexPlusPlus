@@ -484,6 +484,8 @@ pub struct BackendSettings {
     pub codex_app_stepwise_timeout_ms: u64,
     #[serde(rename = "codexAppPromptOptimizeEnabled", default)]
     pub codex_app_prompt_optimize_enabled: bool,
+    #[serde(rename = "codexAppRelayBalanceEnabled", default)]
+    pub codex_app_relay_balance_enabled: bool,
     #[serde(
         rename = "codexAppPromptOptimizeProtocol",
         default = "default_prompt_optimize_protocol",
@@ -571,6 +573,8 @@ pub struct BackendSettings {
     pub weixin_connect_account_id: String,
     #[serde(rename = "weixinConnectAllowFrom", default)]
     pub weixin_connect_allow_from: String,
+    #[serde(rename = "weixinConnectShareUrl", default)]
+    pub weixin_connect_share_url: String,
     #[serde(rename = "weixinConnectRouteTag", default)]
     pub weixin_connect_route_tag: String,
     #[serde(rename = "weixinConnectWorkDir", default)]
@@ -651,6 +655,7 @@ impl Default for BackendSettings {
             codex_app_stepwise_max_output_tokens: default_stepwise_max_output_tokens(),
             codex_app_stepwise_timeout_ms: default_stepwise_timeout_ms(),
             codex_app_prompt_optimize_enabled: false,
+            codex_app_relay_balance_enabled: false,
             codex_app_prompt_optimize_protocol: default_prompt_optimize_protocol(),
             codex_app_prompt_optimize_base_url: String::new(),
             codex_app_prompt_optimize_api_key: String::new(),
@@ -676,6 +681,7 @@ impl Default for BackendSettings {
             weixin_connect_token: String::new(),
             weixin_connect_account_id: String::new(),
             weixin_connect_allow_from: String::new(),
+            weixin_connect_share_url: String::new(),
             weixin_connect_route_tag: String::new(),
             weixin_connect_work_dir: String::new(),
             weixin_connect_model: String::new(),
@@ -1526,6 +1532,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         );
     }
     merge_bool_setting(target, source, "codexAppPromptOptimizeEnabled");
+    merge_bool_setting(target, source, "codexAppRelayBalanceEnabled");
     if let Some(value) = source
         .get("codexAppPromptOptimizeProtocol")
         .and_then(Value::as_str)
@@ -1679,6 +1686,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         "weixinConnectToken",
         "weixinConnectAccountId",
         "weixinConnectAllowFrom",
+        "weixinConnectShareUrl",
         "weixinConnectRouteTag",
         "weixinConnectWorkDir",
         "weixinConnectModel",
@@ -1930,6 +1938,7 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     settings.weixin_connect_token = settings.weixin_connect_token.trim().to_string();
     settings.weixin_connect_account_id = settings.weixin_connect_account_id.trim().to_string();
     settings.weixin_connect_allow_from = settings.weixin_connect_allow_from.trim().to_string();
+    settings.weixin_connect_share_url = settings.weixin_connect_share_url.trim().to_string();
     settings.weixin_connect_route_tag = settings.weixin_connect_route_tag.trim().to_string();
     settings.weixin_connect_work_dir = settings.weixin_connect_work_dir.trim().to_string();
     settings.weixin_connect_model = settings.weixin_connect_model.trim().to_string();
@@ -2216,6 +2225,18 @@ mod tests {
         }))
         .unwrap();
         assert!(explicitly_enabled.codex_app_answer_outline_enabled);
+    }
+
+    #[test]
+    fn settings_deserialize_defaults_relay_balance_to_opt_in() {
+        let defaults: BackendSettings = serde_json::from_str("{}").unwrap();
+        assert!(!defaults.codex_app_relay_balance_enabled);
+
+        let enabled: BackendSettings = serde_json::from_value(json!({
+            "codexAppRelayBalanceEnabled": true
+        }))
+        .unwrap();
+        assert!(enabled.codex_app_relay_balance_enabled);
     }
 
     #[test]
@@ -3123,6 +3144,7 @@ experimental_bearer_token = "sk-existing""#
                 "weixinConnectToken": " token ",
                 "weixinConnectAccountId": " bot-1 ",
                 "weixinConnectAllowFrom": " user@im.wechat ",
+                "weixinConnectShareUrl": " https://example.test/clawbot ",
                 "weixinConnectRouteTag": " route ",
                 "weixinConnectWorkDir": " /workspace ",
                 "weixinConnectModel": " gpt-test ",
@@ -3139,6 +3161,7 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.weixin_connect_token, "token");
         assert_eq!(updated.weixin_connect_account_id, "bot-1");
         assert_eq!(updated.weixin_connect_allow_from, "user@im.wechat");
+        assert_eq!(updated.weixin_connect_share_url, "https://example.test/clawbot");
         assert_eq!(updated.weixin_connect_route_tag, "route");
         assert_eq!(updated.weixin_connect_work_dir, "/workspace");
         assert_eq!(updated.weixin_connect_model, "gpt-test");

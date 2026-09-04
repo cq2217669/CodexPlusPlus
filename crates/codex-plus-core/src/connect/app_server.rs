@@ -99,6 +99,20 @@ fn resolve_codex_executable(executable: &str) -> &str {
     }
 }
 
+fn build_app_server_command(executable: &Path, work_dir: &Path) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .arg("app-server")
+        .current_dir(work_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(crate::windows_create_no_window());
+    command
+}
+
 impl CodexAppServer {
     pub async fn start(config: AppServerConfig) -> anyhow::Result<Self> {
         let configured_executable = if config.executable.trim().is_empty() {
@@ -106,17 +120,26 @@ impl CodexAppServer {
         } else {
             config.executable.trim()
         };
-        let executable = resolve_codex_executable(configured_executable);
-        validate_codex_executable(executable)?;
-        let mut command = Command::new(executable);
-        command
-            .arg("app-server")
-            .current_dir(&config.work_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command.spawn().map_err(|error| {
+        let resolved_executable = resolve_codex_executable(configured_executable);
+        validate_codex_executable(resolved_executable)?;
+        let mut executable = PathBuf::from(resolved_executable);
+        let first_spawn = build_app_server_command(&executable, &config.work_dir).spawn();
+        let mut child = match first_spawn {
+            Ok(child) => Ok(child),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && resolved_executable.eq_ignore_ascii_case("codex") =>
+            {
+                if let Some(fallback) = crate::app_paths::find_standalone_codex_cli() {
+                    executable = fallback;
+                    build_app_server_command(&executable, &config.work_dir).spawn()
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
+        .map_err(|error| {
             let hint = match error.kind() {
                 std::io::ErrorKind::NotFound => {
                     "：找不到该文件；填 Codex CLI 可执行文件的完整路径，或确保 codex 在 PATH 里"
@@ -124,7 +147,10 @@ impl CodexAppServer {
                 std::io::ErrorKind::PermissionDenied => "：没有执行权限",
                 _ => "",
             };
-            anyhow::anyhow!("无法启动 Codex app-server（{executable}）{hint}（{error}）")
+            anyhow::anyhow!(
+                "无法启动 Codex app-server（{}）{hint}（{error}）",
+                executable.display()
+            )
         })?;
         let stdin = child
             .stdin

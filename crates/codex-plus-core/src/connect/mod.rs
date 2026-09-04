@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
-use self::app_server::{AppServerConfig, AppServerTurnResult, CodexAppServer};
+use self::app_server::{AppServerConfig, CodexAppServer};
 use self::session_store::{ConnectSessionStore, ConnectState};
 use self::weixin::{WeixinClient, WeixinMessage};
 
@@ -304,7 +304,7 @@ async fn process_weixin_message(
     } else {
         turn_result.reply.trim()
     };
-    let reply_with_footer = append_reply_footer(reply, &turn_result, &app_config.work_dir);
+    let reply_with_footer = append_reply_footer(reply);
     client
         .send_text_chunks(
             &message.from_user_id,
@@ -314,47 +314,8 @@ async fn process_weixin_message(
         .await
 }
 
-fn append_reply_footer(
-    reply: &str,
-    turn: &AppServerTurnResult,
-    work_dir: &std::path::Path,
-) -> String {
-    let model = if turn.model.trim().is_empty() {
-        "Codex"
-    } else {
-        turn.model.trim()
-    };
-    let context = match (turn.usage.context_used, turn.usage.context_window) {
-        (Some(used), Some(window)) if window > 0 => {
-            let percent = ((used as f64 / window as f64) * 100.0).round() as u64;
-            format!("ctx {}%", percent.min(100))
-        }
-        _ => "ctx --".to_string(),
-    };
-    format!(
-        "{}\n\n{} · {}\n{}",
-        reply.trim(),
-        model,
-        context,
-        compact_work_dir(work_dir)
-    )
-}
-
-fn compact_work_dir(work_dir: &std::path::Path) -> String {
-    let path = work_dir.to_string_lossy();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = std::path::Path::new(&home).to_string_lossy();
-        if path == home {
-            return "~".to_string();
-        }
-        if let Some(relative) = path
-            .strip_prefix(home.as_ref())
-            .and_then(|value| value.strip_prefix('/').filter(|value| !value.is_empty()))
-        {
-            return format!("~/{relative}");
-        }
-    }
-    path.into_owned()
+fn append_reply_footer(reply: &str) -> String {
+    format!("{}\n\n轩++", reply.trim())
 }
 
 fn is_allowed_peer(allow_from: &str, peer: &str) -> bool {
@@ -425,33 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_footer_contains_model_context_and_compact_work_dir() {
-        let turn = AppServerTurnResult {
-            reply: "完成了".to_string(),
-            model: "gpt-5.5".to_string(),
-            usage: app_server::TurnUsage {
-                context_used: Some(41772),
-                context_window: Some(1_000_000),
-            },
-        };
-        let footer = append_reply_footer(
-            "完成了",
-            &turn,
-            std::path::Path::new("/Users/tester/project"),
-        );
-        assert!(footer.contains("gpt-5.5 · ctx 4%"));
-        assert!(footer.ends_with("/Users/tester/project"));
-    }
-
-    #[test]
-    fn reply_footer_does_not_invent_context_when_usage_is_missing() {
-        let turn = AppServerTurnResult {
-            reply: "done".to_string(),
-            model: String::new(),
-            usage: app_server::TurnUsage::default(),
-        };
-        let footer = append_reply_footer("done", &turn, std::path::Path::new("/tmp/work"));
-        assert!(footer.contains("Codex · ctx --"));
-        assert!(footer.ends_with("/tmp/work"));
+    fn reply_footer_is_fixed_to_xuanplusplus() {
+        assert_eq!(append_reply_footer("完成了"), "完成了\n\n轩++");
     }
 }

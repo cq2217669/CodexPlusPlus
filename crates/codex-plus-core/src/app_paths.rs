@@ -317,6 +317,46 @@ pub fn find_standalone_codex_app_dir() -> Option<PathBuf> {
     None
 }
 
+/// 查找 Codex Desktop 下载到用户目录的原生 CLI。
+///
+/// 新版 Windows 桌面端会把 CLI 放在
+/// `%LOCALAPPDATA%\OpenAI\Codex\bin\<内容哈希>\codex.exe`，它既不在桌面应用
+/// 根目录，也不一定已经进入当前 GUI 进程继承到的 PATH。
+pub fn find_standalone_codex_cli() -> Option<PathBuf> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA")?;
+    find_standalone_codex_cli_from_root(&PathBuf::from(local_appdata).join("OpenAI").join("Codex"))
+}
+
+pub fn find_standalone_codex_cli_from_root(root: &Path) -> Option<PathBuf> {
+    let bin_dir = root.join("bin");
+    let mut candidates = Vec::new();
+    let direct = bin_dir.join("codex.exe");
+    if direct.is_file() {
+        candidates.push(direct);
+    }
+    if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let candidate = entry.path().join("codex.exe");
+            if candidate.is_file() {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.into_iter().max_by(|left, right| {
+        let left_modified = left
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        let right_modified = right
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        left_modified
+            .cmp(&right_modified)
+            .then_with(|| left.cmp(right))
+    })
+}
+
 pub fn resolve_codex_app_dir_with_saved(
     app_dir: Option<&Path>,
     saved_app_path: Option<&str>,

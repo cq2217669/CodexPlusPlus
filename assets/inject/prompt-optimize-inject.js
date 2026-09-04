@@ -14,8 +14,8 @@
  * self-destroys when the feature is disabled or the bridge is missing.
  */
 (() => {
-  const SCRIPT_VERSION = "1.0.2";
-  const INSTANCE_REVISION = "official-2026-09-v3";
+  const SCRIPT_VERSION = "1.0.3";
+  const INSTANCE_REVISION = "official-2026-09-v4";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -389,7 +389,7 @@
       [${PANEL_ATTR}] button:disabled{opacity:.5;cursor:not-allowed}
       .cpo-toast{all:initial;position:fixed;left:50%;bottom:56px;transform:translateX(-50%);z-index:2147483001;background:#111;color:#fff;padding:9px 16px;border-radius:999px;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.24);max-width:min(560px,calc(100vw - 40px))}
       .cpo-toast.cpo-toast-error{background:#b42318}
-      [data-cpo-composer-${INSTANCE_REVISION}]{display:inline-flex;align-items:center}
+      [data-cpo-composer-${INSTANCE_REVISION}]{display:inline-flex;align-items:center;margin-right:8px}
     `;
     document.documentElement.appendChild(style);
   }
@@ -415,14 +415,14 @@
         ? "正在优化，点击取消"
         : state === "restore"
           ? "还原原文"
-          : "优化提示词（右键设置）";
+          : "润色（右键设置）";
   }
 
   function createButton() {
     const button = document.createElement("button");
     button.setAttribute(BUTTON_ATTR, "true");
     button.type = "button";
-    button.setAttribute("aria-label", "Prompt Optimize");
+    button.setAttribute("aria-label", "润色");
     button.textContent = BUTTON_ICON;
     button.addEventListener("click", onButtonClick);
     button.addEventListener("contextmenu", onButtonContextMenu);
@@ -518,7 +518,7 @@
   async function runOptimize() {
     const epoch = runtime.epoch;
     if (!(await refreshSettings())) {
-      if (!runtime.bridgeBroken) showToast("无法读取 Prompt Optimize 配置", "error");
+      if (!runtime.bridgeBroken) showToast("无法读取润色配置", "error");
       return;
     }
     if (!runtime.settings.enabled) {
@@ -635,8 +635,8 @@
       ? settings.style
       : "structured";
     overlay.innerHTML = `
-      <div class="cpo-card" role="dialog" aria-modal="true" aria-label="Prompt Optimize 设置">
-        <h2>Prompt Optimize 设置</h2>
+      <div class="cpo-card" role="dialog" aria-modal="true" aria-label="润色设置">
+        <h2>润色设置</h2>
         <p class="cpo-sub">配置外部 LLM；API Key 只保存在 Xuan++ 本地设置中。</p>
         <div class="cpo-row">
           <div class="cpo-field">

@@ -263,6 +263,7 @@ type BackendSettings = {
   codexAppStepwiseMaxOutputTokens: number;
   codexAppStepwiseTimeoutMs: number;
   codexAppPromptOptimizeEnabled: boolean;
+  codexAppRelayBalanceEnabled: boolean;
   codexAppPromptOptimizeProtocol: "openai" | "anthropic";
   codexAppPromptOptimizeBaseUrl: string;
   codexAppPromptOptimizeApiKey: string;
@@ -287,6 +288,7 @@ type BackendSettings = {
   weixinConnectToken: string;
   weixinConnectAccountId: string;
   weixinConnectAllowFrom: string;
+  weixinConnectShareUrl: string;
   weixinConnectRouteTag: string;
   weixinConnectWorkDir: string;
   weixinConnectModel: string;
@@ -927,6 +929,7 @@ const defaultSettings: BackendSettings = {
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
   codexAppPromptOptimizeEnabled: false,
+  codexAppRelayBalanceEnabled: false,
   codexAppPromptOptimizeProtocol: "openai",
   codexAppPromptOptimizeBaseUrl: "",
   codexAppPromptOptimizeApiKey: "",
@@ -951,6 +954,7 @@ const defaultSettings: BackendSettings = {
   weixinConnectToken: "",
   weixinConnectAccountId: "",
   weixinConnectAllowFrom: "",
+  weixinConnectShareUrl: "",
   weixinConnectRouteTag: "",
   weixinConnectWorkDir: "",
   weixinConnectModel: "",
@@ -2546,7 +2550,7 @@ export function App() {
     const result = await run(() =>
       call<PromptOptimizeTestResult>("test_prompt_optimize_settings", { settings }),
     );
-    if (result) showNotice("Prompt Optimize 测试", result.message, result.status);
+    if (result) showNotice(t("润色测试"), result.message, result.status);
   };
 
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
@@ -3235,6 +3239,8 @@ export function App() {
               onUseDesktopCodexCli={() => void useDesktopCodexCli()}
               onOpenQr={(url) => void openExternalUrl(url)}
               onCopyQr={(url) => void copyText(url, t("微信登录链接已复制。"))}
+              onOpenInviteUrl={(url) => void openExternalUrl(url)}
+              onCopyInviteUrl={(url) => void copyText(url, t("邀请链接已复制。"))}
             />
           ) : null}
           {route === "enhance" ? (
@@ -3635,6 +3641,8 @@ function WeixinConnectScreen({
   onUseDesktopCodexCli,
   onOpenQr,
   onCopyQr,
+  onOpenInviteUrl,
+  onCopyInviteUrl,
 }: {
   form: BackendSettings;
   status: WeixinConnectStatusResult | null;
@@ -3650,6 +3658,8 @@ function WeixinConnectScreen({
   onUseDesktopCodexCli: () => void;
   onOpenQr: (url: string) => void;
   onCopyQr: (url: string) => void;
+  onOpenInviteUrl: (url: string) => void;
+  onCopyInviteUrl: (url: string) => void;
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const workDirOptions = useMemo(
@@ -3794,6 +3804,38 @@ function WeixinConnectScreen({
                   placeholder="user@im.wechat"
                   value={form.weixinConnectAllowFrom}
                 />
+              </label>
+              <label className="field">
+                <span>{t("对外会话链接")}</span>
+                <div className="weixin-path-row">
+                  <Input
+                    className="h-10"
+                    onChange={(event) => onFormChange({ ...form, weixinConnectShareUrl: event.target.value })}
+                    placeholder="https://..."
+                    type="url"
+                    value={form.weixinConnectShareUrl}
+                  />
+                  <Button
+                    disabled={!form.weixinConnectShareUrl.trim()}
+                    onClick={() => onCopyInviteUrl(form.weixinConnectShareUrl)}
+                    size="icon"
+                    title={t("复制邀请链接")}
+                    type="button"
+                    variant="outline"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    disabled={!form.weixinConnectShareUrl.trim()}
+                    onClick={() => onOpenInviteUrl(form.weixinConnectShareUrl)}
+                    size="icon"
+                    title={t("打开邀请链接")}
+                    type="button"
+                    variant="outline"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </Button>
+                </div>
               </label>
               <label className="field">
                 <span>{t("账号标识")}</span>
@@ -4385,7 +4427,10 @@ function EnhanceScreen({
               <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("输入增强")} detail={t("控制发送前的输入框增强能力。")}>
-              <FeatureToggle title="Prompt Optimize" detail={t("在输入框旁提供 ✨ 一键优化：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启轩++生效。")} checked={form.codexAppPromptOptimizeEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPromptOptimizeEnabled", value)} />
+              <FeatureToggle title={t("润色")} detail={t("在输入框旁提供 ✨ 一键润色：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启轩++生效。")} checked={form.codexAppPromptOptimizeEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPromptOptimizeEnabled", value)} />
+            </FeatureGroup>
+            <FeatureGroup title={t("用量监控")} detail={t("查看当前中转账户的余额、模型用量和 Token 明细。")}>
+              <FeatureToggle title={t("中转余额")} detail={t("在 Codex 顶部显示当前中转余额；点击可查看日期范围、模型消耗、实际扣费倍率和刷新速率。默认读取 /v1/usage，启停后需重启轩++生效。")} checked={form.codexAppRelayBalanceEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppRelayBalanceEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
@@ -6200,7 +6245,7 @@ function SettingsScreen({
             </div>
           </div>
           <div className="settings-block prompt-optimize-settings-block" id={SETTINGS_PROMPT_OPTIMIZE_SECTION_ID}>
-            <div className="section-title">Prompt Optimize</div>
+            <div className="section-title">{t("润色")}</div>
             <div className="stepwise-settings-section">{t("连接")}</div>
             <div className="form-row">
               <Field label={t("协议")}>

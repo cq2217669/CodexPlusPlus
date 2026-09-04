@@ -77,6 +77,15 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"request": {"lastUserMessage": "请继续", "lastAssistantMessage": "已完成"}}),
         ),
         ("/stepwise/test", json!({})),
+        ("/relay-balance/query", json!({})),
+        (
+            "/workspace/unexecuted-tasks/preview",
+            json!({"workspace_path": "C:/workspace"}),
+        ),
+        (
+            "/workspace/unexecuted-tasks/delete",
+            json!({"workspace_path": "C:/workspace"}),
+        ),
         ("/delete", json!({"session_id": "s1", "title": "First"})),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
@@ -672,6 +681,24 @@ async fn backend_status_includes_active_official_usage_alert_setting() {
 async fn data_routes_forward_payloads_to_data_service() {
     let ctx = test_context();
 
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/workspace/unexecuted-tasks/preview",
+            json!({"workspace_path": "C:/workspace"}),
+        )
+        .await["count"],
+        2
+    );
+    assert_eq!(
+        handle_bridge_request(
+            ctx.clone(),
+            "/workspace/unexecuted-tasks/delete",
+            json!({"workspacePath": "C:/workspace"}),
+        )
+        .await["deleted_count"],
+        2
+    );
     assert_eq!(
         handle_bridge_request(
             ctx.clone(),
@@ -1496,6 +1523,28 @@ impl BridgeDataService for FakeData {
             undo_token: Some(format!("undo-{}", session.session_id)),
             backup_path: None,
         })
+    }
+
+    async fn preview_unexecuted_workspace_tasks(
+        &self,
+        workspace_path: String,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "workspace_path": workspace_path,
+            "count": 2,
+        }))
+    }
+
+    async fn delete_unexecuted_workspace_tasks(
+        &self,
+        workspace_path: String,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "workspace_path": workspace_path,
+            "deleted_count": 2,
+        }))
     }
 
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {

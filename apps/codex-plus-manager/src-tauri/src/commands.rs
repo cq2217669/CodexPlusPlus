@@ -84,6 +84,7 @@ struct WeixinQrSession {
 
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
+    task: tauri::async_runtime::JoinHandle<()>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -997,7 +998,7 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
 pub fn start_weixin_connect_from_saved_settings() {
     let settings = SettingsStore::default().load().unwrap_or_default();
     if settings.weixin_connect_enabled && !settings.weixin_connect_token.trim().is_empty() {
-        let _ = spawn_weixin_connect(settings);
+        let _ = spawn_weixin_connect(settings, false);
     }
 }
 
@@ -1180,8 +1181,15 @@ pub fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinC
             current_weixin_status(),
         );
     }
-    match spawn_weixin_connect(settings) {
-        Ok(status) => ok("微信连接正在启动。", status),
+    match spawn_weixin_connect(settings, true) {
+        Ok((status, restarted)) => ok(
+            if restarted {
+                "微信连接正在使用最新设置重新启动。"
+            } else {
+                "微信连接正在启动。"
+            },
+            status,
+        ),
         Err(error) => failed(
             &format!("启动微信连接失败：{error}"),
             current_weixin_status(),
@@ -1191,34 +1199,21 @@ pub fn weixin_connect_start() -> CommandResult<codex_plus_core::connect::WeixinC
 
 #[tauri::command]
 pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
-    let stopping = weixin_runtime()
-        .lock()
-        .ok()
-        .and_then(|runtime| runtime.as_ref().map(|runtime| Arc::clone(&runtime.stop)))
-        .map(|stop| {
-            stop.store(true, Ordering::SeqCst);
-            true
-        })
-        .unwrap_or(false);
+    let stopped = stop_weixin_runtime_slot(weixin_runtime());
     let store = SettingsStore::default();
     if let Ok(mut settings) = store.load() {
         settings.weixin_connect_enabled = false;
         let _ = store.save(&settings);
     }
     if let Ok(mut status) = weixin_status().lock() {
-        if stopping {
-            status.state = "stopping".to_string();
-            status.message = "正在停止微信连接，当前长轮询结束后生效。".to_string();
-        } else {
-            status.state = "stopped".to_string();
-            status.message = "微信连接已停止。".to_string();
-        }
+        status.state = "stopped".to_string();
+        status.message = "微信连接已停止。".to_string();
     }
     ok(
-        if stopping {
-            "正在停止微信连接。"
-        } else {
+        if stopped {
             "微信连接已停止。"
+        } else {
+            "微信连接当前未运行。"
         },
         current_weixin_status(),
     )
@@ -1226,6 +1221,12 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
 
 #[tauri::command]
 pub fn find_desktop_codex_cli() -> CommandResult<Value> {
+    if let Some(path) = codex_plus_core::app_paths::find_standalone_codex_cli() {
+        return ok(
+            "已填入桌面版下载的 Codex CLI。",
+            json!({ "path": path.to_string_lossy() }),
+        );
+    }
     let settings = match SettingsStore::default().load() {
         Ok(settings) => settings,
         Err(error) => {
@@ -1261,7 +1262,8 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
 
 fn spawn_weixin_connect(
     settings: BackendSettings,
-) -> anyhow::Result<codex_plus_core::connect::WeixinConnectStatus> {
+    replace_existing: bool,
+) -> anyhow::Result<(codex_plus_core::connect::WeixinConnectStatus, bool)> {
     let config = codex_plus_core::connect::WeixinConnectConfig {
         base_url: settings.weixin_connect_base_url,
         token: settings.weixin_connect_token,
@@ -1277,27 +1279,31 @@ fn spawn_weixin_connect(
     if config.token.is_empty() {
         anyhow::bail!("微信连接 token 为空");
     }
+    let account_id = config.account_id.clone();
     let stop = Arc::new(AtomicBool::new(false));
+    let runtime_stop = Arc::clone(&stop);
+    let (start_tx, mut start_rx) = tauri::async_runtime::channel(1);
     let mut runtime = weixin_runtime()
         .lock()
         .map_err(|_| anyhow::anyhow!("微信连接运行锁已损坏"))?;
-    if runtime.is_some() {
+    let restarted = if replace_existing {
+        runtime.take().is_some_and(|previous| {
+            previous.stop.store(true, Ordering::SeqCst);
+            previous.task.abort();
+            true
+        })
+    } else if runtime.is_some() {
         anyhow::bail!("微信连接已在运行或正在停止");
-    }
-    *runtime = Some(WeixinRuntime {
-        stop: Arc::clone(&stop),
-    });
-    drop(runtime);
+    } else {
+        false
+    };
     let status = weixin_status();
-    if let Ok(mut current) = status.lock() {
-        current.state = "starting".to_string();
-        current.message = "正在启动微信连接...".to_string();
-        current.account_id = config.account_id.clone();
-        current.has_token = true;
-    }
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
-    tauri::async_runtime::spawn(async move {
+    let task = tauri::async_runtime::spawn(async move {
+        if start_rx.recv().await.is_none() {
+            return;
+        }
         if let Err(error) =
             codex_plus_core::connect::run_weixin_connect(config, stop, Arc::clone(&task_status))
                 .await
@@ -1315,7 +1321,37 @@ fn spawn_weixin_connect(
             *runtime = None;
         }
     });
-    Ok(current_weixin_status())
+    *runtime = Some(WeixinRuntime {
+        stop: runtime_stop,
+        task,
+    });
+    drop(runtime);
+    if let Ok(mut current) = status.lock() {
+        current.state = "starting".to_string();
+        current.message = if restarted {
+            "正在使用最新设置重新启动微信连接...".to_string()
+        } else {
+            "正在启动微信连接...".to_string()
+        };
+        current.account_id = account_id;
+        current.has_token = true;
+    }
+    if start_tx.try_send(()).is_err() {
+        stop_weixin_runtime_slot(weixin_runtime());
+        anyhow::bail!("无法启动微信连接后台任务");
+    }
+    Ok((current_weixin_status(), restarted))
+}
+
+fn stop_weixin_runtime_slot(runtime: &Mutex<Option<WeixinRuntime>>) -> bool {
+    let current = runtime.lock().ok().and_then(|mut runtime| runtime.take());
+    if let Some(current) = current {
+        current.stop.store(true, Ordering::SeqCst);
+        current.task.abort();
+        true
+    } else {
+        false
+    }
 }
 
 fn weixin_qr_session() -> &'static Mutex<Option<WeixinQrSession>> {
@@ -6099,6 +6135,21 @@ mod tests {
     use super::*;
 
     static CODEX_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn stopping_weixin_runtime_releases_the_slot_immediately() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let task = tauri::async_runtime::spawn(std::future::pending::<()>());
+        let runtime = Mutex::new(Some(WeixinRuntime {
+            stop: Arc::clone(&stop),
+            task,
+        }));
+
+        assert!(stop_weixin_runtime_slot(&runtime));
+        assert!(stop.load(Ordering::SeqCst));
+        assert!(runtime.lock().unwrap().is_none());
+        assert!(!stop_weixin_runtime_slot(&runtime));
+    }
 
     fn lock_codex_home_for_test() -> std::sync::MutexGuard<'static, ()> {
         CODEX_HOME_TEST_LOCK
