@@ -1,6 +1,6 @@
 export const DEFAULT_AUTO_COMPACT_PERCENT = "90%";
 
-/** 校验用户输入的自动压缩比例；空值由 Codex++ 保存为明确的 90% 默认值。 */
+/** 校验用户输入的自动压缩比例；空值由 Xuan++ 保存为明确的 90% 默认值。 */
 export function isValidAutoCompactPercent(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;

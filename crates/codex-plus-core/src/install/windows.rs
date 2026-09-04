@@ -43,11 +43,11 @@ pub fn build_windows_entrypoint_plan(options: &InstallOptions) -> WindowsEntrypo
     let quiet_uninstall_command = format!("{uninstall_command} /S");
     WindowsEntrypointPlan {
         silent_shortcut: install_root
-            .join("Codex++.lnk")
+            .join("Xuan++.lnk")
             .to_string_lossy()
             .to_string(),
         manager_shortcut: install_root
-            .join("Codex++ 管理工具.lnk")
+            .join("Xuan++ 管理工具.lnk")
             .to_string_lossy()
             .to_string(),
         install_root: install_root.to_string_lossy().to_string(),
@@ -73,13 +73,13 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     create_entrypoint_shortcut(
         PathBuf::from(&plan.silent_shortcut),
         PathBuf::from(&plan.launcher_path),
-        "Launch Codex++ silently",
+        "Launch Xuan++ silently",
         PathBuf::from(&plan.silent_icon_path),
     )?;
     create_entrypoint_shortcut(
         PathBuf::from(&plan.manager_shortcut),
         PathBuf::from(&plan.manager_path),
-        "Open Codex++ management tool",
+        "Open Xuan++ management tool",
         PathBuf::from(&plan.manager_icon_path),
     )?;
     register_url_protocol(&plan.manager_path)?;
@@ -155,7 +155,7 @@ fn write_uninstall_registration(plan: &WindowsEntrypointPlan) -> anyhow::Result<
         .to_string_lossy()
         .to_string();
     for (name, value) in [
-        ("DisplayName", "Codex++".to_string()),
+        ("DisplayName", "Xuan++".to_string()),
         ("DisplayVersion", crate::version::VERSION.to_string()),
         ("Publisher", "BigPizzaV3".to_string()),
         ("DisplayIcon", plan.manager_icon_path.clone()),
@@ -172,7 +172,7 @@ fn write_uninstall_registration(plan: &WindowsEntrypointPlan) -> anyhow::Result<
 fn register_url_protocol(manager_path: &str) -> anyhow::Result<()> {
     register_url_protocol_key(
         URL_PROTOCOL_SUBKEY,
-        "URL:Codex++ Import Protocol",
+        "URL:Xuan++ Import Protocol",
         manager_path,
     )?;
     register_url_protocol_key(

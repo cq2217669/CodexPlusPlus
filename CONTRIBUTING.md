@@ -1,13 +1,13 @@
-# Contributing to CodexPlusPlus
+# Contributing to Xuan++
 
-Thank you for your interest in contributing to CodexPlusPlus!
+Thank you for your interest in contributing to Xuan++!
 
 ## Development Setup
 
 1. **Clone the repository**
    ```bash
    git clone https://github.com/BigPizzaV3/CodexPlusPlus.git
-   cd CodexPlusPlus
+   cd XuanPlusPlus
    ```
 
 2. **Install Rust toolchain**
@@ -30,10 +30,10 @@ Thank you for your interest in contributing to CodexPlusPlus!
 ## Project Structure
 
 ```
-CodexPlusPlus/
+XuanPlusPlus/
 ├── crates/
 │   ├── codex-plus-data/    # Data handling and provider sync
-│   └── codex-plus-core/    # Core Codex++ logic
+│   └── codex-plus-core/    # Core Xuan++ logic
 └── README.md               # Project documentation
 ```
 

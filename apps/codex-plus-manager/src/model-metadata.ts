@@ -150,7 +150,7 @@ export function replaceModelMetadataForSlug(
   const map = parseModelMetadataMap(value);
   const imported = filteredMetadata(metadata);
   const existing = map[slug];
-  // Codex++ 中已经编辑过的显示名称是用户意图，导入供应商 metadata 时不要覆盖它。
+  // Xuan++ 中已经编辑过的显示名称是用户意图，导入供应商 metadata 时不要覆盖它。
   if (typeof existing?.display_name === "string" && existing.display_name.trim()) {
     imported.display_name = existing.display_name;
   }

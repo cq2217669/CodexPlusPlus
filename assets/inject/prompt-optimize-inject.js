@@ -1,21 +1,21 @@
 /*
- * Codex++ built-in Prompt Optimize (official rewrite).
+ * Xuan++ built-in Prompt Optimize (official rewrite).
  *
  * Reference: community "Prompt Optimize" market script v1.0.3. This built-in
  * version replaces the market implementation:
- *   - settings are stored in the Codex++ settings store, not renderer
- *     localStorage; the API key never leaves the Codex++ backend;
- *   - optimization requests go through the Codex++ bridge
+ *   - settings are stored in the Xuan++ settings store, not renderer
+ *     localStorage; the API key never leaves the Xuan++ backend;
+ *   - optimization requests go through the Xuan++ bridge
  *     /prompt-optimize/generate so the upstream request and key handling stay
  *     in the Rust side.
  *
- * Host contract: injected by the Codex++ launcher into the Codex renderer
+ * Host contract: injected by the Xuan++ launcher into the Codex renderer
  * (app://-), where window.__codexSessionDeleteBridge is available. The script
  * self-destroys when the feature is disabled or the bridge is missing.
  */
 (() => {
-  const SCRIPT_VERSION = "1.0.0";
-  const INSTANCE_REVISION = "official-2026-09-v1";
+  const SCRIPT_VERSION = "1.0.2";
+  const INSTANCE_REVISION = "official-2026-09-v3";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -68,6 +68,7 @@
     mutationTimer: 0,
     toastTimer: 0,
     resizeHandler: null,
+    shortcutHandler: null,
     disposed: false,
     loading: false,
     epoch: 0,
@@ -109,11 +110,11 @@
 
   function bridgeCall(path, payload) {
     if (typeof window[BRIDGE_KEY] !== "function") {
-      return Promise.reject(new Error("Codex++ 桥未就绪"));
+      return Promise.reject(new Error("Xuan++ 桥未就绪"));
     }
     let timer = 0;
     const timeout = new Promise((resolve) => {
-      timer = window.setTimeout(() => resolve({ error: "Codex++ 桥请求超时" }), BRIDGE_TIMEOUT_MS);
+      timer = window.setTimeout(() => resolve({ error: "Xuan++ 桥请求超时" }), BRIDGE_TIMEOUT_MS);
     });
     const request = Promise.resolve().then(() => window[BRIDGE_KEY](path, payload || {}));
     return Promise.race([request, timeout]).finally(() => window.clearTimeout(timer));
@@ -184,6 +185,23 @@
     return /^(send|stop|提交|发送|停止|run|执行)$/i.test(text.trim());
   }
 
+  function isModelLikeLabel(text) {
+    const label = text.trim();
+    if (!label) return false;
+    if (/(model|模型)/i.test(label)) return true;
+    return /^(gpt|o[1-9]|claude|gemini|deepseek|qwen|kimi|moonshot|mistral|llama|sonnet|opus|haiku)[a-z0-9._-]*/i.test(label);
+  }
+
+  function modelSelectorBeforeSend(clickables, send) {
+    if (!(send instanceof HTMLElement)) return null;
+    const sendRect = send.getBoundingClientRect();
+    return clickables
+      .filter((button) => button !== send)
+      .filter((button) => isModelLikeLabel(normalizeText(button.getAttribute("aria-label") || button.textContent || "")))
+      .filter((button) => button.getBoundingClientRect().right <= sendRect.left + 2)
+      .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] || null;
+  }
+
   function findComposerInput() {
     const editable = Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
       .filter((element) => isVisible(element) && !isInSidebar(element))
@@ -199,6 +217,39 @@
       .filter((element) => isVisible(element))
       .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
     return bottom[0] || null;
+  }
+
+  function isMacPlatform() {
+    const platform = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "";
+    return /mac|iphone|ipad|ipod/i.test(platform);
+  }
+
+  function eventTargetsComposer(event) {
+    const input = findComposerInput();
+    const target = event.target;
+    if (!(input instanceof Element) || !(target instanceof Node)) return false;
+    return input === target || input.contains(target);
+  }
+
+  function isPromptOptimizeShortcut(event) {
+    if (event.key !== "Enter" || event.repeat || event.isComposing || event.keyCode === 229) return false;
+    if (event.altKey || event.shiftKey) return false;
+    if (isMacPlatform()) return event.metaKey && !event.ctrlKey;
+    return event.ctrlKey && !event.metaKey;
+  }
+
+  function onPromptOptimizeShortcut(event) {
+    if (runtime.disposed || event.defaultPrevented) return;
+    if (!isPromptOptimizeShortcut(event) || !eventTargetsComposer(event)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    onButtonClick(event);
+  }
+
+  function installPromptOptimizeShortcut() {
+    if (runtime.shortcutHandler) return;
+    runtime.shortcutHandler = onPromptOptimizeShortcut;
+    window.addEventListener("keydown", runtime.shortcutHandler, true);
   }
 
   function readComposerText(input) {
@@ -386,7 +437,7 @@
       if (!(node instanceof Element)) continue;
       const role = node.getAttribute && node.getAttribute("role");
       const label = String(node.getAttribute && node.getAttribute("aria-label") || "");
-      if (/composer|composer-surface/i.test(label)) return { node, kind: "prepend" };
+      if (/composer|composer-surface/i.test(label)) return { node, before: node.firstChild };
       if (role === "textbox") continue;
       const clickables = Array.from(node.querySelectorAll("button"))
         .filter((el) => isVisible(el))
@@ -396,8 +447,11 @@
         return isSendLikeLabel(text);
       });
       if (send) {
-        const actions = send.closest("div");
-        return { node: actions || send.parentNode, kind: "append" };
+        const modelSelector = modelSelectorBeforeSend(clickables, send);
+        if (modelSelector && modelSelector.parentElement) {
+          return { node: modelSelector.parentElement, before: modelSelector };
+        }
+        return { node: send.parentElement || send.parentNode, before: send };
       }
     }
     return null;
@@ -417,13 +471,12 @@
     }
     const anchor = composerInsertAnchor(input);
     const button = createButton();
-    if (anchor && anchor.kind === "prepend") {
+    if (anchor && anchor.node instanceof Element) {
       const host = document.createElement("span");
       host.setAttribute(`data-cpo-composer-${INSTANCE_REVISION}`, "true");
       host.appendChild(button);
-      anchor.node.insertBefore(host, anchor.node.firstChild);
-    } else if (anchor && anchor.node instanceof Element) {
-      anchor.node.appendChild(button);
+      const before = anchor.before?.parentNode === anchor.node ? anchor.before : null;
+      anchor.node.insertBefore(host, before);
     } else {
       button.style.position = "fixed";
       button.style.zIndex = "2147483002";
@@ -456,6 +509,8 @@
     if (runtime.mutationTimer) window.clearTimeout(runtime.mutationTimer);
     if (runtime.toastTimer) window.clearTimeout(runtime.toastTimer);
     if (runtime.resizeHandler) window.removeEventListener("resize", runtime.resizeHandler);
+    if (runtime.shortcutHandler) window.removeEventListener("keydown", runtime.shortcutHandler, true);
+    runtime.shortcutHandler = null;
     runtime.disposed = true;
     if (window[API_KEY] === api) window[API_KEY] = undefined;
   }
@@ -582,7 +637,7 @@
     overlay.innerHTML = `
       <div class="cpo-card" role="dialog" aria-modal="true" aria-label="Prompt Optimize 设置">
         <h2>Prompt Optimize 设置</h2>
-        <p class="cpo-sub">配置外部 LLM；API Key 只保存在 Codex++ 本地设置中。</p>
+        <p class="cpo-sub">配置外部 LLM；API Key 只保存在 Xuan++ 本地设置中。</p>
         <div class="cpo-row">
           <div class="cpo-field">
             <label>协议</label>
@@ -746,6 +801,7 @@
       destroyAll();
       return;
     }
+    installPromptOptimizeShortcut();
     installStyle();
     ensureButton();
   }

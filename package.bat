@@ -130,7 +130,7 @@ if errorlevel 1 (
   echo [错误] 复制 codex-plus-plus-manager.exe 失败。
   exit /b 1
 )
-set "ZIP_PATH=%WINDOWS_DIST%\CodexPlusPlus-%VERSION%-windows-x64.zip"
+set "ZIP_PATH=%WINDOWS_DIST%\XuanPlusPlus-%VERSION%-windows-x64.zip"
 tar.exe -a -c -f "%ZIP_PATH%" -C "%APP_DIST%" codex-plus-plus.exe codex-plus-plus-manager.exe
 if errorlevel 1 (
   echo [错误] 便携版 ZIP 生成失败。
@@ -147,14 +147,14 @@ if errorlevel 1 (
   echo [错误] 无法进入 NSIS 脚本目录。
   exit /b 1
 )
-"%MAKENSIS%" /INPUTCHARSET UTF8 "/DVERSION=%VERSION%" CodexPlusPlus.nsi
+"%MAKENSIS%" /INPUTCHARSET UTF8 "/DVERSION=%VERSION%" XuanPlusPlus.nsi
 if errorlevel 1 (
   popd
   echo [错误] NSIS 安装包生成失败。
   exit /b 1
 )
 popd
-set "SETUP_PATH=%WINDOWS_DIST%\CodexPlusPlus-%VERSION%-windows-x64-setup.exe"
+set "SETUP_PATH=%WINDOWS_DIST%\XuanPlusPlus-%VERSION%-windows-x64-setup.exe"
 if not exist "%SETUP_PATH%" (
   echo [错误] 未找到 NSIS 安装包产物。
   exit /b 1

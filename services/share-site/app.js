@@ -156,13 +156,13 @@ async function importSharedSession() {
   if (!sharedSession) return;
   try {
     const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "正在打开 Codex++ 管理工具，请在管理工具中确认导入。";
+    viewNotice.textContent = "正在打开 Xuan++ 管理工具，请在管理工具中确认导入。";
     viewNotice.dataset.type = "success";
     const protocolUrl = `codexplusplus://session?url=${encodeURIComponent(location.href)}`;
     window.location.assign(protocolUrl);
   } catch {
     const viewNotice = document.querySelector("[data-view-notice]");
-    viewNotice.textContent = "无法打开 Codex++ 管理工具，请复制当前链接到管理工具导入。";
+    viewNotice.textContent = "无法打开 Xuan++ 管理工具，请复制当前链接到管理工具导入。";
     viewNotice.dataset.type = "error";
   }
 }

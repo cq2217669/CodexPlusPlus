@@ -420,7 +420,7 @@ fn append_warning(warning: &mut String, message: String) {
 fn community_http_client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(format!(
-            "CodexPlusPlus/{} DreamSkin",
+            "XuanPlusPlus/{} DreamSkin",
             env!("CARGO_PKG_VERSION")
         ))
         .redirect(reqwest::redirect::Policy::none())

@@ -513,7 +513,7 @@ mod runtime_status_tests {
         let targets = vec![
             target(
                 "manager",
-                "Codex++ 管理工具",
+                "Xuan++ 管理工具",
                 "http://127.0.0.1:1420/",
                 "ws://manager",
             ),

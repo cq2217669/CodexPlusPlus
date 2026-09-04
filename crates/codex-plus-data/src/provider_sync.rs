@@ -2476,7 +2476,7 @@ fn create_backup(
             "createdAt": chrono::Utc::now().to_rfc3339(),
             "dbFiles": db_files,
             "changedSessionFiles": changes.len(),
-            "managedBy": "Codex++ provider sync"
+            "managedBy": "Xuan++ provider sync"
         }))?,
     )?;
     Ok(backup_dir)
@@ -2504,7 +2504,7 @@ fn create_session_index_cleanup_backup(
         "createdAt": chrono::Utc::now().to_rfc3339(),
         "snapshotSha256": plan.snapshot_sha256,
         "prunedSessionIndexEntries": removed_entries,
-        "managedBy": "Codex++ provider sync"
+        "managedBy": "Xuan++ provider sync"
     }))
     .map_err(|error| cleanup_apply_error(error, Some(backup_dir.clone())))?;
     fs::write(backup_dir.join("metadata.json"), metadata)
@@ -4036,7 +4036,10 @@ fn prune_backups(home: &Path) -> anyhow::Result<()> {
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        if value.get("managedBy").and_then(Value::as_str) == Some("Codex++ provider sync") {
+        if matches!(
+            value.get("managedBy").and_then(Value::as_str),
+            Some("Xuan++ provider sync" | "Codex++ provider sync")
+        ) {
             managed.push(path);
         }
     }

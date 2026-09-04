@@ -2,7 +2,7 @@
 
 ## Goal
 
-Prevent Codex++ from injecting the Stepwise runtime when Stepwise is disabled, and
+Prevent Xuan++ from injecting the Stepwise runtime when Stepwise is disabled, and
 ensure a runtime that was already active cannot recreate its floating UI after the
 setting is turned off.
 
@@ -25,7 +25,7 @@ with `state.settings?.enabled === true`. Its disabled path will call
 `stopRuntime()`, which removes the root, style, observer, and timer.
 
 Changing the setting changes the new-document bundle, so the UI copy will state
-that restarting Codex++ is required for the change to take effect.
+that restarting Xuan++ is required for the change to take effect.
 
 ## Validation
 

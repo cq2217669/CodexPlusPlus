@@ -422,13 +422,13 @@ fn app_paths_saved_path_is_used_when_no_explicit_path_is_provided() {
 #[test]
 fn app_paths_rejects_codex_plus_plus_install_dir_as_codex_app() {
     let temp = tempfile::tempdir().unwrap();
-    let manager = temp.path().join("Programs").join("Codex++");
+    let manager = temp.path().join("Programs").join("Xuan++");
     std::fs::create_dir_all(&manager).unwrap();
-    std::fs::write(manager.join("Codex++ Manager.exe"), "").unwrap();
+    std::fs::write(manager.join("Xuan++ Manager.exe"), "").unwrap();
 
     assert_eq!(normalize_codex_app_path(&manager), None);
     assert_eq!(
-        normalize_codex_app_path(&manager.join("Codex++ Manager.exe")),
+        normalize_codex_app_path(&manager.join("Xuan++ Manager.exe")),
         None
     );
 
@@ -462,10 +462,10 @@ fn app_paths_empty_saved_path_matches_no_saved_path() {
 #[test]
 fn app_paths_invalid_saved_path_falls_back_instead_of_sticking() {
     let temp = tempfile::tempdir().unwrap();
-    let junk = temp.path().join("Codex++");
+    let junk = temp.path().join("Xuan++");
     std::fs::create_dir_all(&junk).unwrap();
 
-    // 合法独立安装：即使 saved 指向 Codex++，规范化失败后应能落到该候选
+    // 合法独立安装：即使 saved 指向 Xuan++，规范化失败后应能落到该候选
     // （通过显式 app_dir 验证回退链之外的合法路径仍可用）
     let standalone = temp.path().join("OpenAI").join("Codex").join("bin");
     std::fs::create_dir_all(&standalone).unwrap();

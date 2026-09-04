@@ -51,7 +51,7 @@ pub fn run() {
             };
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("轩智万象")
+                    .title("轩++")
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -189,13 +189,13 @@ pub fn run() {
         ])
         .build(tauri::generate_context!());
     match app_result {
-        Ok(app) => app.run(|app_handle, event| {
+        Ok(app) => app.run(|_app_handle, _event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = event {
+            if let tauri::RunEvent::Opened { urls } = _event {
                 for url in urls {
                     if handle_session_share_url(url.as_str()) || handle_dream_skin_url(url.as_str())
                     {
-                        show_main_window(app_handle);
+                        show_main_window(_app_handle);
                     }
                 }
             }

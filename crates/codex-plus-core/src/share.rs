@@ -8,7 +8,7 @@ const SHARE_ENDPOINTS: &[&str] = &[
 
 pub async fn create_share(payload: Value) -> anyhow::Result<Value> {
     let client = reqwest::Client::builder()
-        .user_agent("CodexPlusPlus share proxy")
+        .user_agent("XuanPlusPlus share proxy")
         .build()
         .context("创建分享请求客户端失败")?;
     let mut last_error = None;

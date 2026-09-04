@@ -681,7 +681,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     if let Err(error) = save_requested_launch_status(
         &request,
         "starting",
-        "轩智万象启动器正在启动",
+        "轩++启动器正在启动",
         launch_started_at_ms,
     ) {
         return failed(
@@ -705,7 +705,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         },
         Err(error) => {
-            let message = format!("重启轩智万象失败：{error}");
+            let message = format!("重启轩++失败：{error}");
             let _ =
                 save_requested_launch_status(&request, "failed", &message, launch_started_at_ms);
             failed(
@@ -906,7 +906,7 @@ fn spawn_codex_plus_launch(
     if let Err(error) = save_requested_launch_status(
         &request,
         "starting",
-        "轩智万象启动器正在启动",
+        "轩++启动器正在启动",
         launch_started_at_ms,
     ) {
         return failed(
@@ -2159,7 +2159,7 @@ fn managed_dream_skin_image_backup(
     state_dir: &Path,
 ) -> anyhow::Result<ManagedDreamSkinImageBackup> {
     if !codex_plus_core::dream_skin::is_managed_dream_skin_image(path, state_dir) {
-        anyhow::bail!("Dream Skin 图片不受轩智万象管理");
+        anyhow::bail!("Dream Skin 图片不受轩++管理");
     }
     Ok(ManagedDreamSkinImageBackup {
         path: path.to_path_buf(),
@@ -2411,7 +2411,7 @@ pub fn import_local_session(path: String) -> CommandResult<SessionImportPayload>
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     match codex_plus_core::session_share::import_rollout_file(&home, &source_path) {
         Ok(result) => ok(
-            "会话已导入轩智万象。请刷新会话列表；如果仍未显示，请重启 Codex。",
+            "会话已导入轩++。请刷新会话列表；如果仍未显示，请重启 Codex。",
             SessionImportPayload {
                 session_id: result
                     .get("session_id")
@@ -2457,7 +2457,7 @@ pub async fn import_session_url(url: String) -> CommandResult<SessionImportPaylo
         Ok(result) => {
             let _ = codex_plus_core::session_share::clear_pending_session_share();
             ok(
-                "会话已导入轩智万象。请刷新会话列表；如果仍未显示，请重启 Codex。",
+                "会话已导入轩++。请刷新会话列表；如果仍未显示，请重启 Codex。",
                 SessionImportPayload {
                     session_id: result
                         .get("session_id")
@@ -2641,7 +2641,7 @@ fn local_session_adapter(db_path: &Path) -> codex_plus_data::SQLiteStorageAdapte
 ///
 /// 之前的写法是 normalize 成功才覆盖、失败就原样保留，于是误选的路径会被存进
 /// settings.json。而 launcher 拿到显式 --app-path 且无效时不回退自动探测，
-/// 结果就是启动永久失败、只能手改配置文件才能恢复（#1972：用户误选了 Codex++
+/// 结果就是启动永久失败、只能手改配置文件才能恢复（#1972：用户误选了 Xuan++
 /// 自己的 codex-plus-plus.exe，因为文件选择器只按 exe 扩展名过滤）。
 ///
 /// 清空之后 resolve_codex_app_dir_with_saved 会走自动探测，至少还能起来。
@@ -5751,14 +5751,14 @@ fn default_user_script_manager() -> UserScriptManager {
 fn user_scripts_config_dir() -> PathBuf {
     if cfg!(windows) {
         if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
+            return PathBuf::from(roaming).join("Xuan++");
         }
     }
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
+        .join("Xuan++")
 }
 
 fn builtin_user_scripts_dir() -> PathBuf {
@@ -7251,17 +7251,16 @@ enabled = true
         );
     }
 
-    #[test]
-    /// #1972：用户误把 Codex++ 自己的 exe 选成了「Codex 应用路径」——文件选择器
+    /// #1972：用户误把 Xuan++ 自己的 exe 选成了「Codex 应用路径」——文件选择器
     /// 只按 exe 扩展名过滤，拦不住。以前无效路径会原样存进 settings.json，而
     /// launcher 拿到显式无效 --app-path 又不回退自动探测，于是启动永久失败，
     /// 只能手改配置文件才能恢复。
     #[test]
     fn normalize_settings_before_save_drops_an_invalid_codex_app_path() {
         let codex_plus_own_exe = if cfg!(windows) {
-            r"D:\Codex++\codex-plus-plus.exe"
+            r"D:\Xuan++\codex-plus-plus.exe"
         } else {
-            "/Applications/Codex++/codex-plus-plus"
+            "/Applications/Xuan++/codex-plus-plus"
         };
         let settings = BackendSettings {
             codex_app_path: codex_plus_own_exe.to_string(),
@@ -7273,7 +7272,7 @@ enabled = true
         // 清空而不是留着：留着就会被当成显式 --app-path 传下去，永久失败
         assert!(
             normalized.codex_app_path.is_empty(),
-            "指向 Codex++ 自身的路径不该落库，实际是 {}",
+            "指向 Xuan++ 自身的路径不该落库，实际是 {}",
             normalized.codex_app_path
         );
     }

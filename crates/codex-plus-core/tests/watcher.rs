@@ -299,7 +299,7 @@ fn find_codex_processes_ignores_unrelated_processes() {
             parent_process_id: 0,
             exe_file: "codex-plus-plus.exe".to_string(),
             executable_path: Some(std::path::PathBuf::from(
-                r"D:\Programs\Codex++\codex-plus-plus.exe",
+                r"D:\Programs\Xuan++\codex-plus-plus.exe",
             )),
         },
     ];

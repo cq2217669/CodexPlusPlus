@@ -2,7 +2,7 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 让 CodexPlusPlus 应用 profile 时，根据 `model_list` 后缀语法（如 `deepseek-v4-pro[1M]`）自动生成 codex 原生 `model_catalog_json` 文件并写入 config.toml 指针，使 codex 客户端按模型识别真实上下文窗口。
+**目标：** 让 XuanPlusPlus 应用 profile 时，根据 `model_list` 后缀语法（如 `deepseek-v4-pro[1M]`）自动生成 codex 原生 `model_catalog_json` 文件并写入 config.toml 指针，使 codex 客户端按模型识别真实上下文窗口。
 
 **架构：** 新增纯函数模块 `model_suffix.rs`（后缀解析 + catalog JSON 构建，无副作用、易测）；在 `relay_config.rs` 新增一个可选步骤 `apply_model_catalog_to_config`，接入现有 3 个 apply 入口（`apply_context_limits_to_config` 之后、落盘之前），靠后缀 opt-in，无后缀则 no-op，不破坏现有 per-profile 单值行为。
 

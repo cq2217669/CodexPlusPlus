@@ -329,7 +329,7 @@ pub fn resolve_codex_app_dir_with_saved(
         .map(str::trim)
         .filter(|saved| !saved.is_empty())
     {
-        // 已保存路径无效（例如误选 Codex++）时回退自动探测
+        // 已保存路径无效（例如误选 Xuan++）时回退自动探测
         if let Some(path) = normalize_codex_app_path(Path::new(saved)) {
             return Some(path);
         }
@@ -342,7 +342,7 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    // 拒绝把 Codex++ 管理工具安装目录误当成 Codex 桌面应用
+    // 拒绝把 Xuan++ 管理工具安装目录误当成 Codex 桌面应用
     if is_codex_plus_plus_path(path) {
         return None;
     }
@@ -385,7 +385,7 @@ pub fn normalize_codex_app_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Codex++ 管理控制台/安装根，绝不能当作 OpenAI Codex 桌面应用。
+/// Xuan++ 管理控制台/安装根，绝不能当作 OpenAI Codex 桌面应用。
 fn is_codex_plus_plus_path(path: &Path) -> bool {
     for component in path.components() {
         let std::path::Component::Normal(name) = component else {
@@ -395,7 +395,9 @@ fn is_codex_plus_plus_path(path: &Path) -> bool {
             continue;
         };
         let lower = name.to_ascii_lowercase();
-        if lower == "codex++"
+        if lower == "xuan++"
+            || lower == "xuanplusplus"
+            || lower == "codex++"
             || lower == "codexplusplus"
             || lower == "codex-plus-plus"
             || lower.contains("codex-plus-manager")
@@ -407,7 +409,11 @@ fn is_codex_plus_plus_path(path: &Path) -> bool {
         .to_string_lossy()
         .replace('/', "\\")
         .to_ascii_lowercase();
-    normalized.contains("\\programs\\codex++")
+    normalized.contains("\\programs\\xuan++")
+        || normalized.contains("\\xuan++\\")
+        || normalized.ends_with("\\xuan++")
+        // 兼容旧品牌安装目录，避免它被误判为官方 Codex 应用。
+        || normalized.contains("\\programs\\codex++")
         || normalized.contains("\\codex++\\")
         || normalized.ends_with("\\codex++")
 }

@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 pub mod macos;
 pub mod windows;
 
-pub const SILENT_NAME: &str = "Codex++";
-pub const MANAGER_NAME: &str = "Codex++ 管理工具";
+pub const SILENT_NAME: &str = "Xuan++";
+pub const MANAGER_NAME: &str = "Xuan++ 管理工具";
 pub const SILENT_BINARY: &str = "codex-plus-plus";
 pub const MACOS_SILENT_EXECUTABLE: &str = "CodexPlusPlus";
 pub const MANAGER_BINARY: &str = "codex-plus-plus-manager";
@@ -77,11 +77,11 @@ impl ShortcutState {
 }
 
 pub fn shortcut_names() -> (&'static str, &'static str) {
-    ("Codex++.lnk", "Codex++ 管理工具.lnk")
+    ("Xuan++.lnk", "Xuan++ 管理工具.lnk")
 }
 
 pub fn app_bundle_names() -> (&'static str, &'static str) {
-    ("Codex++.app", "Codex++ 管理工具.app")
+    ("Xuan++.app", "Xuan++ 管理工具.app")
 }
 
 pub fn inspect_entrypoints() -> EntryPointState {
@@ -182,7 +182,7 @@ fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持安装 Codex++ 入口")
+        anyhow::bail!("当前平台暂不支持安装 Xuan++ 入口")
     }
 }
 
@@ -200,7 +200,7 @@ fn platform_uninstall(options: &InstallOptions) -> anyhow::Result<()> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
-        anyhow::bail!("当前平台暂不支持卸载 Codex++ 入口")
+        anyhow::bail!("当前平台暂不支持卸载 Xuan++ 入口")
     }
 }
 

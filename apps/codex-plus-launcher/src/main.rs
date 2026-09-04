@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let helper_only = args.iter().any(|arg| arg == "--helper-only");
     let options = parse_launch_options(args.iter());
-    if let Err(error) = launcher_main(args, helper_only, options.clone()).await {
+    if let Err(error) = launcher_main(helper_only, options.clone()).await {
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
             "launcher.failed",
             json!({
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOptions) -> Result<()> {
+async fn launcher_main(helper_only: bool, options: LaunchOptions) -> Result<()> {
     if helper_only {
         let hooks = LauncherHooks::default();
         hooks.start_helper(options.helper_port).await?;
@@ -1091,17 +1091,17 @@ fn default_user_script_manager() -> UserScriptManager {
 fn default_user_scripts_config_dir() -> PathBuf {
     if cfg!(windows) {
         if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
+            return PathBuf::from(roaming).join("Xuan++");
         }
         if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            return home.join("AppData").join("Roaming").join("Codex++");
+            return home.join("AppData").join("Roaming").join("Xuan++");
         }
     }
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
+        .join("Xuan++")
 }
 
 #[cfg(test)]

@@ -66,7 +66,7 @@ const releaseId = (release, index) => {
   return `release-${tag || index + 1}`;
 };
 
-const releaseTitle = (release) => release.name || release.tag_name || "Codex++ release";
+const releaseTitle = (release) => release.name || release.tag_name || "Xuan++ release";
 
 const renderRelease = (release, index) => {
   const tag = escapeHtml(release.tag_name || release.name || `release-${index + 1}`);

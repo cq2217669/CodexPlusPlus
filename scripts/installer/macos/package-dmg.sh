@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DIST="$ROOT/dist/macos"
 STAGE="$DIST/stage"
 BINARY_DIR="${BINARY_DIR:-$ROOT/target/release}"
-DMG="$DIST/CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"
+DMG="$DIST/XuanPlusPlus-${VERSION}-macos-${ARCH}.dmg"
 ICON_SOURCE="$ROOT/apps/codex-plus-manager/src-tauri/icons/icon.png"
 ICON_NAME="codex-plus-plus.icns"
 ICON_ICNS="$DIST/$ICON_NAME"
@@ -80,7 +80,7 @@ create_app() {
   <array>
     <dict>
       <key>CFBundleURLName</key>
-      <string>Codex++ Links</string>
+      <string>Xuan++ Links</string>
       <key>CFBundleURLSchemes</key>
       <array>
         <string>codexplusplus</string>
@@ -156,14 +156,14 @@ verify_app() {
 
 prepare_icon
 prepare_background
-create_app "Codex++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
-create_app "Codex++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
+create_app "Xuan++" "CodexPlusPlus" "$BINARY_DIR/codex-plus-plus" "com.bigpizzav3.codexplusplus" "true"
+create_app "Xuan++ 管理工具" "CodexPlusPlusManager" "$BINARY_DIR/codex-plus-plus-manager" "com.bigpizzav3.codexplusplus.manager" "false"
 
-sign_app "$STAGE/Codex++.app"
-sign_app "$STAGE/Codex++ 管理工具.app"
+sign_app "$STAGE/Xuan++.app"
+sign_app "$STAGE/Xuan++ 管理工具.app"
 
-verify_app "$STAGE/Codex++.app"
-verify_app "$STAGE/Codex++ 管理工具.app"
+verify_app "$STAGE/Xuan++.app"
+verify_app "$STAGE/Xuan++ 管理工具.app"
 
 ln -s /Applications "$STAGE/Applications"
 
@@ -212,7 +212,7 @@ cleanup_dmg_work_dir() {
 
 trap cleanup_dmg_work_dir EXIT
 
-hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"
+hdiutil create -volname "Xuan++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"
 
 MOUNT_OUTPUT="$(hdiutil attach "$DMG_WORK_PATH" -readwrite -noverify -noautoopen -nobrowse)"
 MOUNT_DEVICE="$(printf '%s\n' "$MOUNT_OUTPUT" | awk '/^\/dev\/disk/ {print $1; exit}')"
@@ -245,8 +245,8 @@ with timeout of 30 seconds
 
     tell dmgDisk
       set position of item "Applications" to {1000, 390}
-      set position of item "Codex++.app" to {220, 390}
-      set position of item "Codex++ 管理工具.app" to {460, 390}
+      set position of item "Xuan++.app" to {220, 390}
+      set position of item "Xuan++ 管理工具.app" to {460, 390}
     end tell
 
     close dmgWindow

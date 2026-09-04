@@ -1,8 +1,8 @@
 # 阶段一完成报告：按模型上下文 catalog 生成（原型）
 
 > 日期：2026-06-24  
-> 范围：CodexPlusPlus 后端核心（`codex-plus-core`）  
-> 目标：让 CodexPlusPlus 应用 relay profile 时，根据 `model_list` 后缀语法自动生成 codex 原生 `model_catalog_json` 文件并写入 config.toml 指针，使 codex 客户端按模型识别真实上下文窗口。
+> 范围：XuanPlusPlus 后端核心（`codex-plus-core`）
+> 目标：让 XuanPlusPlus 应用 relay profile 时，根据 `model_list` 后缀语法自动生成 codex 原生 `model_catalog_json` 文件并写入 config.toml 指针，使 codex 客户端按模型识别真实上下文窗口。
 
 ---
 
@@ -187,7 +187,7 @@ cargo run -p codex-plus-core --example generate_model_catalog -- \
 
 ---
 
-## 八、当前能否通过 CodexPlusPlus 桌面端测试
+## 八、当前能否通过 XuanPlusPlus 桌面端测试
 
 **可以，但需要手动输入后缀。**
 
@@ -198,7 +198,7 @@ deepseek-v4-pro[1M]
 claude-sonnet-4[200K]
 ```
 
-然后点击 apply/切换，CodexPlusPlus 就会自动：
+然后点击 apply/切换，XuanPlusPlus 就会自动：
 1. 生成 `~/.codex/model-catalogs/<profile-id>.json`
 2. 在 `~/.codex/config.toml` 写入 `model_catalog_json = "model-catalogs/<profile-id>.json"`
 3. codex 客户端启动后读取 catalog，按模型使用真实窗口

@@ -845,7 +845,7 @@ fn raw_file_url(repo: &SkillRepo, path: &str) -> String {
 }
 
 fn github_client() -> anyhow::Result<reqwest::Client> {
-    crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))
+    crate::http_client::proxied_client(&format!("Xuan++/{}", crate::version::VERSION))
 }
 
 /// 私有仓库和限流都靠这个救。与 codex 内置 skill-installer 读同样的两个变量。

@@ -2257,7 +2257,7 @@ fn provider_sync_backup_metadata_contains_reference_fields_and_managed_marker() 
     assert_eq!(metadata["codexHome"], home.to_string_lossy().to_string());
     assert_eq!(metadata["targetProvider"], "apigather");
     assert_eq!(metadata["changedSessionFiles"], 1);
-    assert_eq!(metadata["managedBy"], "Codex++ provider sync");
+    assert_eq!(metadata["managedBy"], "Xuan++ provider sync");
     assert!(metadata["createdAt"].as_str().unwrap().contains('T'));
     assert!(
         metadata["dbFiles"]
@@ -2574,7 +2574,7 @@ fn provider_sync_restores_global_state_when_later_step_fails() {
     fs::create_dir_all(home.join("backups_state/provider-sync/blocker")).unwrap();
     fs::write(
         home.join("backups_state/provider-sync/blocker/metadata.json"),
-        json!({"managedBy": "Codex++ provider sync"}).to_string(),
+        json!({"managedBy": "Xuan++ provider sync"}).to_string(),
     )
     .unwrap();
 
@@ -2606,7 +2606,7 @@ fn provider_sync_skips_when_home_missing_or_lock_exists_and_prunes_backups() {
         fs::create_dir_all(&backup).unwrap();
         fs::write(
             backup.join("metadata.json"),
-            json!({"managedBy": "Codex++ provider sync"}).to_string(),
+            json!({"managedBy": "Xuan++ provider sync"}).to_string(),
         )
         .unwrap();
     }

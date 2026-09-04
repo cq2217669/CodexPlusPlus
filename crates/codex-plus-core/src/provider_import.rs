@@ -260,10 +260,10 @@ fn build_config_toml(base_url: &str, api_key: &str, protocol: RelayProtocol) -> 
         RelayProtocol::ChatCompletions => "chat",
     };
     [
-        "model_provider = \"CodexPlusPlus\"".to_string(),
+        "model_provider = \"XuanPlusPlus\"".to_string(),
         String::new(),
-        "[model_providers.CodexPlusPlus]".to_string(),
-        "name = \"CodexPlusPlus\"".to_string(),
+        "[model_providers.XuanPlusPlus]".to_string(),
+        "name = \"XuanPlusPlus\"".to_string(),
         format!("wire_api = \"{wire_api}\""),
         "requires_openai_auth = true".to_string(),
         format!("base_url = \"{}\"", toml_string(base_url)),
@@ -397,6 +397,15 @@ mod tests {
 
         assert!(request.config_contents.is_empty());
         assert!(request.auth_contents.is_empty());
+    }
+
+    #[test]
+    fn generated_provider_config_uses_the_xuanplusplus_identity() {
+        let config = build_config_toml("https://relay.example/v1", "sk-test", RelayProtocol::Responses);
+
+        assert!(config.contains("model_provider = \"XuanPlusPlus\""));
+        assert!(config.contains("[model_providers.XuanPlusPlus]"));
+        assert!(!config.contains("CodexPlusPlus"));
     }
 
     #[test]

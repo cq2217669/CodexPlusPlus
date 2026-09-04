@@ -2,7 +2,7 @@
 
 ## Codex-Dream-Skin
 
-Codex++ includes adapted CSS and renderer injection logic from:
+Xuan++ includes adapted CSS and renderer injection logic from:
 
 https://github.com/Fei-Away/Codex-Dream-Skin
 

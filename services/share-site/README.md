@@ -1,4 +1,4 @@
-# Codex++ Share
+# Xuan++ Share
 
 Cloudflare Pages + Workers KV deployment for encrypted session sharing.
 

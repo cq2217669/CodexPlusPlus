@@ -200,7 +200,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /Codex 未能生成新名称/);
   });
 
-  it("removes the legacy Codex++ top-bar entry", async () => {
+  it("removes the legacy Xuan++ top-bar entry", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.doesNotMatch(renderer, /function installCodexPlusMenu\(\)/);
@@ -208,7 +208,7 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(renderer, /codex-plus-trigger/);
   });
 
-  it("places Codex++ in the native sidebar and opens a main-content page", async () => {
+  it("places Xuan++ in the native sidebar and opens a main-content page", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /codexPlusSidebarNavId\s*=\s*"codex-plus-sidebar-nav"/);
@@ -231,7 +231,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
   });
 
-  it("does not install Codex++ UI in embedded browser documents", async () => {
+  it("does not install Xuan++ UI in embedded browser documents", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
     assert.match(renderer, /window\.top\s*!==\s*window/);

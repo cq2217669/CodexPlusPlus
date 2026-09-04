@@ -672,7 +672,7 @@ pub async fn test_relay_profile(
         anyhow::bail!("API Key 不能为空");
     }
 
-    let client = crate::http_client::proxied_client("CodexPlusPlus/RelayTest")?;
+    let client = crate::http_client::proxied_client("XuanPlusPlus/RelayTest")?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => format!("{base_url}/responses"),
         RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
@@ -1904,7 +1904,7 @@ fn apply_model_catalog_to_config(
     // 用户已手写 model_catalog_json 指针时保留，不覆盖（保 preserves_user_model_catalog_json 测试）
     // 仅当现有指针指向本 profile 自己生成的 catalog 时才重新生成。
     // cc-switch 的固定文件名属于已知的其他管理器投影，不视为用户手写 catalog；
-    // 切换到 Codex++ profile 时应接管，否则旧 catalog 会继续覆盖本 profile 的模型元数据。
+    // 切换到 Xuan++ profile 时应接管，否则旧 catalog 会继续覆盖本 profile 的模型元数据。
     if let Some(existing) = root_key_string(&config_text, "model_catalog_json") {
         if existing != catalog_relative {
             if is_cc_switch_model_catalog(&existing) {
@@ -3164,7 +3164,7 @@ fn experimental_bearer_token_from_config(config_contents: &str) -> anyhow::Resul
         if let Some(token) = provider_token_from_table(&doc, &provider_id) {
             return Ok(Some(token));
         }
-        // OpenAI is the session identity, while Codex++ keeps relay
+        // OpenAI is the session identity, while Xuan++ keeps relay
         // credentials in the custom transport table.
         if provider_id == "openai" {
             if let Some(token) = provider_token_from_table(&doc, RELAY_PROVIDER) {

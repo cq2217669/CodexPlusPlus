@@ -426,7 +426,7 @@ where
                     return error.context(format!(
                         "协议代理端口 {helper_port} 被其他进程占用，等待 {} 秒后仍未释放。\
                          该端口写在 config.toml 的 base_url 里，不能自动改用其他端口；\
-                         请退出仍在运行的轩智万象或占用该端口的程序后重试。",
+                         请退出仍在运行的轩++或占用该端口的程序后重试。",
                         bind_retry_timeout_ms / 1000
                     ));
                 }
@@ -458,7 +458,7 @@ where
             } else {
                 let degraded = launch_status(
                     "running_degraded",
-                    "Codex 已启动；轩智万象增强功能仍在等待页面桥接。",
+                    "Codex 已启动；轩++增强功能仍在等待页面桥接。",
                     debug_port,
                     helper_port,
                     &app_dir,
@@ -472,7 +472,7 @@ where
         if !settings.enhancements_enabled || !injection_degraded {
             let status = launch_status(
                 "running",
-                "轩智万象启动器已就绪",
+                "轩++启动器已就绪",
                 debug_port,
                 helper_port,
                 &app_dir,

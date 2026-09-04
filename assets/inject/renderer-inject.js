@@ -3852,7 +3852,7 @@
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
-        node.textContent = `轩智万象 ${codexPlusVersion}`;
+        node.textContent = `轩++ ${codexPlusVersion}`;
       });
     }
     const label = document.querySelector("[data-codex-backend-status]");
@@ -4054,12 +4054,12 @@
     overlay.dataset.codexPlusPage = String(pageMode);
     applyCodexPlusTheme(overlay);
     overlay.innerHTML = `
-      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="轩智万象">
+      <div class="codex-plus-modal-content" role="dialog" aria-modal="true" aria-label="轩++">
         <div class="codex-plus-modal-header">
-          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">轩智万象 ${codexPlusVersion}</span></div>
+          <div class="codex-plus-modal-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="checking"></span><span data-codex-plus-version="true">轩++ ${codexPlusVersion}</span></div>
           <button type="button" class="codex-plus-modal-close" aria-label="${pageMode ? "返回" : "关闭"}">${pageMode ? "返回" : "×"}</button>
         </div>
-        <div class="codex-plus-tabs" role="tablist" aria-label="轩智万象">
+        <div class="codex-plus-tabs" role="tablist" aria-label="轩++">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
         </div>
@@ -4173,7 +4173,7 @@
               <div>
                 <div class="codex-plus-row-title">用户脚本</div>
                 <div class="codex-plus-row-description">启用用户脚本：自动加载内置目录和用户配置目录中的 .js 文件。</div>
-                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启轩智万象才能完全移除已执行效果。</div>
+                <div class="codex-plus-user-script-warning">禁用后需重载页面或重启轩++才能完全移除已执行效果。</div>
                 <div class="codex-plus-user-script-dirs" data-codex-user-script-dirs="true">正在读取脚本目录…</div>
                 <div class="codex-plus-user-script-list" data-codex-user-script-list="true">正在读取用户脚本…</div>
               </div>
@@ -4374,9 +4374,9 @@
       button.removeAttribute("aria-current");
       button.removeAttribute("disabled");
       button.removeAttribute("aria-disabled");
-      button.setAttribute("aria-label", "轩智万象");
+      button.setAttribute("aria-label", "轩++");
       button.textContent = "";
-      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">轩智万象</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
+      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">轩++</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -4468,14 +4468,14 @@
   }
 
   function displayNameForPluginMarketplaceName(name, fallback) {
-    if (name === "openai-bundled") return "OpenAI插件1(轩智万象)";
-    if (name === "openai-curated") return "OpenAI插件2(轩智万象)";
-    if (name === "openai-primary-runtime") return "OpenAI插件3(轩智万象)";
-    if (name === "openai-api-curated") return "OpenAI插件4(轩智万象)";
+    if (name === "openai-bundled") return "OpenAI插件1(轩++)";
+    if (name === "openai-curated") return "OpenAI插件2(轩++)";
+    if (name === "openai-primary-runtime") return "OpenAI插件3(轩++)";
+    if (name === "openai-api-curated") return "OpenAI插件4(轩++)";
     // 内置插件包的注册名。曾经叫 openai-curated-remote，但那是 codex 的保留名，
     // 注册在它下面会被静默忽略，已改为 codex-plus-curated；旧名保留以兼容
     // 尚未升级的配置。
-    if (name === "codex-plus-curated" || name === "openai-curated-remote") return "OpenAI插件5(轩智万象)";
+    if (name === "codex-plus-curated" || name === "openai-curated-remote") return "OpenAI插件5(轩++)";
     return fallback;
   }
 
@@ -8088,7 +8088,7 @@
     if (!trigger) return false;
     const payload = upstreamWorktreePayloadFromSelection(trigger) || upstreamWorktreeNativePayloadFromElement(trigger);
     if (!payload) {
-      showToast("无法安全识别 Codex 原生 worktree 表单，请使用轩智万象菜单创建。", null);
+      showToast("无法安全识别 Codex 原生 worktree 表单，请使用轩++菜单创建。", null);
       return false;
     }
     event.preventDefault();
@@ -8641,7 +8641,7 @@
         }));
       }
       if (sessionMenuEnabled) {
-        const sessionCopyItem = createSessionMoreMenuItem("原地复制会话 - 轩智万象", "⧉", activateSessionCopyMenuItem);
+        const sessionCopyItem = createSessionMoreMenuItem("原地复制会话 - 轩++", "⧉", activateSessionCopyMenuItem);
         sessionCopyItem.dataset.codexSessionCopyMenu = "true";
         sessionCopyItem.dataset.codexSessionCopyVersion = sessionCopyMenuItemVersion;
         sessionCopyItem.__codexSessionCopyRow = row;
@@ -10104,7 +10104,7 @@
     item.setAttribute("data-codex-session-copy-menu", "true");
     item.dataset.codexSessionCopyVersion = sessionCopyMenuItemVersion;
     item.__codexSessionCopyRow = row;
-    item.innerHTML = `<div class="flex w-full items-center gap-1.5"><span class="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-75 group-focus:opacity-100 group-hover:opacity-100">${sessionCopyMenuItemIcon()}</span><span class="flex-1 min-w-0 truncate">原地复制会话 - 轩智万象</span></div>`;
+    item.innerHTML = `<div class="flex w-full items-center gap-1.5"><span class="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-75 group-focus:opacity-100 group-hover:opacity-100">${sessionCopyMenuItemIcon()}</span><span class="flex-1 min-w-0 truncate">原地复制会话 - 轩++</span></div>`;
     item.addEventListener("pointerup", activateSessionCopyMenuItem, true);
     item.addEventListener("click", activateSessionCopyMenuItem, true);
     item.addEventListener("keydown", activateSessionCopyMenuItem, true);
@@ -10383,9 +10383,9 @@
   document.addEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
 })();
 
-// === 粘贴修复 (CodexPlusPlus 页面增强) ===
+// === 粘贴修复 (XuanPlusPlus 页面增强) ===
 // 控制开关：window.__CODEX_PLUS_PASTE_FIX__ = { enabled: <bool> }
-// 由 CodexPlusPlus 在启动时根据 settings.codexAppPasteFix 注入。
+// 由 XuanPlusPlus 在启动时根据 settings.codexAppPasteFix 注入。
 // 关闭时不进入 if 体，行为与原 Codex 完全一致；开启时在 document 捕获阶段
 // 拦截 paste，若 text/plain 非空则阻止默认行为并调用 execCommand('insertText')
 // 插入纯文本，避免 Codex 把 Word 复制的内容识别为附件。

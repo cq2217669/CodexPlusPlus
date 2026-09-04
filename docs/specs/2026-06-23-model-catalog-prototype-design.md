@@ -7,9 +7,9 @@
 
 ## 1. 背景与目标
 
-CodexPlusPlus 使用第三方模型（deepseek-v4-pro 1M、Claude 200K）时，上下文窗口被锁 258K。根因见 `docs/research/01-调研结果.md`：codex 客户端二进制硬编码 272000，custom provider slug 回落默认；CodexPlusPlus 不生成 `model_catalog_json`，用户被迫手改 config.toml。
+XuanPlusPlus 使用第三方模型（deepseek-v4-pro 1M、Claude 200K）时，上下文窗口被锁 258K。根因见 `docs/research/01-调研结果.md`：codex 客户端二进制硬编码 272000，custom provider slug 回落默认；XuanPlusPlus 不生成 `model_catalog_json`，用户被迫手改 config.toml。
 
-**目标**：让 CodexPlusPlus 应用 profile 时自动生成 catalog + 写指针，按模型配置窗口，规避 #931 的路径转义坑与单模型副作用。
+**目标**：让 XuanPlusPlus 应用 profile 时自动生成 catalog + 写指针，按模型配置窗口，规避 #931 的路径转义坑与单模型副作用。
 
 ## 2. 范围（阶段一原型）
 

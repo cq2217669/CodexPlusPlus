@@ -2,7 +2,7 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 将 CodexPlusPlus 的模型列表从单文本框（模型名可带 `[1M]` 后缀）改造为左右并排双文本框（左侧模型名、右侧上下文窗口），在存储层把 `model_list` 和 `model_windows` 彻底分离，使 Codex 客户端永远看不到带后缀的模型名。
+**目标：** 将 XuanPlusPlus 的模型列表从单文本框（模型名可带 `[1M]` 后缀）改造为左右并排双文本框（左侧模型名、右侧上下文窗口），在存储层把 `model_list` 和 `model_windows` 彻底分离，使 Codex 客户端永远看不到带后缀的模型名。
 
 **架构：** 在 `RelayProfile` 中新增 `model_windows` JSON map 字段；后端 `collect_catalog_entries` 改为从 `model_list`（无后缀 slug 列表）和 `model_windows`（slug -> 窗口 token）组合生成 catalog；前端把模型列表 UI 拆为左右两个 textarea，保存时按行组装成 `model_windows`；settings 加载时自动把旧格式 `deepseek-v4-flash[1M]` 一次性迁移到新格式。
 

@@ -760,7 +760,7 @@ fn create_startup_shortcut(launcher_path: &Path, arguments: &str) -> anyhow::Res
         target: launcher_path.to_path_buf(),
         arguments: arguments.to_string(),
         working_directory: launcher_path.parent().map(Path::to_path_buf),
-        description: "Codex++ watcher".to_string(),
+        description: "Xuan++ watcher".to_string(),
         icon: None,
         show_minimized: true,
     })

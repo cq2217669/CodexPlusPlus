@@ -196,7 +196,7 @@ pub async fn test_connection(settings: &BackendSettings) -> anyhow::Result<Value
     let mut probe = settings.clone();
     probe.codex_app_prompt_optimize_enabled = true;
     generate(
-        "Rewrite this sentence unchanged: Codex++ connection test.",
+        "Rewrite this sentence unchanged: Xuan++ connection test.",
         &probe,
     )
     .await

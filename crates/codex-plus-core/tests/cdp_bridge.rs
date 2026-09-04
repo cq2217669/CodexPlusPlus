@@ -100,7 +100,7 @@ fn injection_script_maps_the_renamed_bundled_marketplace_display_name() {
     assert!(
         script.contains(r#"name === "codex-plus-curated" || name === "openai-curated-remote""#)
     );
-    assert!(script.contains("OpenAI插件5(轩智万象)"));
+    assert!(script.contains("OpenAI插件5(轩++)"));
 }
 
 #[test]
@@ -154,6 +154,26 @@ fn stepwise_runtime_bumps_version_when_reinjection_contract_changes() {
     let script = assets::stepwise_script();
 
     assert!(script.contains("const SCRIPT_VERSION = \"2.0.7\";"));
+}
+
+#[test]
+fn prompt_optimize_button_is_anchored_before_the_model_selector() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("function modelSelectorBeforeSend(clickables, send)"));
+    assert!(script.contains("return { node: modelSelector.parentElement, before: modelSelector };"));
+    assert!(script.contains("return { node: send.parentElement || send.parentNode, before: send };"));
+}
+
+#[test]
+fn prompt_optimize_shortcut_is_scoped_to_the_composer_and_cleaned_up() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("function isPromptOptimizeShortcut(event)"));
+    assert!(script.contains("event.isComposing || event.keyCode === 229"));
+    assert!(script.contains("return input === target || input.contains(target);"));
+    assert!(script.contains("window.addEventListener(\"keydown\", runtime.shortcutHandler, true);"));
+    assert!(script.contains("window.removeEventListener(\"keydown\", runtime.shortcutHandler, true);"));
 }
 
 #[test]
@@ -2169,7 +2189,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
     );
-    assert!(script.contains("if (name === \"openai-bundled\") return \"OpenAI插件1(轩智万象)\""));
+    assert!(script.contains("if (name === \"openai-bundled\") return \"OpenAI插件1(轩++)\""));
 }
 
 #[test]
@@ -2229,23 +2249,23 @@ fn injection_script_expands_api_key_plugin_marketplace_requests() {
         "next.remoteMarketplaceName = restorePluginMarketplaceName(next.remoteMarketplaceName)"
     ));
     assert!(!script.contains("marketplace.name = alias"));
-    assert!(script.contains("if (name === \"openai-curated\") return \"OpenAI插件2(轩智万象)\""));
+    assert!(script.contains("if (name === \"openai-curated\") return \"OpenAI插件2(轩++)\""));
     assert!(
-        script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(轩智万象)\"")
+        script.contains("if (name === \"openai-primary-runtime\") return \"OpenAI插件3(轩++)\"")
     );
     assert!(script.contains("restored === \"openai-api-curated\""));
     assert!(script.contains("restored === \"openai-curated-remote\""));
     // 内置包的注册名已从 openai-curated-remote 换成 codex-plus-curated（前者是
     // codex 保留名会被静默忽略），显示名映射同时认新旧两个名字。
     assert!(script.contains(
-        "if (name === \"codex-plus-curated\" || name === \"openai-curated-remote\") return \"OpenAI插件5(轩智万象)\""
+        "if (name === \"codex-plus-curated\" || name === \"openai-curated-remote\") return \"OpenAI插件5(轩++)\""
     ));
     assert!(script.contains(
         "if (name === \"codex-plus-openai-curated-remote\") return \"openai-curated-remote\""
     ));
-    assert!(script.contains("OpenAI插件1(轩智万象)"));
-    assert!(script.contains("OpenAI插件2(轩智万象)"));
-    assert!(script.contains("OpenAI插件3(轩智万象)"));
+    assert!(script.contains("OpenAI插件1(轩++)"));
+    assert!(script.contains("OpenAI插件2(轩++)"));
+    assert!(script.contains("OpenAI插件3(轩++)"));
     assert!(script.contains("method === \"install-plugin\""));
     assert!(script.contains("plugin_marketplace_response_expanded"));
     assert!(script.contains("plugin_build_flavor_filter_bypassed"));
@@ -4331,7 +4351,7 @@ fn pick_injectable_codex_page_target_ignores_embedded_browser_page_named_codex()
         target(
             "browser-pr",
             "page",
-            "Fix Codex++ menu anchoring · Pull Request",
+            "Fix Xuan++ menu anchoring · Pull Request",
             "https://github.com/BigPizzaV3/CodexPlusPlus/pull/1743",
             Some("ws://browser-pr"),
         ),
@@ -4356,7 +4376,7 @@ fn pick_injectable_codex_page_target_ignores_standalone_manager() {
         target(
             "manager",
             "page",
-            "Codex++ 管理工具",
+            "Xuan++ 管理工具",
             "http://127.0.0.1:1420/",
             Some("ws://manager"),
         ),
@@ -4380,7 +4400,7 @@ fn pick_injectable_codex_page_target_rejects_embedded_browser_only_page() {
     let targets = vec![target(
         "browser-pr",
         "page",
-        "Fix Codex++ menu anchoring · Pull Request",
+        "Fix Xuan++ menu anchoring · Pull Request",
         "https://github.com/BigPizzaV3/CodexPlusPlus/pull/1743",
         Some("ws://browser-pr"),
     )];

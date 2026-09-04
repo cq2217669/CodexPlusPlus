@@ -1279,7 +1279,7 @@ export function App() {
     const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
     if (result) {
       setPendingProviderImport(result.pending);
-      if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("轩智万象 导入"), result, { silentSuccess: true });
+      if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("轩++ 导入"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -1290,7 +1290,7 @@ export function App() {
       setPendingProviderImport(null);
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showResultNotice(t("轩智万象 导入"), result);
+      showResultNotice(t("轩++ 导入"), result);
       await refreshCcsProviders(true);
     }
   };
@@ -1299,7 +1299,7 @@ export function App() {
     const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
     if (result) {
       setPendingProviderImport(null);
-      showResultNotice(t("轩智万象 导入"), result, { silentSuccess: true });
+      showResultNotice(t("轩++ 导入"), result, { silentSuccess: true });
     }
   };
 
@@ -1352,7 +1352,7 @@ export function App() {
   const importSessionUrl = async (value = sessionShareUrl) => {
     const url = value.trim();
     if (!url) {
-      showNotice(t("会话导入"), t("请粘贴轩智万象分享链接。"), "failed");
+      showNotice(t("会话导入"), t("请粘贴轩++分享链接。"), "failed");
       return;
     }
     const result = await run(() => call<SessionImportResult>("import_session_url", { url }));
@@ -1959,12 +1959,12 @@ export function App() {
     const result = await launchCommand("restart_codex_plus", syncActiveRelay);
     if (!result) return false;
     if (!isSuccessStatus(result.status)) {
-      showNotice(t("重启轩智万象"), result.message, result.status);
+      showNotice(t("重启轩++"), result.message, result.status);
       return false;
     }
-    showNotice(t("重启轩智万象"), t("正在等待 Codex 重新启动…"), "accepted");
+    showNotice(t("重启轩++"), t("正在等待 Codex 重新启动…"), "accepted");
     const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-    showLaunchCompletionNotice(t("重启轩智万象"), completion);
+    showLaunchCompletionNotice(t("重启轩++"), completion);
     const succeeded = Boolean(
       completion
       && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
@@ -2775,7 +2775,7 @@ export function App() {
         showLabel: "Show window",
         applySkinLabel: "Apply Dream Skin",
         quitLabel: "Quit",
-        windowTitle: "轩智万象",
+        windowTitle: "轩++",
       });
     }
   }, []);
@@ -3112,7 +3112,7 @@ export function App() {
         <div className="brand">
           <div className="brand-copy">
             <div className="brand-title-row">
-              <div className="brand-title">轩智万象</div>
+              <div className="brand-title">轩++</div>
             </div>
             <div className="brand-subtitle">{t("管理控制台")}</div>
           </div>
@@ -3168,9 +3168,9 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={t("重启轩智万象")} variant="outline">
+            <Button onClick={() => void actions.restart()} title={t("重启轩++")} variant="outline">
               <Rocket className="h-4 w-4" />
-              {t("重启轩智万象")}
+              {t("重启轩++")}
             </Button>
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title={t("刷新当前页面")} variant="outline">
               <RefreshCw className="h-4 w-4" />
@@ -3973,9 +3973,9 @@ function OverviewScreen({
         <CardContent>
           <LatestLaunch status={overview?.latest_launch ?? null} />
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>
+            <Button onClick={() => void actions.restart()}>
               <Rocket className="h-4 w-4" />
-              {t("启动轩智万象")}
+              {t("重启轩++")}
             </Button>
           </Toolbar>
         </CardContent>
@@ -4009,7 +4009,7 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
       passed: result ? proxyVariables.length === 0 : false,
       detail: result
         ? proxyVariables.length
-          ? tf("检测到代理环境变量：{0}。请清理后重新启动轩智万象。", [proxyVariableLabels.join(t("、"))])
+          ? tf("检测到代理环境变量：{0}。请清理后重新启动轩++。", [proxyVariableLabels.join(t("、"))])
           : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
         : t("等待检测。"),
     },
@@ -4304,7 +4304,7 @@ function EnhanceScreen({
         String(remotePluginMarketplace.pluginCount),
         String(remotePluginMarketplace.skillCount),
       ])
-    : t("未发现本地缓存；点击按钮会从轩智万象内置快照释放并注册，无需官方账号预缓存。");
+    : t("未发现本地缓存；点击按钮会从轩++内置快照释放并注册，无需官方账号预缓存。");
   return (
     <>
       <Panel className="enhance-panel">
@@ -4351,7 +4351,7 @@ function EnhanceScreen({
               <div className="feature-action-row">
                 <div>
                   <strong>{t("官方远端插件缓存")}</strong>
-                  <small>{t("使用轩智万象内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
+                  <small>{t("使用轩++内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
                   <small>{remoteMarketplaceSummary}</small>
                 </div>
                 <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
@@ -4385,7 +4385,7 @@ function EnhanceScreen({
               <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("输入增强")} detail={t("控制发送前的输入框增强能力。")}>
-              <FeatureToggle title="Prompt Optimize" detail={t("在输入框旁提供 ✨ 一键优化：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启轩智万象生效。")} checked={form.codexAppPromptOptimizeEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPromptOptimizeEnabled", value)} />
+              <FeatureToggle title="Prompt Optimize" detail={t("在输入框旁提供 ✨ 一键优化：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启轩++生效。")} checked={form.codexAppPromptOptimizeEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPromptOptimizeEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
@@ -4395,7 +4395,7 @@ function EnhanceScreen({
             </FeatureGroup>
             <FeatureGroup title={t("远程项目")} detail={t("连接 Zed Remote 和 upstream worktree 辅助能力。")}>
               <FeatureToggle title="Zed Remote open" detail={t("远程 SSH 文件引用可直接用 Zed Remote Development 打开。")} checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
-              <FeatureToggle title={t("Zed 项目记录")} detail={t("维护轩智万象自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
+              <FeatureToggle title={t("Zed 项目记录")} detail={t("维护轩++自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
               <FeatureToggle title={t("同步 Zed settings")} detail={t("高级选项，默认关闭；当前实现不主动改写 Zed settings。")} checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
               <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
               <div className="feature-select-row">
@@ -4567,7 +4567,7 @@ function DreamSkinScreen({
       </Panel>
 
       <Panel className="dream-skin-panel">
-        <CardHead title={t("运行状态")} detail={t("配置保存在轩智万象，实时操作通过本机回环 CDP 执行")} />
+        <CardHead title={t("运行状态")} detail={t("配置保存在轩++，实时操作通过本机回环 CDP 执行")} />
         <CardContent>
           <div className="dream-skin-runtime-grid">
             <label className="switch-row compact">
@@ -4634,7 +4634,7 @@ function DreamSkinScreen({
       </Panel>
 
       <Panel className="dream-skin-panel">
-        <CardHead title={t("图片与主题")} detail={t("自定义图片会被导入轩智万象托管目录；主题字段与目标项目 theme.json 对齐")} />
+        <CardHead title={t("图片与主题")} detail={t("自定义图片会被导入轩++托管目录；主题字段与目标项目 theme.json 对齐")} />
         <CardContent>
           <div aria-label={t("主题视图")} className="dream-skin-view-tabs" role="tablist">
             <button
@@ -4686,7 +4686,7 @@ function DreamSkinScreen({
                   <small>
                     {market?.updatedAt
                       ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
-                      : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
+                      : t("从 Xuan++ Themes 仓库加载可安装主题。")}
                   </small>
                 </div>
                 <Toolbar>
@@ -5426,7 +5426,7 @@ function ZedRemoteScreen({
   return (
     <>
       <Panel>
-        <CardHead title={t("Zed 远程项目")} detail={tf("{0} 个轩智万象可识别项目，默认策略：{1}", [allProjects.length, zedStrategyLabel(form.zedRemoteOpenStrategy)])} />
+        <CardHead title={t("Zed 远程项目")} detail={tf("{0} 个轩++可识别项目，默认策略：{1}", [allProjects.length, zedStrategyLabel(form.zedRemoteOpenStrategy)])} />
         <CardContent>
           <div className="metric-list">
             <Metric label="Current" value={String(currentProjects.length)} />
@@ -5454,7 +5454,7 @@ function ZedRemoteScreen({
               />
               <span>
                 <strong>{t("记录最近打开")}</strong>
-                <small>{t("保存到轩智万象 state，不改写 Zed settings。")}</small>
+                <small>{t("保存到轩++ state，不改写 Zed settings。")}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -5814,7 +5814,7 @@ function SessionsScreen({
               <Input
                 aria-label={t("会话分享链接")}
                 onChange={(event) => actions.setSessionShareUrl(event.currentTarget.value)}
-                placeholder={t("粘贴轩智万象会话分享链接")}
+                placeholder={t("粘贴轩++会话分享链接")}
                 value={actions.sessionShareUrl}
               />
               <Button disabled={!actions.sessionShareUrl.trim()} onClick={() => void actions.importSessionUrl()} variant="outline">
@@ -5980,7 +5980,7 @@ function MaintenanceScreen({
         <CardContent>
           <label className="check-row">
             <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>{t("卸载时移除轩智万象托管数据")}</span>
+            <span>{t("卸载时移除轩++托管数据")}</span>
           </label>
           <Toolbar>
             <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
@@ -5990,7 +5990,7 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持轩智万象接管状态")} />
+        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持轩++接管状态")} />
         <CardContent>
           <Toolbar>
             <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
@@ -6046,7 +6046,7 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>{t("启动轩智万象")}</Button>
+            <Button onClick={() => void actions.launch()}>{t("启动轩++")}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               {t("保存为默认路径")}
             </Button>
@@ -7492,13 +7492,13 @@ function RelayProfileEditor({
                             }
                             setMetadataImportPreview(parsed.value);
                           }}
-                          placeholder={t("需要补充供应商模型信息时填写；不填则使用轩智万象默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
+                          placeholder={t("需要补充供应商模型信息时填写；不填则使用轩++默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
                           rows={7}
                         />
                         {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
                         {metadataImportPreview?.ignoredFields.length ? (
                           <div className="relay-model-metadata-import-warning" role="status">
-                            {tf("以下字段由轩智万象计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
+                            {tf("以下字段由轩++计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
                           </div>
                         ) : null}
                         <div className="relay-model-metadata-import-actions">
@@ -7546,7 +7546,7 @@ function RelayProfileEditor({
             <div className="relay-config-section-head">
               <div>
                 <strong>{t("单模型路由")}</strong>
-                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从轩智万象启动。")}</span>
+                <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从轩++启动。")}</span>
               </div>
               <div className="relay-model-list-tools">
                 <Button
@@ -7664,7 +7664,7 @@ function RelayProfileEditor({
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从轩智万象启动 Codex。")}</span>
+          <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从轩++启动 Codex。")}</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">
@@ -8836,8 +8836,8 @@ function PendingProviderImportDialog({
       <div className="modal-card provider-import-modal">
         <div className="modal-head">
           <div>
-            <h2>{t("导入轩智万象供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机轩智万象管理工具。")}</p>
+            <h2>{t("导入轩++供应商")}</h2>
+            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机轩++管理工具。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
@@ -9747,7 +9747,7 @@ function healthItems(overview: OverviewResult | null) {
       title: t("静默启动入口"),
       status: overview?.silent_shortcut.status ?? "not_checked",
       ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || t("缺少轩智万象静默启动快捷方式时可在安装维护页修复。"),
+      detail: overview?.silent_shortcut.path || t("缺少轩++静默启动快捷方式时可在安装维护页修复。"),
     },
     {
       title: t("管理工具入口"),
@@ -10260,7 +10260,7 @@ function applyRelayProfilePatchToFiles(
   }
 
   if ("model" in patch) {
-    // 模型后缀（如 [1M]）仅供 CodexPlusPlus 内部使用，写入 config.toml 前需剥离，
+    // 模型后缀（如 [1M]）仅供 XuanPlusPlus 内部使用，写入 config.toml 前需剥离，
     // 否则 codex 会按带后缀的字符串去匹配 catalog slug，导致窗口回退到默认值。
     const { slug } = parseModelSuffix(patch.model || "");
     next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
