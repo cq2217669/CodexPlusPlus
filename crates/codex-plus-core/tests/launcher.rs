@@ -318,6 +318,18 @@ fn app_paths_finds_windows_bundled_codex_cli() {
 }
 
 #[test]
+fn app_paths_requires_alias_for_windows_store_bundled_cli() {
+    assert!(codex_plus_core::app_paths::requires_codex_execution_alias(
+        Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__abc\app\resources\codex.exe"
+        )
+    ));
+    assert!(!codex_plus_core::app_paths::requires_codex_execution_alias(
+        Path::new(r"C:\Tools\Codex\resources\codex.exe")
+    ));
+}
+
+#[test]
 fn app_paths_returns_none_when_bundled_codex_cli_is_missing() {
     let temp = tempfile::tempdir().unwrap();
     let app = temp.path().join("ChatGPT.app");

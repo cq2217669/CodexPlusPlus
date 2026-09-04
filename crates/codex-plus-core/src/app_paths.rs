@@ -455,6 +455,16 @@ pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
+/// Windows 商店包内资源文件不能由外部进程直接执行，必须使用系统 CLI 命令。
+pub fn requires_codex_execution_alias(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    normalized.contains("\\program files\\windowsapps\\")
+        && normalized.ends_with("\\app\\resources\\codex.exe")
+}
+
 pub fn codex_app_version(app_dir: &Path) -> Option<String> {
     if app_dir.extension() == Some(OsStr::new("app")) {
         return macos_app_version(app_dir);

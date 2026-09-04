@@ -1247,6 +1247,12 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
             json!({ "path": null }),
         );
     };
+    if codex_plus_core::app_paths::requires_codex_execution_alias(&path) {
+        return ok(
+            "已填入 Windows 商店版 Codex CLI 命令。",
+            json!({ "path": "codex" }),
+        );
+    }
     ok(
         "已填入桌面版内置 Codex CLI。",
         json!({ "path": path.to_string_lossy() }),

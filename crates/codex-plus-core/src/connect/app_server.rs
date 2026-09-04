@@ -91,13 +91,22 @@ fn validate_codex_executable(executable: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn resolve_codex_executable(executable: &str) -> &str {
+    if crate::app_paths::requires_codex_execution_alias(Path::new(executable)) {
+        "codex"
+    } else {
+        executable
+    }
+}
+
 impl CodexAppServer {
     pub async fn start(config: AppServerConfig) -> anyhow::Result<Self> {
-        let executable = if config.executable.trim().is_empty() {
+        let configured_executable = if config.executable.trim().is_empty() {
             "codex"
         } else {
             config.executable.trim()
         };
+        let executable = resolve_codex_executable(configured_executable);
         validate_codex_executable(executable)?;
         let mut command = Command::new(executable);
         command
@@ -671,6 +680,20 @@ mod tests {
 
         // 裸命令名交给 PATH 解析，不该在这里被拦下
         assert!(validate_codex_executable("codex").is_ok());
+    }
+
+    #[test]
+    fn store_bundled_cli_uses_the_codex_execution_alias() {
+        assert_eq!(
+            resolve_codex_executable(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.901.2854.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+            ),
+            "codex"
+        );
+        assert_eq!(
+            resolve_codex_executable(r"C:\Tools\Codex\codex.exe"),
+            r"C:\Tools\Codex\codex.exe"
+        );
     }
 
     #[cfg(unix)]
