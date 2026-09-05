@@ -681,6 +681,43 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("delete unexecuted tasks failed: {error}"))?
     }
 
+    async fn prompt_optimize_project_map(
+        &self,
+        session_id: String,
+        draft: String,
+    ) -> anyhow::Result<Option<String>> {
+        let db_paths = self.candidate_db_paths();
+        let backup_dir = self.backup_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            for db_path in db_paths {
+                let adapter = codex_plus_data::SQLiteStorageAdapter::new(
+                    db_path,
+                    codex_plus_data::BackupStore::new(backup_dir.clone()),
+                );
+                let Ok(sessions) = adapter.list_local_sessions() else {
+                    continue;
+                };
+                let Some(session) = sessions
+                    .into_iter()
+                    .find(|session| session.id == session_id)
+                else {
+                    continue;
+                };
+                let workspace_path = session.cwd.trim();
+                if workspace_path.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(codex_plus_core::prompt_optimize::build_project_map(
+                    std::path::Path::new(workspace_path),
+                    &draft,
+                ));
+            }
+            Ok(None)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("prompt optimize project map task failed: {error}"))?
+    }
+
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult> {
         let adapter = self.storage_adapter();
         tokio::task::spawn_blocking(move || adapter.undo(&undo_token))

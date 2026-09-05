@@ -161,8 +161,12 @@ fn prompt_optimize_button_is_anchored_before_the_model_selector_with_spacing() {
     let script = assets::prompt_optimize_script();
 
     assert!(script.contains("function modelSelectorBeforeSend(clickables, send)"));
-    assert!(script.contains("return { node: modelSelector.parentElement, before: modelSelector };"));
-    assert!(script.contains("return { node: send.parentElement || send.parentNode, before: send };"));
+    assert!(
+        script.contains("return { node: modelSelector.parentElement, before: modelSelector };")
+    );
+    assert!(
+        script.contains("return { node: send.parentElement || send.parentNode, before: send };")
+    );
     assert!(script.contains("margin-right:8px"));
 }
 
@@ -173,8 +177,35 @@ fn prompt_optimize_shortcut_is_scoped_to_the_composer_and_cleaned_up() {
     assert!(script.contains("function isPromptOptimizeShortcut(event)"));
     assert!(script.contains("event.isComposing || event.keyCode === 229"));
     assert!(script.contains("return input === target || input.contains(target);"));
-    assert!(script.contains("window.addEventListener(\"keydown\", runtime.shortcutHandler, true);"));
-    assert!(script.contains("window.removeEventListener(\"keydown\", runtime.shortcutHandler, true);"));
+    assert!(
+        script.contains("window.addEventListener(\"keydown\", runtime.shortcutHandler, true);")
+    );
+    assert!(
+        script.contains("window.removeEventListener(\"keydown\", runtime.shortcutHandler, true);")
+    );
+}
+
+#[test]
+fn prompt_optimize_settings_panel_tracks_client_theme_and_accepts_settings_payloads() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("function detectAppearance()"));
+    assert!(script.contains("overlay.dataset.cpoTheme = detectAppearance();"));
+    assert!(script.contains("[data-cpo-theme=\"dark\"]"));
+    assert!(script.contains("function isSuccessfulSettingsSave(result)"));
+    assert!(script.contains("typeof result.codexAppPromptOptimizeProtocol === \"string\""));
+}
+
+#[test]
+fn prompt_optimize_sends_bounded_conversation_and_conditional_project_context() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("const SCRIPT_VERSION = \"1.1.0\";"));
+    assert!(script.contains("function collectRecentConversationTurns()"));
+    assert!(script.contains("const recentTurns = collectRecentConversationTurns();"));
+    assert!(script.contains("sessionId: currentSessionId()"));
+    assert!(script.contains("recentTurns,"));
+    assert!(script.contains("includeProjectMap: promptOptimizeContext.shouldIncludeProjectMap"));
 }
 
 #[test]

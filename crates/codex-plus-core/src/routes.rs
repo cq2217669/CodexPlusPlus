@@ -120,6 +120,13 @@ pub trait BridgeDataService: Send + Sync {
     ) -> anyhow::Result<Value> {
         anyhow::bail!("未执行任务清理不可用")
     }
+    async fn prompt_optimize_project_map(
+        &self,
+        _session_id: String,
+        _draft: String,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
@@ -241,7 +248,12 @@ pub async fn handle_bridge_request(
             prompt_optimize_settings_value(ctx.settings.get_settings().await)
         }
         "/prompt-optimize/generate" => {
-            prompt_optimize_generate_value(ctx.settings.get_settings().await, payload.clone()).await
+            prompt_optimize_generate_value(
+                ctx.settings.get_settings().await,
+                ctx.data.clone(),
+                payload.clone(),
+            )
+            .await
         }
         "/relay-balance/query" => {
             relay_balance_query_value(ctx.settings.get_settings().await, payload.clone()).await
@@ -740,15 +752,33 @@ fn prompt_optimize_settings_value(
 
 async fn prompt_optimize_generate_value(
     result: anyhow::Result<BackendSettings>,
+    data: Arc<dyn BridgeDataService>,
     payload: Value,
 ) -> anyhow::Result<Value> {
     let settings = result?;
-    let text = payload
+    let fallback_text = payload
         .get("text")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    crate::prompt_optimize::generate(&text, &settings).await
+    let request = serde_json::from_value::<crate::prompt_optimize::PromptOptimizeRequest>(payload)
+        .unwrap_or(crate::prompt_optimize::PromptOptimizeRequest {
+            text: fallback_text,
+            ..crate::prompt_optimize::PromptOptimizeRequest::default()
+        });
+    let project_map = if settings.codex_app_prompt_optimize_enabled
+        && !request.context.session_id.trim().is_empty()
+        && crate::prompt_optimize::should_include_project_map(
+            &request,
+            &settings.codex_app_prompt_optimize_style,
+        ) {
+        data.prompt_optimize_project_map(request.context.session_id.clone(), request.text.clone())
+            .await
+            .unwrap_or(None)
+    } else {
+        None
+    };
+    crate::prompt_optimize::generate_with_context(&request, project_map.as_deref(), &settings).await
 }
 
 fn workspace_path_from_payload(payload: &Value) -> String {

@@ -14,19 +14,25 @@
  * self-destroys when the feature is disabled or the bridge is missing.
  */
 (() => {
-  const SCRIPT_VERSION = "1.0.3";
-  const INSTANCE_REVISION = "official-2026-09-v4";
+  const SCRIPT_VERSION = "1.1.0";
+  const INSTANCE_REVISION = "official-2026-09-v6";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
   const BUTTON_ATTR = `data-cpo-button-${INSTANCE_REVISION}`;
   const PANEL_ATTR = `data-cpo-panel-${INSTANCE_REVISION}`;
   const TOAST_ATTR = `data-cpo-toast-${INSTANCE_REVISION}`;
-  const BUTTON_ICON = "✨";
+  const BUTTON_LABELS = {
+    idle: "润色",
+    loading: "润色中...",
+    restore: "恢复",
+  };
   const POLL_MS = 1800;
   const DEBOUNCE_MS = 120;
   const TOAST_MS = 2400;
   const BRIDGE_TIMEOUT_MS = 75000;
+  const MAX_CONTEXT_TURNS = 4;
+  const MAX_CONTEXT_CHARS = 6000;
   const DEFAULT_BASE_URLS = {
     openai: "https://api.openai.com/v1",
     anthropic: "https://api.anthropic.com",
@@ -62,6 +68,65 @@
     return;
   }
 
+  const promptOptimizeState = (() => {
+    function create() {
+      return { mode: "idle", originalText: null, optimizedText: null };
+    }
+
+    function saveSnapshotIfApplied(state, originalText, optimizedText, wasApplied) {
+      if (!wasApplied) return false;
+      state.mode = "optimized";
+      state.originalText = originalText;
+      state.optimizedText = optimizedText;
+      return true;
+    }
+
+    function clearSnapshot(state) {
+      state.mode = "idle";
+      state.originalText = null;
+      state.optimizedText = null;
+    }
+
+    function needsRestoreConfirmation(state, currentText) {
+      return state.mode === "optimized" && state.optimizedText !== currentText;
+    }
+
+    return { create, saveSnapshotIfApplied, clearSnapshot, needsRestoreConfirmation };
+  })();
+
+  const promptOptimizeContext = (() => {
+    function selectRecentTurns(turns, maxTurns = MAX_CONTEXT_TURNS, maxChars = MAX_CONTEXT_CHARS) {
+      const selected = [];
+      let remaining = Math.max(0, maxChars);
+      const candidates = Array.isArray(turns) ? turns.slice(-Math.max(0, maxTurns)) : [];
+      for (let index = candidates.length - 1; index >= 0 && remaining > 0; index -= 1) {
+        const candidate = candidates[index] || {};
+        const userText = String(candidate.userText || "").trim();
+        const assistantText = String(candidate.assistantText || "").trim();
+        const turn = {};
+        if (assistantText) {
+          turn.assistantText = assistantText.slice(0, remaining);
+          remaining -= turn.assistantText.length;
+        }
+        if (userText && remaining > 0) {
+          turn.userText = userText.slice(0, remaining);
+          remaining -= turn.userText.length;
+        }
+        if (turn.userText || turn.assistantText) selected.unshift(turn);
+      }
+      return selected;
+    }
+
+    function shouldIncludeProjectMap(draft, style) {
+      if (style === "coding") return true;
+      return /(?:当前|这个|本|项目|仓库|代码库|模块|文件|函数|类|接口|测试|构建|编译|依赖|repo|repository|project|workspace|codebase|module|file|function|class|interface|test|build|compile|dependency)/i.test(
+        String(draft || ""),
+      );
+    }
+
+    return { selectRecentTurns, shouldIncludeProjectMap };
+  })();
+
   const runtime = {
     observer: null,
     pollId: 0,
@@ -82,30 +147,43 @@
   // draft instead of the optimized one.
   const threadState = Object.create(null);
 
+  function locationSessionId() {
+    const source = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const match =
+      source.match(/(?:session|conversation|thread)(?:\/|=|:|-)([A-Za-z0-9_.-]+)/i) ||
+      source.match(/\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#]|$)/) ||
+      source.match(/\/([A-Za-z0-9_-]{24,})(?:[/?#]|$)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
   function currentThreadKey() {
     const input = findComposerInput();
-    if (!input) return "__draft__";
-    let node = input;
-    while (node && node !== document.body) {
-      const id =
-        node.getAttribute && node.getAttribute("data-app-action-sidebar-thread-id");
-      if (id) return id;
-      node = node.parentNode;
+    if (input) {
+      let node = input;
+      while (node && node !== document.body) {
+        const id =
+          node.getAttribute && node.getAttribute("data-app-action-sidebar-thread-id");
+        if (id) return id;
+        node = node.parentNode;
+      }
     }
-    return "__draft__";
+    return locationSessionId() || "__draft__";
+  }
+
+  function currentSessionId() {
+    const threadKey = currentThreadKey();
+    return threadKey === "__draft__" ? "" : threadKey;
   }
 
   function getThreadState() {
     const key = currentThreadKey();
-    const state = threadState[key] || { mode: "idle", originalText: null };
+    const state = threadState[key] || promptOptimizeState.create();
     threadState[key] = state;
     return state;
   }
 
-  function clearThreadOptimized() {
-    const state = getThreadState();
-    state.mode = "idle";
-    state.originalText = null;
+  function clearThreadOptimized(state) {
+    promptOptimizeState.clearSnapshot(state || getThreadState());
   }
 
   function bridgeCall(path, payload) {
@@ -144,6 +222,43 @@
 
   function normalizeText(value) {
     return collapseWs(value);
+  }
+
+  function roleFromConversationLabel(label) {
+    const text = normalizeText(label?.textContent || "");
+    if (/^(你说|you said|user)\s*[:：]?$/i.test(text)) return "user";
+    if (/^(ChatGPT|assistant|codex)(?:\s+说|\s+said)?\s*[:：]?$/i.test(text)) return "assistant";
+    return "";
+  }
+
+  function conversationMessageText(container) {
+    if (!(container instanceof Element)) return "";
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll?.("h4.sr-only,button,[role='button'],svg").forEach((item) => item.remove());
+    return normalizeText(clone.textContent || "");
+  }
+
+  function labeledConversationMessage(turn, role) {
+    if (!(turn instanceof Element)) return "";
+    const labels = Array.from(turn.querySelectorAll("h4.sr-only"));
+    for (let index = labels.length - 1; index >= 0; index -= 1) {
+      const label = labels[index];
+      if (roleFromConversationLabel(label) !== role) continue;
+      return conversationMessageText(label.parentElement);
+    }
+    return "";
+  }
+
+  function collectRecentConversationTurns() {
+    const turns = Array.from(
+      document.querySelectorAll(
+        "div.contents[data-content-search-turn-key], [data-testid='conversation-turn']",
+      ),
+    ).map((turn) => ({
+      userText: labeledConversationMessage(turn, "user"),
+      assistantText: labeledConversationMessage(turn, "assistant"),
+    }));
+    return promptOptimizeContext.selectRecentTurns(turns);
   }
 
   function collapseWs(value) {
@@ -363,29 +478,71 @@
     }, TOAST_MS);
   }
 
+  function detectAppearance() {
+    const root = document.documentElement;
+    const body = document.body;
+    const classes = `${root?.className || ""} ${body?.className || ""}`.toLowerCase();
+    if (/\b(dark|electron-dark|theme-dark|appearance-dark|dream-theme-dark)\b/.test(classes)) return "dark";
+    if (/\b(light|electron-light|theme-light|appearance-light|dream-theme-light)\b/.test(classes)) return "light";
+
+    const dataTheme = [root, body]
+      .flatMap((element) => [
+        element?.getAttribute("data-theme"),
+        element?.getAttribute("data-appearance"),
+        element?.getAttribute("data-color-mode"),
+      ])
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    if (dataTheme.includes("dark")) return "dark";
+    if (dataTheme.includes("light")) return "light";
+
+    try {
+      const colorScheme = `${getComputedStyle(root).colorScheme} ${getComputedStyle(body).colorScheme}`;
+      if (colorScheme.includes("dark") && !colorScheme.includes("light")) return "dark";
+      if (colorScheme.includes("light") && !colorScheme.includes("dark")) return "light";
+    } catch (_) {
+      /* fall through */
+    }
+
+    try {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch (_) {
+      return "light";
+    }
+  }
+
+  function isSuccessfulSettingsSave(result) {
+    return Boolean(
+      result &&
+        result.status !== "failed" &&
+        (result.status === "ok" || typeof result.codexAppPromptOptimizeProtocol === "string"),
+    );
+  }
+
   function installStyle() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
-      [${BUTTON_ATTR}]{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:15px;line-height:1;flex:none;user-select:none}
+      [${BUTTON_ATTR}]{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:30px;padding:0 7px;border-radius:8px;cursor:pointer;font-size:12px;line-height:1;flex:none;user-select:none}
       [${BUTTON_ATTR}]:hover{background:rgba(128,128,128,.14)}
       [${BUTTON_ATTR}].cpo-loading{opacity:.55;cursor:progress}
-      [${BUTTON_ATTR}].cpo-restore{transform:rotate(180deg)}
-      [${PANEL_ATTR}]{all:initial;position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.28);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:#111}
-      [${PANEL_ATTR}] .cpo-card{width:min(520px,calc(100vw - 40px));max-height:min(620px,calc(100vh - 40px));overflow:auto;background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 18px 50px rgba(0,0,0,.24)}
+      [${PANEL_ATTR}]{all:initial;--cpo-overlay:rgba(0,0,0,.28);--cpo-surface:#fff;--cpo-input:#fff;--cpo-text:#111;--cpo-muted:#666;--cpo-label:#333;--cpo-border:#ccc;--cpo-key:#1a7f37;--cpo-primary:#111;position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:var(--cpo-overlay);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--cpo-text);color-scheme:light}
+      [${PANEL_ATTR}][data-cpo-theme="dark"]{--cpo-overlay:rgba(0,0,0,.56);--cpo-surface:#1d1f23;--cpo-input:#282b30;--cpo-text:#f4f5f7;--cpo-muted:#b2b8c2;--cpo-label:#e5e7eb;--cpo-border:#464c56;--cpo-key:#74d69b;--cpo-primary:#e9edf3;color-scheme:dark}
+      [${PANEL_ATTR}] .cpo-card{width:min(520px,calc(100vw - 40px));max-height:min(620px,calc(100vh - 40px));overflow:auto;background:var(--cpo-surface);border:1px solid var(--cpo-border);border-radius:12px;padding:18px 20px;box-shadow:0 18px 50px rgba(0,0,0,.24)}
       [${PANEL_ATTR}] h2{margin:0 0 4px;font-size:16px}
-      [${PANEL_ATTR}] .cpo-sub{margin:0 0 14px;color:#666}
+      [${PANEL_ATTR}] .cpo-sub{margin:0 0 14px;color:var(--cpo-muted)}
       [${PANEL_ATTR}] .cpo-field{margin:10px 0}
-      [${PANEL_ATTR}] label{display:block;margin-bottom:4px;font-weight:600;color:#333}
-      [${PANEL_ATTR}] input,[${PANEL_ATTR}] select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #ccc;border-radius:8px;font:inherit;background:#fff;color:#111}
+      [${PANEL_ATTR}] label{display:block;margin-bottom:4px;font-weight:600;color:var(--cpo-label)}
+      [${PANEL_ATTR}] input,[${PANEL_ATTR}] select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--cpo-border);border-radius:8px;font:inherit;background:var(--cpo-input);color:var(--cpo-text)}
       [${PANEL_ATTR}] .cpo-row{display:flex;gap:10px}
       [${PANEL_ATTR}] .cpo-row>.cpo-field{flex:1}
-      [${PANEL_ATTR}] .cpo-hint{margin:6px 0 0;color:#888;font-size:12px}
-      [${PANEL_ATTR}] .cpo-key-state{margin-top:6px;font-size:12px;color:#1a7f37}
+      [${PANEL_ATTR}] .cpo-hint{margin:6px 0 0;color:var(--cpo-muted);font-size:12px}
+      [${PANEL_ATTR}] .cpo-key-state{margin-top:6px;font-size:12px;color:var(--cpo-key)}
       [${PANEL_ATTR}] .cpo-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
-      [${PANEL_ATTR}] button{all:unset;box-sizing:border-box;padding:8px 16px;border-radius:8px;cursor:pointer;font:inherit;border:1px solid #ccc;background:#fff;color:#111}
-      [${PANEL_ATTR}] button.cpo-primary{background:#111;border-color:#111;color:#fff}
+      [${PANEL_ATTR}] button{all:unset;box-sizing:border-box;padding:8px 16px;border-radius:8px;cursor:pointer;font:inherit;border:1px solid var(--cpo-border);background:var(--cpo-input);color:var(--cpo-text)}
+      [${PANEL_ATTR}] button.cpo-primary{background:var(--cpo-primary);border-color:var(--cpo-primary);color:var(--cpo-surface)}
       [${PANEL_ATTR}] button:disabled{opacity:.5;cursor:not-allowed}
       .cpo-toast{all:initial;position:fixed;left:50%;bottom:56px;transform:translateX(-50%);z-index:2147483001;background:#111;color:#fff;padding:9px 16px;border-radius:999px;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.24);max-width:min(560px,calc(100vw - 40px))}
       .cpo-toast.cpo-toast-error{background:#b42318}
@@ -401,7 +558,7 @@
 
   function currentButtonState() {
     const state = getThreadState();
-    return state.mode === "optimized" ? "restore" : runtime.loading ? "loading" : "idle";
+    return runtime.loading ? "loading" : state.mode === "optimized" ? "restore" : "idle";
   }
 
   function refreshButtonAppearance(button) {
@@ -409,12 +566,15 @@
     if (!(current instanceof HTMLElement)) return;
     const state = currentButtonState();
     current.classList.toggle("cpo-loading", state === "loading");
-    current.classList.toggle("cpo-restore", state === "restore");
+    current.disabled = state === "loading";
+    current.setAttribute("aria-busy", state === "loading" ? "true" : "false");
+    current.setAttribute("aria-label", BUTTON_LABELS[state]);
+    current.textContent = BUTTON_LABELS[state];
     current.title =
       state === "loading"
-        ? "正在优化，点击取消"
+        ? "正在润色"
         : state === "restore"
-          ? "还原原文"
+          ? "恢复润色前的文本"
           : "润色（右键设置）";
   }
 
@@ -422,8 +582,6 @@
     const button = document.createElement("button");
     button.setAttribute(BUTTON_ATTR, "true");
     button.type = "button";
-    button.setAttribute("aria-label", "润色");
-    button.textContent = BUTTON_ICON;
     button.addEventListener("click", onButtonClick);
     button.addEventListener("contextmenu", onButtonContextMenu);
     refreshButtonAppearance(button);
@@ -517,30 +675,45 @@
 
   async function runOptimize() {
     const epoch = runtime.epoch;
-    if (!(await refreshSettings())) {
-      if (!runtime.bridgeBroken) showToast("无法读取润色配置", "error");
-      return;
-    }
-    if (!runtime.settings.enabled) {
-      destroyAll();
-      return;
-    }
-    if (!isConfigured(runtime.settings)) {
-      showToast("请先配置 API", "");
-      openSettingsPanel();
-      return;
-    }
-    const input = findComposerInput();
-    const original = normalizeText(readComposerText(input));
-    if (!original) {
-      showToast("请先输入内容", "");
-      return;
-    }
-    const state = getThreadState();
     runtime.loading = true;
     refreshButtonAppearance();
     try {
-      const result = await bridgeCall("/prompt-optimize/generate", { text: original });
+      if (!(await refreshSettings())) {
+        if (!runtime.bridgeBroken) showToast("无法读取润色配置", "error");
+        return;
+      }
+      if (!runtime.settings.enabled) {
+        destroyAll();
+        return;
+      }
+      if (!isConfigured(runtime.settings)) {
+        showToast("请先配置 API", "");
+        openSettingsPanel();
+        return;
+      }
+      const input = findComposerInput();
+      const original = normalizeText(readComposerText(input));
+      if (!original) {
+        showToast("请先输入内容", "");
+        return;
+      }
+      const state = getThreadState();
+      const recentTurns = collectRecentConversationTurns();
+      const projectContextHint = [
+        original,
+        ...recentTurns.flatMap((turn) => [turn.userText || "", turn.assistantText || ""]),
+      ].join("\n");
+      const result = await bridgeCall("/prompt-optimize/generate", {
+        text: original,
+        context: {
+          sessionId: currentSessionId(),
+          recentTurns,
+          includeProjectMap: promptOptimizeContext.shouldIncludeProjectMap(
+            projectContextHint,
+            runtime.settings.style,
+          ),
+        },
+      });
       if (epoch !== runtime.epoch) return;
       if (!result || result.status !== "ok") {
         const message = result && result.error ? result.error : "优化失败";
@@ -558,10 +731,8 @@
         return;
       }
       const writeResult = await writeComposerTextWithFallback(optimized, activeInput);
-      if (writeResult.ok) {
-        state.mode = "optimized";
-        state.originalText = original;
-        showToast("已优化，再次点击可还原", "");
+      if (promptOptimizeState.saveSnapshotIfApplied(state, original, optimized, writeResult.ok)) {
+        showToast("已润色，点击恢复可还原原文", "");
       } else if (writeResult.clipboard) {
         showToast("优化结果已复制，请手动替换输入框内容", "");
       } else {
@@ -582,10 +753,17 @@
       return;
     }
     const input = findComposerInput();
+    const currentText = normalizeText(readComposerText(input));
+    if (
+      promptOptimizeState.needsRestoreConfirmation(state, currentText) &&
+      !window.confirm("当前文本已编辑。恢复将覆盖当前编辑，是否继续？")
+    ) {
+      return;
+    }
     const writeResult = await writeComposerTextWithFallback(state.originalText, input);
     if (writeResult.ok) {
-      clearThreadOptimized();
-      showToast("已还原原文", "");
+      clearThreadOptimized(state);
+      showToast("已恢复润色前的文本", "");
     } else if (writeResult.clipboard) {
       showToast("原文已复制，请手动替换输入框内容", "");
     } else {
@@ -598,13 +776,7 @@
     event.preventDefault();
     event.stopPropagation();
     if (runtime.disposed) return;
-    if (runtime.loading) {
-      runtime.epoch += 1;
-      runtime.loading = false;
-      refreshButtonAppearance();
-      showToast("已取消本次优化，原输入未改动", "");
-      return;
-    }
+    if (runtime.loading) return;
     const state = getThreadState();
     if (state.mode === "optimized") {
       void runRestore();
@@ -628,6 +800,7 @@
     const settings = (await refreshSettings()) || runtime.settings || {};
     const overlay = document.createElement("div");
     overlay.setAttribute(PANEL_ATTR, "true");
+    overlay.dataset.cpoTheme = detectAppearance();
     const protocol = settings.protocol === "anthropic" ? "anthropic" : "openai";
     const baseUrl = settings.baseUrl || DEFAULT_BASE_URLS[protocol];
     const model = settings.model || DEFAULT_MODELS[protocol];
@@ -747,7 +920,7 @@
     if (saveButton) saveButton.disabled = true;
     try {
       const result = await bridgeCall("/settings/set", next);
-      if (!result || result.status !== "ok") {
+      if (!isSuccessfulSettingsSave(result)) {
         const message = result && result.message ? result.message : "保存设置失败";
         showToast(String(message).slice(0, 200), "error");
         return;

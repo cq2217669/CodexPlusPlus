@@ -81,7 +81,11 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
             .contains("<string>Xuan++ 管理工具</string>")
     );
     assert!(manager.info_plist.contains("<string>dreamskin</string>"));
-    assert!(manager.info_plist.contains("<string>codexplusplus</string>"));
+    assert!(
+        manager
+            .info_plist
+            .contains("<string>codexplusplus</string>")
+    );
     assert!(!silent.info_plist.contains("<string>dreamskin</string>"));
     assert_eq!(
         silent.binary_target_name.as_deref(),
@@ -103,6 +107,17 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
 fn installer_exports_expected_two_entrypoint_names() {
     assert_eq!(shortcut_names(), ("Xuan++.lnk", "Xuan++ 管理工具.lnk"));
     assert_eq!(app_bundle_names(), ("Xuan++.app", "Xuan++ 管理工具.app"));
+}
+
+#[test]
+fn windows_installer_launches_manager_after_installation() {
+    let script = std::fs::read_to_string("../../scripts/installer/windows/XuanPlusPlus.nsi")
+        .expect("read Windows installer script");
+
+    assert!(script.contains("Exec '\"$INSTDIR\\codex-plus-plus-manager.exe\"'"));
+    assert!(script.contains(
+        "CreateShortcut \"$DESKTOP\\Xuan++.lnk\" \"$INSTDIR\\codex-plus-plus-manager.exe\""
+    ));
 }
 
 #[test]

@@ -30,7 +30,7 @@ SetCompressor /SOLID lzma
 
 Function LaunchApplication
   IfSilent done
-  Exec '"$INSTDIR\codex-plus-plus.exe"'
+  Exec '"$INSTDIR\codex-plus-plus-manager.exe"'
 done:
 FunctionEnd
 
@@ -48,10 +48,10 @@ Section "Install"
   Delete "$DESKTOP\Xuan++ 绠＄悊宸ュ叿.lnk"
   Delete "$SMPROGRAMS\Xuan++\Xuan++ 绠＄悊宸ュ叿.lnk"
 
-  CreateShortcut "$DESKTOP\Xuan++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
+  CreateShortcut "$DESKTOP\Xuan++.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
   CreateShortcut "$DESKTOP\Xuan++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
   CreateDirectory "$SMPROGRAMS\Xuan++"
-  CreateShortcut "$SMPROGRAMS\Xuan++\Xuan++.lnk" "$INSTDIR\codex-plus-plus.exe" "" "$INSTDIR\codex-plus-plus.exe"
+  CreateShortcut "$SMPROGRAMS\Xuan++\Xuan++.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
   CreateShortcut "$SMPROGRAMS\Xuan++\Xuan++ 管理工具.lnk" "$INSTDIR\codex-plus-plus-manager.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
   CreateShortcut "$SMPROGRAMS\Xuan++\卸载 Xuan++.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\codex-plus-plus-manager.exe"
 
