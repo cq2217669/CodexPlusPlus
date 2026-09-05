@@ -667,6 +667,7 @@ fn settings_payload_value(
     if let Some(object) = value.as_object_mut() {
         object.remove("codexAppStepwiseApiKey");
         object.remove("codexAppPromptOptimizeApiKey");
+        object.remove("codexAppRelayBalanceOwlToken");
         object.insert(
             "activeRelaySessionProvider".to_string(),
             Value::String(active_relay_session_provider.as_str().to_string()),

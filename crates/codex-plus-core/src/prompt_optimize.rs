@@ -8,7 +8,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, Header
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::settings::BackendSettings;
+use crate::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const TEMPERATURE: f64 = 0.3;
@@ -21,6 +21,7 @@ const MAX_PROJECT_MAP_DEPTH: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptOptimizeProtocol {
     OpenAi,
+    Responses,
     Anthropic,
 }
 
@@ -36,6 +37,7 @@ impl PromptOptimizeProtocol {
     fn as_str(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::Responses => "responses",
             Self::Anthropic => "anthropic",
         }
     }
@@ -44,6 +46,12 @@ impl PromptOptimizeProtocol {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptOptimizePublicSettings {
+    pub relay_id: String,
+    pub providers: Vec<PromptOptimizeProvider>,
+    pub configuration_error: Option<String>,
+    pub manual_protocol: String,
+    pub manual_base_url: String,
+    pub manual_model: String,
     pub enabled: bool,
     pub protocol: String,
     pub base_url: String,
@@ -57,6 +65,62 @@ pub struct PromptOptimizePublicSettings {
     pub max_input_chars: u32,
     pub max_output_tokens: u32,
     pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptOptimizeProvider {
+    pub id: String,
+    pub name: String,
+}
+
+struct PromptOptimizeConnection {
+    protocol: PromptOptimizeProtocol,
+    base_url: String,
+    api_key: String,
+    model: String,
+    user_agent: String,
+}
+
+fn reusable_provider(profile: &RelayProfile) -> bool {
+    profile.relay_mode != RelayMode::Aggregate
+        && (profile.relay_mode != RelayMode::Official || profile.official_mix_api_key)
+}
+
+fn resolve_connection(settings: &BackendSettings) -> Result<PromptOptimizeConnection, String> {
+    let relay_id = settings.codex_app_prompt_optimize_relay_id.trim();
+    if relay_id.is_empty() {
+        return Ok(PromptOptimizeConnection {
+            protocol: PromptOptimizeProtocol::from_setting(
+                &settings.codex_app_prompt_optimize_protocol,
+            ),
+            base_url: settings.codex_app_prompt_optimize_base_url.clone(),
+            api_key: prompt_optimize_api_key(settings),
+            model: settings.codex_app_prompt_optimize_model.clone(),
+            user_agent: String::new(),
+        });
+    }
+    let profile = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == relay_id)
+        .ok_or_else(|| {
+            "润色所选供应商已删除，请重新选择供应商或改用手动配置".to_string()
+        })?;
+    if !reusable_provider(profile) {
+        return Err("润色需要普通 API 供应商，不能使用纯官方登录或聚合供应商".to_string());
+    }
+    // 引用失效时不回退到手动密钥，避免将凭据发送给错误的供应商。
+    Ok(PromptOptimizeConnection {
+        protocol: match profile.protocol {
+            RelayProtocol::Responses => PromptOptimizeProtocol::Responses,
+            RelayProtocol::ChatCompletions => PromptOptimizeProtocol::OpenAi,
+        },
+        base_url: crate::relay_config::relay_profile_base_url(profile),
+        api_key: crate::relay_config::relay_profile_api_key(profile),
+        model: settings.codex_app_prompt_optimize_model.clone(),
+        user_agent: profile.user_agent.clone(),
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -89,19 +153,47 @@ pub struct PromptOptimizeTurn {
 }
 
 pub fn public_settings(settings: &BackendSettings) -> PromptOptimizePublicSettings {
+    let resolved = resolve_connection(settings);
+    let configuration_error = resolved.as_ref().err().cloned();
+    let connection = resolved.ok();
+    let manual = settings.codex_app_prompt_optimize_relay_id.trim().is_empty();
     PromptOptimizePublicSettings {
+        relay_id: settings.codex_app_prompt_optimize_relay_id.clone(),
+        providers: settings
+            .relay_profiles
+            .iter()
+            .filter(|profile| reusable_provider(profile))
+            .map(|profile| PromptOptimizeProvider {
+                id: profile.id.clone(),
+                name: if profile.name.trim().is_empty() {
+                    "未命名供应商".to_string()
+                } else {
+                    profile.name.clone()
+                },
+            })
+            .collect(),
+        configuration_error,
+        manual_protocol: settings.codex_app_prompt_optimize_protocol.clone(),
+        manual_base_url: settings.codex_app_prompt_optimize_base_url.clone(),
+        manual_model: settings.codex_app_prompt_optimize_model.clone(),
         enabled: settings.codex_app_prompt_optimize_enabled,
-        protocol: crate::settings::normalize_prompt_optimize_protocol(
-            &settings.codex_app_prompt_optimize_protocol,
-        ),
-        base_url: settings.codex_app_prompt_optimize_base_url.clone(),
-        base_url_configured: !settings
-            .codex_app_prompt_optimize_base_url
-            .trim()
-            .is_empty(),
-        api_key_configured: !prompt_optimize_api_key(settings).is_empty(),
+        protocol: connection
+            .as_ref()
+            .map(|value| value.protocol.as_str())
+            .unwrap_or("openai")
+            .to_string(),
+        base_url: connection
+            .as_ref()
+            .map(|value| value.base_url.clone())
+            .unwrap_or_default(),
+        base_url_configured: connection
+            .as_ref()
+            .is_some_and(|value| !value.base_url.trim().is_empty()),
+        api_key_configured: connection
+            .as_ref()
+            .is_some_and(|value| !value.api_key.trim().is_empty()),
         api_key_env: settings.codex_app_prompt_optimize_api_key_env.clone(),
-        api_key_env_configured: std::env::var(
+        api_key_env_configured: manual && std::env::var(
             settings.codex_app_prompt_optimize_api_key_env.trim(),
         )
         .map(|value| !value.trim().is_empty())
@@ -157,12 +249,14 @@ pub async fn generate_with_context(
         ));
     }
 
-    let base_url = settings
-        .codex_app_prompt_optimize_base_url
-        .trim()
-        .trim_end_matches('/');
-    let api_key = prompt_optimize_api_key(settings);
-    let model = settings.codex_app_prompt_optimize_model.trim();
+    let connection = match resolve_connection(settings) {
+        Ok(connection) => connection,
+        Err(error) => return Ok(failed_result(protocol.as_str(), error)),
+    };
+    let protocol = connection.protocol;
+    let base_url = connection.base_url.trim().trim_end_matches('/');
+    let api_key = connection.api_key.trim();
+    let model = connection.model.trim();
     if base_url.is_empty() {
         return Ok(failed_result(
             protocol.as_str(),
@@ -172,7 +266,7 @@ pub async fn generate_with_context(
     if model.is_empty() {
         return Ok(failed_result(
             protocol.as_str(),
-            "Prompt Optimize Model 未配置",
+            "请先设置润色模型",
         ));
     }
     if api_key.is_empty() {
@@ -184,8 +278,8 @@ pub async fn generate_with_context(
 
     let user_prompt = contextual_user_prompt(draft, &request.context.recent_turns, project_map);
     let upstream =
-        build_upstream_request(protocol, base_url, &api_key, model, &user_prompt, settings)?;
-    let client = crate::http_client::proxied_client("")?;
+        build_upstream_request(protocol, base_url, api_key, model, &user_prompt, settings)?;
+    let client = crate::http_client::proxied_client(&connection.user_agent)?;
     let timeout = Duration::from_millis(settings.codex_app_prompt_optimize_timeout_ms);
     let response = match client
         .post(&upstream.endpoint)
@@ -201,7 +295,7 @@ pub async fn generate_with_context(
                 protocol.as_str(),
                 format!(
                     "请求上游失败：{}",
-                    redact_secret(&error.to_string(), &api_key)
+                    redact_secret(&error.to_string(), api_key)
                 ),
             ));
         }
@@ -222,7 +316,7 @@ pub async fn generate_with_context(
             format!(
                 "上游 {}：{}",
                 status.as_u16(),
-                redact_secret(&text, &api_key)
+                redact_secret(&text, api_key)
             ),
         ));
     }
@@ -494,6 +588,22 @@ fn build_upstream_request(
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let (endpoint, body) = match protocol {
+        PromptOptimizeProtocol::Responses => {
+            insert_bearer_header(&mut headers, api_key)?;
+            let endpoint = if base_url.ends_with("/responses") {
+                base_url.to_string()
+            } else {
+                format!("{base_url}/responses")
+            };
+            (endpoint, json!({
+                "model": model,
+                "instructions": system_prompt_for_style(&settings.codex_app_prompt_optimize_style),
+                "input": draft,
+                "max_output_tokens": settings.codex_app_prompt_optimize_max_output_tokens,
+                "store": false,
+                "stream": false
+            }))
+        }
         PromptOptimizeProtocol::OpenAi => {
             insert_bearer_header(&mut headers, api_key)?;
             let endpoint = if base_url.ends_with("/chat/completions") {
@@ -566,6 +676,24 @@ fn system_prompt_for_style(style: &str) -> &'static str {
 fn extract_optimized_text(protocol: PromptOptimizeProtocol, data: &Value) -> String {
     let mut parts = Vec::new();
     match protocol {
+        PromptOptimizeProtocol::Responses => {
+            if let Some(output) = data.get("output").and_then(Value::as_array) {
+                for item in output {
+                    if item.get("type").and_then(Value::as_str) != Some("message") {
+                        continue;
+                    }
+                    if let Some(content) = item.get("content").and_then(Value::as_array) {
+                        for part in content {
+                            if part.get("type").and_then(Value::as_str) == Some("output_text") {
+                                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                    parts.push(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         PromptOptimizeProtocol::OpenAi => {
             if let Some(text) = data
                 .get("choices")
@@ -717,6 +845,150 @@ mod tests {
             codex_app_prompt_optimize_api_key: TEST_API_KEY.to_string(),
             codex_app_prompt_optimize_model: "gpt-test-mini".to_string(),
             ..BackendSettings::default()
+        }
+    }
+
+    fn provider_settings(base_url: &str, protocol: RelayProtocol) -> BackendSettings {
+        let mut settings = configured_settings("https://manual.example.test/v1");
+        settings.codex_app_prompt_optimize_relay_id = "provider-test".to_string();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "provider-test".to_string(),
+            name: "测试供应商".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol,
+            upstream_base_url: base_url.to_string(),
+            config_contents: format!(
+                "model = \"provider-model\"\nmodel_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"{base_url}\"\n"
+            ),
+            auth_contents: r#"{"OPENAI_API_KEY":"provider-test-key"}"#.to_string(),
+            ..RelayProfile::default()
+        }];
+        settings
+    }
+
+    #[tokio::test]
+    async fn provider_reference_uses_current_credentials_and_independent_model() {
+        use wiremock::matchers::{body_partial_json, header};
+        for (protocol, endpoint, response) in [
+            (RelayProtocol::ChatCompletions, "/chat/completions", json!({
+                "choices": [{"message": {"content": "测试结果"}}]
+            })),
+            (RelayProtocol::Responses, "/responses", json!({
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "测试结果"}]}]
+            })),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .and(header("authorization", "Bearer provider-test-key"))
+                .and(body_partial_json(json!({"model": "gpt-test-mini"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&server).await;
+            let settings = provider_settings(&server.uri(), protocol);
+            let result = test_connection(&settings).await.unwrap();
+            assert_eq!(result["status"], "ok");
+            assert_eq!(result["text"], "测试结果");
+        }
+    }
+
+    #[test]
+    fn provider_reference_follows_edits_without_copying_or_exposing_credentials() {
+        let mut settings = provider_settings("https://provider.example.test/v1", RelayProtocol::Responses);
+        let before = public_settings(&settings);
+        assert_eq!(before.model, "gpt-test-mini");
+        settings.relay_profiles[0].config_contents =
+            "model = \"updated-model\"\nmodel_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://updated.example.test/v1\"\n".to_string();
+        settings.relay_profiles[0].auth_contents = r#"{"OPENAI_API_KEY":"updated-test-key"}"#.to_string();
+        let connection = resolve_connection(&settings).unwrap();
+        assert_eq!(connection.model, "gpt-test-mini");
+        assert_eq!(public_settings(&settings).model, before.model);
+        assert_eq!(connection.base_url, "https://updated.example.test/v1");
+        assert_eq!(connection.api_key, "updated-test-key");
+        let public = serde_json::to_string(&public_settings(&settings)).unwrap();
+        assert!(!public.contains("updated-test-key"));
+        assert!(!public.contains(TEST_API_KEY));
+        settings.codex_app_prompt_optimize_relay_id.clear();
+        let manual = resolve_connection(&settings).unwrap();
+        assert_eq!(manual.api_key, TEST_API_KEY);
+        assert_eq!(manual.base_url, "https://manual.example.test/v1");
+        assert_eq!(manual.model, "gpt-test-mini");
+    }
+
+    #[tokio::test]
+    async fn provider_reference_requires_an_independent_model() {
+        let mut settings = provider_settings("https://provider.example.test/v1", RelayProtocol::Responses);
+        settings.codex_app_prompt_optimize_model = "  ".to_string();
+        let result = test_connection(&settings).await.unwrap();
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["error"], "请先设置润色模型");
+        assert!(public_settings(&settings).model.trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_provider_reference_fails_without_falling_back_to_manual() {
+        let mut settings = provider_settings("https://provider.example.test/v1", RelayProtocol::Responses);
+        for mode in [RelayMode::Official, RelayMode::Aggregate] {
+            settings.relay_profiles[0].relay_mode = mode;
+            assert!(resolve_connection(&settings).is_err());
+        }
+        settings.relay_profiles.clear();
+        let result = generate("测试输入", &settings).await.unwrap();
+        assert_eq!(result["status"], "failed");
+        assert!(result["error"].as_str().unwrap().contains("已删除"));
+        let public = public_settings(&settings);
+        assert!(!public.api_key_configured);
+        assert!(!public.base_url_configured);
+        assert!(public.configuration_error.is_some());
+        assert_eq!(public.model, "gpt-test-mini");
+    }
+
+    #[test]
+    fn provider_reference_survives_settings_save_load_and_partial_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::settings::SettingsStore::new(dir.path().join("settings.json"));
+        let settings = provider_settings("https://provider.example.test/v1", RelayProtocol::Responses);
+        store.save(&settings).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.codex_app_prompt_optimize_relay_id, "provider-test");
+        assert_eq!(resolve_connection(&loaded).unwrap().api_key, "provider-test-key");
+        let updated = store.update(json!({"codexAppPromptOptimizeStyle": "coding"})).unwrap();
+        assert_eq!(updated.codex_app_prompt_optimize_relay_id, "provider-test");
+        let updated = store.update(json!({"codexAppPromptOptimizeRelayId": ""})).unwrap();
+        assert!(updated.codex_app_prompt_optimize_relay_id.is_empty());
+        assert_eq!(resolve_connection(&updated).unwrap().api_key, TEST_API_KEY);
+    }
+
+    #[test]
+    fn independent_model_survives_current_model_and_provider_switches() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::settings::SettingsStore::new(dir.path().join("settings.json"));
+        let mut settings = provider_settings("https://provider.example.test/v1", RelayProtocol::Responses);
+        let mut other = settings.relay_profiles[0].clone();
+        other.id = "provider-other".to_string();
+        other.config_contents = other.config_contents.replace("provider-model", "other-model");
+        settings.relay_profiles.push(other);
+        settings.active_relay_id = "provider-test".to_string();
+        store.save(&settings).unwrap();
+        store.update(json!({"codexAppPromptOptimizeModel": " polish-best "})).unwrap();
+
+        let mut profiles = store.load().unwrap().relay_profiles;
+        profiles[0].config_contents = profiles[0].config_contents.replace("provider-model", "updated-model");
+        store.update(json!({"relayProfiles": profiles})).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(crate::relay_config::relay_profile_model(&loaded.relay_profiles[0]), "updated-model");
+        assert_eq!(resolve_connection(&loaded).unwrap().model, "polish-best");
+
+        store.update(json!({"activeRelayId": "provider-other"})).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.active_relay_id, "provider-other");
+        assert_eq!(loaded.codex_app_prompt_optimize_relay_id, "provider-test");
+        assert_eq!(loaded.codex_app_prompt_optimize_model, "polish-best");
+        assert_eq!(public_settings(&loaded).model, "polish-best");
+
+        for relay_id in ["provider-other", "", "provider-test"] {
+            store.update(json!({"codexAppPromptOptimizeRelayId": relay_id})).unwrap();
+            assert_eq!(resolve_connection(&store.load().unwrap()).unwrap().model, "polish-best");
         }
     }
 

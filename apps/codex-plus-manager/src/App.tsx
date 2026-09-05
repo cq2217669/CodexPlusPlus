@@ -135,6 +135,7 @@ import {
 } from "./dream-skin";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
+import { MobileRemoteScreen } from "./MobileRemoteScreen";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
@@ -263,7 +264,10 @@ type BackendSettings = {
   codexAppStepwiseMaxOutputTokens: number;
   codexAppStepwiseTimeoutMs: number;
   codexAppPromptOptimizeEnabled: boolean;
+  codexAppPromptOptimizeRelayId: string;
   codexAppRelayBalanceEnabled: boolean;
+  codexAppRelayBalanceProvider: string;
+  codexAppRelayBalanceOwlToken: string;
   codexAppPromptOptimizeProtocol: "openai" | "anthropic";
   codexAppPromptOptimizeBaseUrl: string;
   codexAppPromptOptimizeApiKey: string;
@@ -849,7 +853,7 @@ type ManagerNavigationIntent = {
   section?: "stepwise";
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "maintenance" | "settings";
+type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "mobileRemote" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "maintenance" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -862,6 +866,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
   { id: "context", label: t("MCP&插件"), icon: Network },
   { id: "weixin", label: t("微信连接"), icon: ScanLine },
+  { id: "mobileRemote", label: "手机连接", icon: ScanLine },
   { id: "enhance", label: t("Codex增强"), icon: Hammer },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette },
   { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
@@ -878,7 +883,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("扩展"),
-    routes: ["weixin", "enhance", "dreamSkin", "zedRemote", "userScripts"],
+    routes: ["mobileRemote", "weixin", "enhance", "dreamSkin", "zedRemote", "userScripts"],
   },
   {
     label: t("系统"),
@@ -929,7 +934,10 @@ const defaultSettings: BackendSettings = {
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
   codexAppPromptOptimizeEnabled: false,
+  codexAppPromptOptimizeRelayId: "",
   codexAppRelayBalanceEnabled: false,
+  codexAppRelayBalanceProvider: "",
+  codexAppRelayBalanceOwlToken: "",
   codexAppPromptOptimizeProtocol: "openai",
   codexAppPromptOptimizeBaseUrl: "",
   codexAppPromptOptimizeApiKey: "",
@@ -3223,6 +3231,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
+          {route === "mobileRemote" ? <MobileRemoteScreen /> : null}
           {route === "weixin" ? (
             <WeixinConnectScreen
               form={settingsForm}
@@ -4389,7 +4398,7 @@ function EnhanceScreen({
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+              <FeatureToggle title={t("Fast 模式入口")} detail={t("仅显示切换入口，不会自动开启 Fast；当前模式在输入框旁显示，是否可用取决于模型支持情况。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
               <div className="feature-action-row">
                 <div>
                   <strong>{t("官方远端插件缓存")}</strong>
@@ -4429,8 +4438,22 @@ function EnhanceScreen({
             <FeatureGroup title={t("输入增强")} detail={t("控制发送前的输入框增强能力。")}>
               <FeatureToggle title={t("润色")} detail={t("在输入框旁提供 ✨ 一键润色：调用外部 LLM 润色提示词，可一键还原原文。启停后需重启轩++生效。")} checked={form.codexAppPromptOptimizeEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPromptOptimizeEnabled", value)} />
             </FeatureGroup>
-            <FeatureGroup title={t("用量监控")} detail={t("查看当前中转账户的余额、模型用量和 Token 明细。")}>
-              <FeatureToggle title={t("中转余额")} detail={t("在 Codex 顶部显示当前中转余额；点击可查看日期范围、模型消耗、实际扣费倍率和刷新速率。默认读取 /v1/usage，启停后需重启轩++生效。")} checked={form.codexAppRelayBalanceEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppRelayBalanceEnabled", value)} />
+            <FeatureGroup title={t("用量监控")} detail={t("当前中转用量")}>
+              <FeatureToggle title={t("用量显示")} detail={t("OwlAI 今日已用 / 通用余额")} checked={form.codexAppRelayBalanceEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppRelayBalanceEnabled", value)} />
+              <div className="feature-select-row">
+                <Field label={t("用量方案")}>
+                  <AppSelect
+                    disabled={!masterEnabled || !form.codexAppRelayBalanceEnabled}
+                    value={form.codexAppRelayBalanceProvider || ""}
+                    options={[
+                      { value: "", label: t("自动识别") },
+                      { value: "owlai", label: "OwlAI 今日已用" },
+                      { value: "generic", label: t("通用余额（自定义接口）") },
+                    ]}
+                    onChange={(value) => onFormChange({ ...form, codexAppRelayBalanceProvider: value })}
+                  />
+                </Field>
+              </div>
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
               {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
@@ -6117,6 +6140,11 @@ function SettingsScreen({
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
+  const promptOptimizeProviders = form.relayProfiles.filter(
+    (profile) => !isAggregateRelayProfile(profile) && (profile.relayMode !== "official" || profile.officialMixApiKey),
+  );
+  const promptOptimizeUsesProvider = Boolean(form.codexAppPromptOptimizeRelayId);
+  const promptOptimizeProvider = promptOptimizeProviders.find((profile) => profile.id === form.codexAppPromptOptimizeRelayId);
   return (
     <div className="settings-page">
       <Panel>
@@ -6247,14 +6275,31 @@ function SettingsScreen({
           <div className="settings-block prompt-optimize-settings-block" id={SETTINGS_PROMPT_OPTIMIZE_SECTION_ID}>
             <div className="section-title">{t("润色")}</div>
             <div className="stepwise-settings-section">{t("连接")}</div>
+            <Field label="连接来源">
+              <AppSelect
+                value={form.codexAppPromptOptimizeRelayId}
+                onChange={(value) => onFormChange({ ...form, codexAppPromptOptimizeRelayId: value })}
+                options={[
+                  { value: "", label: "手动配置" },
+                  ...promptOptimizeProviders.map((profile) => ({ value: profile.id, label: profile.name || t("未命名供应商") })),
+                  ...(promptOptimizeUsesProvider && !promptOptimizeProvider
+                    ? [{ value: form.codexAppPromptOptimizeRelayId, label: "所选供应商不可用，请重新选择", disabled: true }]
+                    : []),
+                ]}
+              />
+            </Field>
             <div className="form-row">
               <Field label={t("协议")}>
                 <AppSelect
-                  value={form.codexAppPromptOptimizeProtocol}
-                  onChange={(value) => onFormChange({ ...form, codexAppPromptOptimizeProtocol: value })}
+                  disabled={promptOptimizeUsesProvider}
+                  value={promptOptimizeUsesProvider ? (promptOptimizeProvider?.protocol === "responses" ? "responses" : "openai") : form.codexAppPromptOptimizeProtocol}
+                  onChange={(value) => {
+                    if (value !== "responses") onFormChange({ ...form, codexAppPromptOptimizeProtocol: value });
+                  }}
                   options={[
                     { value: "openai", label: t("OpenAI 兼容") },
                     { value: "anthropic", label: "Anthropic" },
+                    ...(promptOptimizeUsesProvider ? [{ value: "responses" as const, label: "Responses" }] : []),
                   ]}
                 />
               </Field>
@@ -6273,12 +6318,13 @@ function SettingsScreen({
             <div className="form-row">
               <Field label="Base URL">
                 <Input
-                  value={form.codexAppPromptOptimizeBaseUrl}
+                  disabled={promptOptimizeUsesProvider}
+                  value={promptOptimizeUsesProvider ? promptOptimizeProvider?.baseUrl || "" : form.codexAppPromptOptimizeBaseUrl}
                   onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeBaseUrl: event.currentTarget.value })}
                   placeholder="https://api.openai.com/v1"
                 />
               </Field>
-              <Field label="Model">
+              <Field label="润色模型">
                 <Input
                   value={form.codexAppPromptOptimizeModel}
                   onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeModel: event.currentTarget.value })}
@@ -6289,7 +6335,9 @@ function SettingsScreen({
             <Field label="API Key">
               <Input
                 type="password"
-                value={form.codexAppPromptOptimizeApiKey}
+                disabled={promptOptimizeUsesProvider}
+                placeholder={promptOptimizeUsesProvider ? "使用供应商密钥" : ""}
+                value={promptOptimizeUsesProvider ? "" : form.codexAppPromptOptimizeApiKey}
                 onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeApiKey: event.currentTarget.value })}
               />
             </Field>
@@ -6298,7 +6346,8 @@ function SettingsScreen({
               <div className="form-row">
                 <Field label={t("API Key 环境变量")}>
                   <Input
-                    value={form.codexAppPromptOptimizeApiKeyEnv}
+                    disabled={promptOptimizeUsesProvider}
+                    value={promptOptimizeUsesProvider ? "" : form.codexAppPromptOptimizeApiKeyEnv}
                     onChange={(event) => onFormChange({ ...form, codexAppPromptOptimizeApiKeyEnv: event.currentTarget.value })}
                   />
                 </Field>
@@ -9146,6 +9195,7 @@ function routeSubtitle(route: Route) {
     context: t("独立管理 MCP 服务器与插件"),
     skills: t("从 GitHub 仓库安装 Skill 到 Codex"),
     weixin: t("通过个人微信连接本机 Codex 会话"),
+    mobileRemote: "",
     enhance: t("会话删除、导出和脚本能力"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
     zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
@@ -9877,6 +9927,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
     codexAppPromptOptimizeProtocol:
       settings.codexAppPromptOptimizeProtocol === "anthropic" ? "anthropic" : "openai",
+    codexAppPromptOptimizeRelayId: (settings.codexAppPromptOptimizeRelayId || "").trim(),
     codexAppPromptOptimizeStyle:
       settings.codexAppPromptOptimizeStyle === "concise" || settings.codexAppPromptOptimizeStyle === "coding"
         ? settings.codexAppPromptOptimizeStyle

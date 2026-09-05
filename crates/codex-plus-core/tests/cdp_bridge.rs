@@ -3021,14 +3021,14 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("setAttribute(\"role\", \"button\")"));
     assert!(script.contains("setAttribute(\"tabindex\", \"0\")"));
     assert!(script.contains("继承 Codex 默认设置"));
-    assert!(script.contains("继承 config.toml"));
+    assert!(script.contains("继承本地配置"));
     assert!(script.contains("serviceTierInheritSourceLabel"));
     assert!(script.contains("resolveInheritedServiceTier"));
     assert!(script.contains("getConfigTomlServiceTier"));
     assert!(script.contains("catalog.service_tier"));
-    assert!(script.contains("service_tier=\\\"priority\\\""));
-    assert!(script.contains("Fast 仅支持"));
-    assert!(script.contains("当前 thread"));
+    assert!(script.contains("Fast：请求优先处理"));
+    assert!(script.contains("当前模型未声明支持 Fast"));
+    assert!(script.contains("当前任务"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
     assert!(script.contains("[\"setting-storage-\", \"app-initial-\"]"));
@@ -3137,15 +3137,15 @@ fn injection_script_applies_fast_service_tier_contract() {
         serde_json::Value::Null
     );
 
-    assert_eq!(cases["inheritUnsetStatus"], "继承 Codex 默认设置：默认");
-    assert_eq!(cases["inheritFastStatus"], "继承 Codex 默认设置：fast");
+    assert_eq!(cases["inheritUnsetStatus"], "继承 Codex 默认设置：Fast 已关闭");
+    assert_eq!(cases["inheritFastStatus"], "继承 Codex 默认设置：Fast 已开启");
     assert_eq!(
         cases["inheritStandardStatus"],
-        "继承 Codex 默认设置：standard"
+        "继承 Codex 默认设置：Fast 已关闭"
     );
     assert_eq!(
         cases["inheritConfigTomlFastStatus"],
-        "继承 config.toml：fast"
+        "继承本地配置：Fast 已开启"
     );
     assert_eq!(cases["resolvedConfigTomlTier"]["configServiceTier"], "fast");
     assert_eq!(

@@ -38,7 +38,8 @@
       "infoPlist": "Info.plist"
     },
     "icon": [
-      "icons/icon.ico"
+      "icons/manager-icon.ico",
+      "icons/manager-icon.png"
     ]
   }
 }

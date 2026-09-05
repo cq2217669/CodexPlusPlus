@@ -13,6 +13,7 @@
 - `crates/codex-plus-core/` — 核心 Rust 库（配置生成、catalog 解析、数据模型）
 - `apps/codex-plus-manager/` — Tauri 桌面应用，前端 React+TS
 - `crates/codex-plus-data/` — 数据持久化
+- `apps/xuan-plus-remote/` — 独立维护的 HarmonyOS 手机端、远程协议与云端源码；先读取其 `AGENTS.md`
 - `docs/` — 本 fork 的设计文档、调研、计划
 
 ## 关键代码位置

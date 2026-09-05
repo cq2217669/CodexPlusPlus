@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { getLanguage } from "./i18n";
 import "./styles.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
@@ -12,6 +13,7 @@ import "@fontsource/inter/700.css";
 import "@fontsource/jetbrains-mono";
 
 const app = document.getElementById("app");
+document.documentElement.lang = getLanguage() === "zh" ? "zh-CN" : "en";
 
 if (app instanceof HTMLElement) {
   createRoot(app).render(<App />);

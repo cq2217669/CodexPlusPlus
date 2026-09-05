@@ -484,8 +484,14 @@ pub struct BackendSettings {
     pub codex_app_stepwise_timeout_ms: u64,
     #[serde(rename = "codexAppPromptOptimizeEnabled", default)]
     pub codex_app_prompt_optimize_enabled: bool,
+    #[serde(rename = "codexAppPromptOptimizeRelayId", default)]
+    pub codex_app_prompt_optimize_relay_id: String,
     #[serde(rename = "codexAppRelayBalanceEnabled", default)]
     pub codex_app_relay_balance_enabled: bool,
+    #[serde(rename = "codexAppRelayBalanceProvider", default)]
+    pub codex_app_relay_balance_provider: String,
+    #[serde(rename = "codexAppRelayBalanceOwlToken", default)]
+    pub codex_app_relay_balance_owl_token: String,
     #[serde(
         rename = "codexAppPromptOptimizeProtocol",
         default = "default_prompt_optimize_protocol",
@@ -655,7 +661,10 @@ impl Default for BackendSettings {
             codex_app_stepwise_max_output_tokens: default_stepwise_max_output_tokens(),
             codex_app_stepwise_timeout_ms: default_stepwise_timeout_ms(),
             codex_app_prompt_optimize_enabled: false,
+            codex_app_prompt_optimize_relay_id: String::new(),
             codex_app_relay_balance_enabled: false,
+            codex_app_relay_balance_provider: String::new(),
+            codex_app_relay_balance_owl_token: String::new(),
             codex_app_prompt_optimize_protocol: default_prompt_optimize_protocol(),
             codex_app_prompt_optimize_base_url: String::new(),
             codex_app_prompt_optimize_api_key: String::new(),
@@ -1532,7 +1541,21 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         );
     }
     merge_bool_setting(target, source, "codexAppPromptOptimizeEnabled");
+    if let Some(value) = source
+        .get("codexAppPromptOptimizeRelayId")
+        .and_then(Value::as_str)
+    {
+        target.insert(
+            "codexAppPromptOptimizeRelayId".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
     merge_bool_setting(target, source, "codexAppRelayBalanceEnabled");
+    for key in ["codexAppRelayBalanceProvider", "codexAppRelayBalanceOwlToken"] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+        }
+    }
     if let Some(value) = source
         .get("codexAppPromptOptimizeProtocol")
         .and_then(Value::as_str)
@@ -1959,6 +1982,8 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
     settings.codex_app_prompt_optimize_protocol =
         normalize_prompt_optimize_protocol(&settings.codex_app_prompt_optimize_protocol);
+    settings.codex_app_prompt_optimize_relay_id =
+        settings.codex_app_prompt_optimize_relay_id.trim().to_string();
     settings.codex_app_prompt_optimize_base_url = settings
         .codex_app_prompt_optimize_base_url
         .trim()
@@ -2231,12 +2256,38 @@ mod tests {
     fn settings_deserialize_defaults_relay_balance_to_opt_in() {
         let defaults: BackendSettings = serde_json::from_str("{}").unwrap();
         assert!(!defaults.codex_app_relay_balance_enabled);
+        assert!(defaults.codex_app_relay_balance_provider.is_empty());
+        assert!(defaults.codex_app_relay_balance_owl_token.is_empty());
 
         let enabled: BackendSettings = serde_json::from_value(json!({
             "codexAppRelayBalanceEnabled": true
         }))
         .unwrap();
         assert!(enabled.codex_app_relay_balance_enabled);
+    }
+
+    #[test]
+    fn relay_balance_settings_persist_and_allow_clearing_login_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        let updated = store
+            .update(json!({
+                "codexAppRelayBalanceProvider": " owlai ",
+                "codexAppRelayBalanceOwlToken": " test-login-token "
+            }))
+            .unwrap();
+        assert_eq!(updated.codex_app_relay_balance_provider, "owlai");
+        assert_eq!(updated.codex_app_relay_balance_owl_token, "test-login-token");
+        assert_eq!(store.load().unwrap(), updated);
+        let preserved = store
+            .update(json!({"codexAppRelayBalanceEnabled": true}))
+            .unwrap();
+        assert_eq!(preserved.codex_app_relay_balance_owl_token, "test-login-token");
+        let cleared = store
+            .update(json!({"codexAppRelayBalanceOwlToken": ""}))
+            .unwrap();
+        assert!(cleared.codex_app_relay_balance_owl_token.is_empty());
+        assert!(store.load().unwrap().codex_app_relay_balance_owl_token.is_empty());
     }
 
     #[test]

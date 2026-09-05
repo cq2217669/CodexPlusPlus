@@ -51,6 +51,26 @@ fn manager_main_window_uses_default_window_icon_explicitly() {
 }
 
 #[test]
+fn manager_uses_dedicated_icon_assets() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(manifest_dir.join("tauri.conf.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        config["bundle"]["icon"],
+        serde_json::json!(["icons/manager-icon.ico", "icons/manager-icon.png"])
+    );
+    for extension in ["ico", "png"] {
+        let original = std::fs::read(manifest_dir.join(format!("icons/icon.{extension}"))).unwrap();
+        let manager =
+            std::fs::read(manifest_dir.join(format!("icons/manager-icon.{extension}"))).unwrap();
+        assert!(!manager.is_empty());
+        assert_ne!(manager, original);
+    }
+}
+
+#[test]
 fn manager_close_minimizes_to_tray_without_confirmation() {
     let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
         .expect("read manager lib.rs");

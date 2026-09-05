@@ -276,6 +276,26 @@ async fn settings_get_does_not_expose_prompt_optimize_api_key_to_renderer() {
 }
 
 #[tokio::test]
+async fn settings_get_does_not_expose_owlai_login_token_to_renderer() {
+    let settings = BackendSettings {
+        codex_app_relay_balance_provider: "owlai".to_string(),
+        codex_app_relay_balance_owl_token: "test-private-login-token".to_string(),
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert!(result.get("codexAppRelayBalanceOwlToken").is_none());
+    assert!(!result.to_string().contains("test-private-login-token"));
+    assert_eq!(result["codexAppRelayBalanceProvider"], "owlai");
+}
+
+#[tokio::test]
 async fn settings_set_does_not_persist_runtime_codex_app_version() {
     let settings = Arc::new(FakeSettings::with_codex_app_version("26.601.21317"));
     let ctx = BridgeContext::new(

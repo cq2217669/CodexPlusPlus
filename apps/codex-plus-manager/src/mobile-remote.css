@@ -1,0 +1,22 @@
+.mobile-remote-page { display: grid; gap: 24px; letter-spacing: 0; }
+.mobile-remote-connection, .mobile-remote-tasks { min-width: 0; padding: 8px 0 20px; border-bottom: 1px solid hsl(var(--border)); }
+.mobile-remote-heading, .mobile-remote-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.mobile-remote-heading { margin-bottom: 16px; }
+.mobile-remote-heading h2 { margin: 0; font-size: 22px; }
+.mobile-remote-heading h3 { margin: 0; font-size: 17px; }
+.mobile-remote-heading span, .mobile-remote-toolbar span, .mobile-remote-task small { color: hsl(var(--muted-foreground)); font-size: 13px; }
+.mobile-remote-toggle { display: inline-flex; gap: 8px; align-items: center; }
+.mobile-remote-page input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; accent-color: #198563; }
+.mobile-remote-pairing { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: 20px; }
+.mobile-remote-pairing img { width: 256px; max-width: 100%; height: auto; aspect-ratio: 1; background: white; }
+.mobile-remote-confirmation { margin-top: 20px; border-left: 3px solid #198563; padding-left: 16px; }
+.mobile-remote-confirmation h3 { font-size: 17px; overflow-wrap: anywhere; }
+.mobile-remote-confirmation strong { display: block; font-size: 22px; margin: 8px 0 16px; overflow-wrap: anywhere; }
+.mobile-remote-error { color: #c34444; margin-top: 12px; overflow-wrap: anywhere; }
+.mobile-remote-task-list { margin-top: 12px; }
+.mobile-remote-task { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(80px, 180px); align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid hsl(var(--border)); cursor: pointer; }
+.mobile-remote-task span, .mobile-remote-task small { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .mobile-remote-task { grid-template-columns: 16px minmax(0, 1fr); }
+  .mobile-remote-task small { grid-column: 2; }
+}

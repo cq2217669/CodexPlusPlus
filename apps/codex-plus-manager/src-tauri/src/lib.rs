@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod install;
+mod mobile_remote;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -60,10 +61,17 @@ pub fn run() {
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
+            mobile_remote::restore();
             register_main_window_events(main_window, startup_is_transient());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mobile_remote::mobile_remote_status,
+            mobile_remote::mobile_remote_pair,
+            mobile_remote::mobile_remote_enable,
+            mobile_remote::mobile_remote_confirm,
+            mobile_remote::mobile_remote_select,
+            mobile_remote::mobile_remote_tasks,
             commands::backend_version,
             commands::startup_options,
             commands::consume_pending_manager_navigation,

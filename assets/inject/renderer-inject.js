@@ -101,7 +101,7 @@
     if (!config) return;
     const enabled = config.enabled === true;
     const locale = typeof config.locale === "string" && config.locale ? config.locale : "zh-CN";
-    const installationKey = `2:${enabled ? "on" : "off"}:${locale}`;
+    const installationKey = `4:${enabled ? "on" : "off"}:${locale}`;
     if (window.__codexPlusForceChineseLocaleInstalled === installationKey) return;
     window.__codexPlusForceChineseLocaleInstalled = installationKey;
     const languages = [locale, "zh", "en-US", "en"];
@@ -178,9 +178,10 @@
         requestId,
         method: "POST",
         url: `vscode://codex/${method}`,
-        body: JSON.stringify({ params }),
+        // 直接调用桥接时请求体就是参数；只有上层调用助手接收 params 包装。
+        body: JSON.stringify(params),
       };
-      Promise.resolve(bridge.sendMessageFromView(message)).catch((error) => {
+      Promise.resolve().then(() => bridge.sendMessageFromView(message)).catch((error) => {
         cleanup();
         reject(error);
       });
@@ -207,8 +208,13 @@
       const managed = readManagedLocale();
       if (!enabled && !managed) return;
       const bridge = await waitForElectronBridge();
-      if (!bridge) return;
+      if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
+      if (!bridge) throw new Error("Codex setting bridge unavailable");
       const response = await callCodexSettingApi(bridge, "get-setting", { key: "localeOverride" });
+      if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
+      if (!response || !Object.prototype.hasOwnProperty.call(response, "value")) {
+        throw new Error("Codex locale setting response unavailable");
+      }
       const currentValue = response?.value ?? null;
 
       if (enabled) {
@@ -220,6 +226,7 @@
           writeManagedLocale({ appliedLocale: locale, previousValue: currentValue });
         }
         await callCodexSettingApi(bridge, "set-setting", { key: "localeOverride", value: locale });
+        if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
         reloadAfterLocaleChange(locale);
         return;
       }
@@ -234,11 +241,28 @@
         key: "localeOverride",
         value: previousValue,
       });
+      if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
       writeManagedLocale(null);
       reloadAfterLocaleChange(previousValue);
     };
 
-    syncOfficialLocaleSetting().catch(() => {});
+    // 启动时桥接可能尚未就绪；失败后重试，但不跨越下一次注入继续写设置。
+    const syncLocaleWithRetry = async (attempt = 0) => {
+      if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
+      window.__codexPlusForceChineseLocaleStatus = "loading";
+      try {
+        await syncOfficialLocaleSetting();
+        if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
+        window.__codexPlusForceChineseLocaleStatus = enabled ? "enabled" : "disabled";
+      } catch {
+        if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
+        window.__codexPlusForceChineseLocaleStatus = "failed";
+        if (attempt < 5) {
+          window.setTimeout(() => syncLocaleWithRetry(attempt + 1), Math.min(1000 * (attempt + 1), 5000));
+        }
+      }
+    };
+    syncLocaleWithRetry();
     if (!enabled) return;
 
     const defineNavigatorGetter = (name, value) => {
@@ -296,7 +320,8 @@
     const patchStatsigClient = (client) => {
       if (!client || typeof client !== "object") return;
       if (typeof client.getDynamicConfig !== "function") return;
-      if (!client.__codexPlusForceChineseLocalePatched) {
+      const newlyPatched = !client.__codexPlusForceChineseLocalePatched;
+      if (newlyPatched) {
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
         client.getDynamicConfig = (name, options) => {
           const result = originalGetDynamicConfig(name, options);
@@ -307,6 +332,16 @@
       try {
         patchI18nConfig(client.getDynamicConfig("72216192", { disableExposureLog: true }));
       } catch {
+      }
+      // 晚于首屏安装时通知订阅方重读语言开关，不只修改后续查询的返回值。
+      if (newlyPatched && typeof client.$emt === "function") {
+        window.setTimeout(() => {
+          if (window.__codexPlusForceChineseLocaleInstalled !== installationKey) return;
+          try {
+            client.$emt({ name: "values_updated" });
+          } catch {
+          }
+        }, 0);
       }
     };
 
@@ -367,9 +402,12 @@
     patchStatsigI18nConfig();
     const startedAt = Date.now();
     const timer = window.setInterval(() => {
+      if (Date.now() - startedAt > 60000 || window.__codexPlusForceChineseLocaleInstalled !== installationKey) {
+        window.clearInterval(timer);
+        return;
+      }
       patchStatsigI18nConfig();
-      if (Date.now() - startedAt > 5000) window.clearInterval(timer);
-    }, 50);
+    }, 250);
   }
 
   installCodexPlusFastStartup();
@@ -1164,7 +1202,7 @@
         justify-content: center;
         flex: 0 0 auto;
         height: 24px;
-        min-width: 54px;
+        min-width: 112px;
         box-sizing: border-box;
         border: 1px solid rgba(148,163,184,.28);
         border-radius: 999px;
@@ -2717,8 +2755,7 @@
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-    const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    return modelName ? "当前模型未声明支持 Fast，将使用标准模式。" : "尚未读取当前模型，暂时无法确定 Fast 是否可用。";
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
@@ -2733,10 +2770,9 @@
   }
 
   function codexServiceTierFastAvailability(modelName = codexServiceTierCurrentModelName()) {
-    const normalizedModel = normalizeCodexServiceTierModelName(modelName);
     return {
       modelName: modelName || "",
-      supported: !!normalizedModel && codexServiceTierSupportedFastModels.has(normalizedModel),
+      supported: codexServiceTierFastSupportedForModel(modelName),
     };
   }
 
@@ -2787,13 +2823,16 @@
 
   function serviceTierGlobalStatusMessage(serviceTier) {
     if (isFastServiceTierValue(serviceTier)) return "Fast 已开启";
-    if (!serviceTier) return "默认服务模式";
-    return `当前：${serviceTier}`;
+    return "Fast 已关闭";
   }
 
   function serviceTierInheritSourceLabel(serviceTierSource) {
-    if (serviceTierSource === "config-toml") return "继承 config.toml";
+    if (serviceTierSource === "config-toml") return "继承本地配置";
     return "继承 Codex 默认设置";
+  }
+
+  function serviceTierModeLabel(mode) {
+    return mode === "fast" ? "Fast 已开启" : mode === "standard" ? "Fast 已关闭" : "继承默认";
   }
 
   function serviceTierStatusMessage(
@@ -2807,13 +2846,12 @@
     if (codexServiceTierState.status === "loading") return "正在读取…";
     if (codexServiceTierState.status === "failed") return "读取失败";
     if (controlMode === "inherit") {
-      if (effectiveServiceTier == null) return "继承 Codex 默认设置：默认";
-      return `${serviceTierInheritSourceLabel(serviceTierSource)}：${effectiveMode}`;
+      return `${serviceTierInheritSourceLabel(serviceTierSource)}：${serviceTierModeLabel(effectiveMode)}`;
     }
-    if (controlMode === "global-standard") return "全局 Standard";
+    if (controlMode === "global-standard") return "全局标准（Fast 已关闭）";
     if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (threadMode === "inherit") return `自定义：${serviceTierModeLabel(effectiveMode)}（继承默认）`;
+    return `自定义：当前任务${serviceTierModeLabel(effectiveMode)}`;
   }
 
   function readThreadServiceTierState() {
@@ -2958,7 +2996,7 @@
     refreshCodexServiceTierControls();
     const labels = {
       inherit: "继承 Codex 默认设置",
-      "global-standard": "全局 Standard",
+      "global-standard": "全局标准",
       "global-fast": "全局 Fast",
       custom: "自定义",
     };
@@ -3007,25 +3045,25 @@
   function codexServiceTierBadgeState() {
     if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
     if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
-    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
-    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    if (codexServiceTierState.status === "loading" || codexServiceTierState.status === "idle") return { tier: "loading", label: "Fast：读取中", disabled: true, title: "服务模式：正在读取" };
+    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "Fast：状态未知", disabled: true, title: "服务模式：读取失败，请重新打开轩++设置重试" };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const inheritedDefault = codexServiceTierState.controlMode === "inherit" && codexServiceTierState.effectiveServiceTier == null;
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
-      ? `当前 thread：${codexServiceTierState.threadMode}`
+      ? `当前任务：${serviceTierModeLabel(codexServiceTierState.threadMode)}`
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
       `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
+      "标准模式：使用标准处理。",
+      "Fast：请求优先处理，可能产生更高费用；实际处理速度与计费取决于供应商。",
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+      return { tier: "unsupported", label: "Fast：未生效", title: `${title}\n当前模型不支持 Fast，将使用标准模式；点击可关闭当前任务的 Fast 偏好。` };
     }
-    if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
-    if (inheritedDefault) return { tier: "default", label: "默认", title };
-    return { tier: "standard", label: "standard", title };
+    if (effectiveMode === "fast") return { tier: "fast", label: "Fast：已开启", title: `${title}\n点击关闭当前任务的 Fast。` };
+    if (!fastAvailability.supported) return { tier: "unsupported", label: "Fast：不可用", disabled: true, title: `${title}\n当前模型不支持 Fast，当前使用标准模式。` };
+    return { tier: inheritedDefault ? "default" : "standard", label: "Fast：已关闭", title: `${title}\n点击开启当前任务的 Fast。` };
   }
 
   function refreshCodexServiceTierBadges() {
@@ -3036,6 +3074,8 @@
       node.textContent = state.label;
       node.title = state.title;
       node.setAttribute("aria-label", state.title);
+      node.setAttribute("aria-pressed", String(state.tier === "fast"));
+      node.setAttribute("aria-disabled", String(!!state.disabled));
     });
   }
 
@@ -3048,7 +3088,7 @@
     const fastAvailability = codexServiceTierFastAvailability();
     const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
     const fastTitle = fastAvailability.supported
-      ? "Fast：使用 service_tier=\"priority\""
+      ? "Fast：请求优先处理，可能产生更高费用。"
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
@@ -3080,7 +3120,7 @@
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      button.title = "当前任务不单独覆盖，继承默认模式";
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -3174,11 +3214,12 @@
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
     setCodexThreadServiceTierOverride(threadId, normalizedMode);
     refreshCodexServiceTierControls();
-    const target = threadId ? "当前 thread" : "新 thread 草稿";
-    showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
+    const target = threadId ? "当前任务" : "新任务草稿";
+    showToast(`${target}服务模式：${serviceTierModeLabel(normalizedMode)}`, null);
   }
 
   function toggleCodexServiceTierFromBadge() {
+    if (codexServiceTierBadgeState().disabled) return;
     if (codexPlusBackendStatus.status !== "ok") {
       showToast("后端未连接，无法切换服务模式", null);
       refreshCodexServiceTierControls();
@@ -4120,7 +4161,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+              <div><div class="codex-plus-row-title">Fast 模式入口</div><div class="codex-plus-row-description">仅显示切换入口，不会自动开启 Fast；当前模式在输入框旁显示，是否可用取决于模型支持情况。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
             </div>
             ${codexPlusIsWindowsPlatform ? `<div class="codex-plus-row">
@@ -4136,20 +4177,20 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="answerOutline"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
-              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+              <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取本地配置；全局模式应用于全部任务，自定义模式允许单独设置当前任务。</div></div>
               <div class="codex-plus-service-tier-control">
                 <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
                 <div class="codex-plus-service-tier-actions">
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局标准</button>
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
                   <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
                 </div>
                 <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                  <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                  <span class="codex-plus-service-tier-thread-label">当前任务</span>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前任务不单独覆盖，继承默认模式">继承</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前任务使用标准模式，并切到自定义模式">标准</button>
+                  <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前任务使用 Fast，并切到自定义模式">Fast</button>
                 </div>
               </div>
             </div>

@@ -18,8 +18,11 @@ import { EN_BACKEND, EN_BACKEND_PATTERNS, EN_PLAIN, EN_TEMPLATE } from "@/i18n-e
 export type Language = "zh" | "en";
 
 const STORAGE_KEY = "codex-plus-lang";
+const LANGUAGE_PARAM = "xuan-language";
 
 function resolveInitialLanguage(): Language {
+  const requested = new URL(window.location.href).searchParams.get(LANGUAGE_PARAM);
+  if (requested === "zh" || requested === "en") return requested;
   try {
     return window.localStorage.getItem(STORAGE_KEY) === "en" ? "en" : "zh";
   } catch {
@@ -62,12 +65,19 @@ export function tf(key: string, args: Array<string | number>): string {
 
 /** Persist a new language and reload so every literal re-evaluates under it. */
 export function setLanguage(language: Language): void {
+  const url = new URL(window.location.href);
   try {
     window.localStorage.setItem(STORAGE_KEY, language);
+    url.searchParams.delete(LANGUAGE_PARAM);
   } catch {
-    // Ignore storage failures; the reload below simply keeps the old value.
+    // 存储不可写时用当前页面参数传递选择，避免刷新后悄悄回到原语言。
+    url.searchParams.set(LANGUAGE_PARAM, language);
   }
-  window.location.reload();
+  if (url.href !== window.location.href) {
+    window.location.replace(url.href);
+  } else {
+    window.location.reload();
+  }
 }
 
 /** Flip between Chinese and English. */

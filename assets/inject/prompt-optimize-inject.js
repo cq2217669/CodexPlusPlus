@@ -15,7 +15,7 @@
  */
 (() => {
   const SCRIPT_VERSION = "1.1.0";
-  const INSTANCE_REVISION = "official-2026-09-v6";
+  const INSTANCE_REVISION = "official-2026-09-v7";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -139,7 +139,6 @@
     epoch: 0,
     settings: null,
     bridgeBroken: false,
-    lastPlacement: null,
     writeToken: 0,
   };
 
@@ -297,13 +296,14 @@
   }
 
   function isSendLikeLabel(text) {
-    return /^(send|stop|提交|发送|停止|run|执行)$/i.test(text.trim());
+    return /^(?:(?:send|submit|stop|run)(?:\s+(?:message|prompt|response|generating|generation))?|(?:提交|发送|停止|执行)(?:消息|提示|提示词|生成|回答)?)(?:\s*[（(].*[）)])?$/i.test(text.trim());
   }
 
   function isModelLikeLabel(text) {
     const label = text.trim();
     if (!label) return false;
     if (/(model|模型)/i.test(label)) return true;
+    if (/^\d+(?:\.\d+)*\s+(?:astra|sol|terra)\b/i.test(label)) return true;
     return /^(gpt|o[1-9]|claude|gemini|deepseek|qwen|kimi|moonshot|mistral|llama|sonnet|opus|haiku)[a-z0-9._-]*/i.test(label);
   }
 
@@ -313,7 +313,10 @@
     return clickables
       .filter((button) => button !== send)
       .filter((button) => isModelLikeLabel(normalizeText(button.getAttribute("aria-label") || button.textContent || "")))
-      .filter((button) => button.getBoundingClientRect().right <= sendRect.left + 2)
+      .filter((button) => {
+        const rect = button.getBoundingClientRect();
+        return rect.right <= sendRect.left + 2 && rect.top < sendRect.bottom && rect.bottom > sendRect.top;
+      })
       .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] || null;
   }
 
@@ -591,18 +594,15 @@
   function composerInsertAnchor(input) {
     if (!(input instanceof HTMLElement)) return null;
     let node = input;
-    for (let depth = 0; node && depth < 6; depth += 1, node = node.parentNode) {
+    for (let depth = 0; node && node !== document.body && depth < 12; depth += 1, node = node.parentNode) {
       if (!(node instanceof Element)) continue;
       const role = node.getAttribute && node.getAttribute("role");
-      const label = String(node.getAttribute && node.getAttribute("aria-label") || "");
-      if (/composer|composer-surface/i.test(label)) return { node, before: node.firstChild };
       if (role === "textbox") continue;
       const clickables = Array.from(node.querySelectorAll("button"))
-        .filter((el) => isVisible(el))
-        .slice(-8);
+        .filter((el) => isVisible(el) && !el.hasAttribute(BUTTON_ATTR));
       const send = clickables.find((el) => {
-        const text = normalizeText(el.getAttribute("aria-label") || el.textContent || "");
-        return isSendLikeLabel(text);
+        return [el.getAttribute("aria-label"), el.getAttribute("title"), el.textContent]
+          .some((text) => isSendLikeLabel(normalizeText(text)));
       });
       if (send) {
         const modelSelector = modelSelectorBeforeSend(clickables, send);
@@ -611,6 +611,7 @@
         }
         return { node: send.parentElement || send.parentNode, before: send };
       }
+      if (node.tagName === "FORM" || node.tagName === "MAIN") break;
     }
     return null;
   }
@@ -623,38 +624,33 @@
       return;
     }
     const existing = document.querySelector(`[${BUTTON_ATTR}]`);
-    if (existing && existing.isConnected && isVisible(existing)) {
-      runtime.lastPlacement = null;
+    const anchor = composerInsertAnchor(input);
+    // 操作栏尚未挂载时等待下一轮，避免悬浮到文字输入区或插入容器顶部。
+    if (!anchor || !(anchor.node instanceof Element)) {
+      if (existing) destroyButton();
       return;
     }
-    const anchor = composerInsertAnchor(input);
-    const button = createButton();
-    if (anchor && anchor.node instanceof Element) {
-      const host = document.createElement("span");
-      host.setAttribute(`data-cpo-composer-${INSTANCE_REVISION}`, "true");
-      host.appendChild(button);
-      const before = anchor.before?.parentNode === anchor.node ? anchor.before : null;
-      anchor.node.insertBefore(host, before);
-    } else {
-      button.style.position = "fixed";
-      button.style.zIndex = "2147483002";
-      placeButtonNearInput(button, input);
-      document.documentElement.appendChild(button);
-      runtime.lastPlacement = button;
+    const host = existing?.parentElement;
+    if (
+      existing?.isConnected &&
+      host?.hasAttribute(`data-cpo-composer-${INSTANCE_REVISION}`) &&
+      host.parentElement === anchor.node &&
+      host.nextSibling === anchor.before
+    ) {
+      return;
     }
+    destroyButton();
+    const button = createButton();
+    const nextHost = document.createElement("span");
+    nextHost.setAttribute(`data-cpo-composer-${INSTANCE_REVISION}`, "true");
+    nextHost.appendChild(button);
+    anchor.node.insertBefore(nextHost, anchor.before);
     refreshButtonAppearance(button);
-  }
-
-  function placeButtonNearInput(button, input) {
-    const rect = input.getBoundingClientRect();
-    button.style.right = `${Math.max(12, window.innerWidth - rect.right + 8)}px`;
-    button.style.top = `${Math.max(8, rect.bottom - 38)}px`;
   }
 
   function destroyButton() {
     document.querySelectorAll(`[${BUTTON_ATTR}]`).forEach((node) => node.remove());
     document.querySelectorAll(`[data-cpo-composer-${INSTANCE_REVISION}]`).forEach((node) => node.remove());
-    runtime.lastPlacement = null;
   }
 
   function destroyAll() {
@@ -688,6 +684,7 @@
       }
       if (!isConfigured(runtime.settings)) {
         showToast("请先配置 API", "");
+        if (runtime.settings.configurationError) showToast(runtime.settings.configurationError, "error");
         openSettingsPanel();
         return;
       }
@@ -801,9 +798,9 @@
     const overlay = document.createElement("div");
     overlay.setAttribute(PANEL_ATTR, "true");
     overlay.dataset.cpoTheme = detectAppearance();
-    const protocol = settings.protocol === "anthropic" ? "anthropic" : "openai";
-    const baseUrl = settings.baseUrl || DEFAULT_BASE_URLS[protocol];
-    const model = settings.model || DEFAULT_MODELS[protocol];
+    const protocol = (settings.manualProtocol || settings.protocol) === "anthropic" ? "anthropic" : "openai";
+    const baseUrl = settings.manualBaseUrl ?? settings.baseUrl ?? "";
+    const model = settings.manualModel ?? settings.model ?? "";
     const style = STYLE_OPTIONS.some((item) => item.value === settings.style)
       ? settings.style
       : "structured";
@@ -811,6 +808,12 @@
       <div class="cpo-card" role="dialog" aria-modal="true" aria-label="润色设置">
         <h2>润色设置</h2>
         <p class="cpo-sub">配置外部 LLM；API Key 只保存在 Xuan++ 本地设置中。</p>
+        <div class="cpo-row">
+          <div class="cpo-field">
+            <label>连接来源</label>
+            <select data-cpo="relayId"></select>
+          </div>
+        </div>
         <div class="cpo-row">
           <div class="cpo-field">
             <label>协议</label>
@@ -833,7 +836,7 @@
         </div>
         <div class="cpo-row">
           <div class="cpo-field">
-            <label>Model</label>
+            <label>润色模型</label>
             <input data-cpo="model" spellcheck="false" placeholder="gpt-4o-mini" />
           </div>
           <div class="cpo-field">
@@ -851,6 +854,15 @@
         </div>
       </div>
     `;
+    const relayIdEl = overlay.querySelector('[data-cpo="relayId"]');
+    relayIdEl.add(new Option("手动配置", ""));
+    for (const provider of settings.providers || []) {
+      relayIdEl.add(new Option(provider.name, provider.id));
+    }
+    if (settings.relayId && !(settings.providers || []).some((provider) => provider.id === settings.relayId)) {
+      relayIdEl.add(new Option("所选供应商不可用，请重新选择", settings.relayId));
+    }
+    relayIdEl.value = settings.relayId || "";
     const protocolEl = overlay.querySelector('[data-cpo="protocol"]');
     const baseUrlEl = overlay.querySelector('[data-cpo="baseUrl"]');
     const modelEl = overlay.querySelector('[data-cpo="model"]');
@@ -861,6 +873,15 @@
     baseUrlEl.value = baseUrl;
     modelEl.value = model;
     styleEl.value = style;
+    const updateConnectionSource = () => {
+      const usesProvider = Boolean(relayIdEl.value);
+      for (const element of [protocolEl, baseUrlEl, apiKeyEl, clearKeyEl]) {
+        element.disabled = usesProvider;
+        element.closest(".cpo-field").hidden = usesProvider;
+      }
+    };
+    relayIdEl.addEventListener("change", updateConnectionSource);
+    updateConnectionSource();
     protocolEl.addEventListener("change", () => {
       const nextProtocol = protocolEl.value === "anthropic" ? "anthropic" : "openai";
       const currentBase = baseUrlEl.value.trim();
@@ -881,7 +902,7 @@
     });
     overlay.querySelector('[data-cpo-action="save"]').addEventListener("click", (event) => {
       event.preventDefault();
-      void saveSettingsFromPanel(protocolEl, baseUrlEl, modelEl, apiKeyEl, styleEl, clearKeyEl);
+      void saveSettingsFromPanel(protocolEl, baseUrlEl, modelEl, apiKeyEl, styleEl, clearKeyEl, relayIdEl);
     });
     overlay.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -890,32 +911,36 @@
       }
     });
     document.documentElement.appendChild(overlay);
-    if (!settings.apiKeyConfigured) apiKeyEl.focus();
+    if (relayIdEl.value) relayIdEl.focus();
+    else if (!settings.apiKeyConfigured) apiKeyEl.focus();
     else baseUrlEl.focus();
   }
 
-  async function saveSettingsFromPanel(protocolEl, baseUrlEl, modelEl, apiKeyEl, styleEl, clearKeyEl) {
-    const next = {
-      codexAppPromptOptimizeProtocol: protocolEl.value === "anthropic" ? "anthropic" : "openai",
-      codexAppPromptOptimizeStyle: styleEl.value,
-    };
-    const baseUrl = baseUrlEl.value.trim().replace(/\/+$/, "");
+  async function saveSettingsFromPanel(protocolEl, baseUrlEl, modelEl, apiKeyEl, styleEl, clearKeyEl, relayIdEl) {
     const model = modelEl.value.trim();
-    if (!baseUrl) {
-      showToast("请填写 Base URL", "error");
-      baseUrlEl.focus();
-      return;
-    }
     if (!model) {
-      showToast("请填写 Model", "error");
+      showToast("请填写润色模型", "error");
       modelEl.focus();
       return;
     }
-    next.codexAppPromptOptimizeBaseUrl = baseUrl;
-    next.codexAppPromptOptimizeModel = model;
-    const apiKey = apiKeyEl.value.trim();
-    if (apiKey) next.codexAppPromptOptimizeApiKey = apiKey;
-    if (clearKeyEl.checked) next.codexAppPromptOptimizeApiKey = "";
+    const next = {
+      codexAppPromptOptimizeRelayId: relayIdEl.value,
+      codexAppPromptOptimizeStyle: styleEl.value,
+      codexAppPromptOptimizeModel: model,
+    };
+    if (!relayIdEl.value) {
+      next.codexAppPromptOptimizeProtocol = protocolEl.value === "anthropic" ? "anthropic" : "openai";
+      const baseUrl = baseUrlEl.value.trim().replace(/\/+$/, "");
+      if (!baseUrl) {
+        showToast("请填写 Base URL", "error");
+        baseUrlEl.focus();
+        return;
+      }
+      next.codexAppPromptOptimizeBaseUrl = baseUrl;
+      const apiKey = apiKeyEl.value.trim();
+      if (apiKey) next.codexAppPromptOptimizeApiKey = apiKey;
+      if (clearKeyEl.checked) next.codexAppPromptOptimizeApiKey = "";
+    }
     const saveButton = document.querySelector(`[${PANEL_ATTR}] [data-cpo-action="save"]`);
     if (saveButton) saveButton.disabled = true;
     try {
@@ -951,12 +976,7 @@
     runtime.observer = new MutationObserver(() => scheduleEnsure());
     runtime.observer.observe(document.documentElement, { childList: true, subtree: true });
     if (!runtime.resizeHandler) {
-      runtime.resizeHandler = () => {
-        if (runtime.lastPlacement instanceof HTMLElement) {
-          const input = findComposerInput();
-          if (input) placeButtonNearInput(runtime.lastPlacement, input);
-        }
-      };
+      runtime.resizeHandler = () => scheduleEnsure();
       window.addEventListener("resize", runtime.resizeHandler);
     }
     if (runtime.pollId) window.clearInterval(runtime.pollId);

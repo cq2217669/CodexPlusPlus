@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-04-v1";
+  const REVISION = "builtin-2026-09-05-v4";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -26,10 +26,11 @@
   let observer = null;
   let requestPromise = null;
   let previousSnapshot = null;
+  let configRevision = 0;
   let config = loadConfig();
   let state = {
     status: "loading",
-    message: "正在读取余额",
+    message: "正在读取用量",
     panelOpen: false,
     settingsOpen: false,
     balance: null,
@@ -40,6 +41,8 @@
     models: [],
     speedPerHour: null,
     updatedAt: null,
+    provider: "generic",
+    todayUsed: null,
   };
 
   function safeText(value) {
@@ -80,22 +83,33 @@
   function saveConfig(next) {
     config = normalizeConfig(next);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    configRevision += 1;
   }
 
   function dateRange(days) {
-    const end = new Date();
+    let parts;
+    try {
+      parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: config.timezone, year: "numeric", month: "2-digit", day: "2-digit",
+      }).formatToParts(new Date());
+    } catch (_) {
+      throw new Error("统计时区无效，请在用量设置中重新填写");
+    }
+    const part = (type) => Number(parts.find((item) => item.type === type)?.value);
+    const end = new Date(Date.UTC(part("year"), part("month") - 1, part("day")));
     const start = new Date(end);
-    start.setDate(start.getDate() - Math.max(0, days - 1));
+    start.setUTCDate(start.getUTCDate() - Math.max(0, days - 1));
     const format = (date) => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      const day = String(date.getDate()).padStart(2, "0");
+      const year = date.getUTCFullYear();
+      const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(date.getUTCDate()).padStart(2, "0");
       return `${year}-${month}-${day}`;
     };
     return { startDate: format(start), endDate: format(end) };
   }
 
   function formatMoney(value, unit = "USD") {
+    if (value == null || value === "" || typeof value === "boolean") return "--";
     const number = Number(value);
     if (!Number.isFinite(number)) return "--";
     const label = safeText(unit || "USD").toUpperCase();
@@ -113,6 +127,9 @@
   function parseBalance(payload) {
     const quota = payload?.quota && typeof payload.quota === "object" ? payload.quota : {};
     const raw = payload?.balance ?? payload?.remaining ?? quota.remaining;
+    if (raw == null || typeof raw === "boolean" || (typeof raw === "string" && !raw.trim()) || typeof raw === "object") {
+      throw new Error("余额接口未返回有效余额，请检查用量方案");
+    }
     const value = Number(raw);
     if (value === -1) {
       return {
@@ -170,15 +187,15 @@
     );
   }
 
-  function calculateSpeed(models, observedAt) {
+  function calculateSpeed(models, observedAt, context) {
     const actualCost = totals(models).actualCost;
     let speedPerHour = null;
-    if (previousSnapshot && observedAt > previousSnapshot.observedAt && actualCost >= previousSnapshot.actualCost) {
+    if (previousSnapshot?.context === context && observedAt > previousSnapshot.observedAt && actualCost >= previousSnapshot.actualCost) {
       const hours = (observedAt - previousSnapshot.observedAt) / 3_600_000;
       const delta = actualCost - previousSnapshot.actualCost;
       if (hours > 0 && delta > 0) speedPerHour = delta / hours;
     }
-    previousSnapshot = { actualCost, observedAt };
+    previousSnapshot = { actualCost, observedAt, context };
     return speedPerHour;
   }
 
@@ -186,8 +203,9 @@
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
+    // 为右上角三个窗口控制按钮保留空间，窄窗口也不能缩小这段留白。
     style.textContent = `
-      #${ROOT_ID}{position:fixed;z-index:2147482400;top:12px;right:92px;height:30px;padding:0 10px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:6px;background:color-mix(in srgb,Canvas 92%,transparent);color:CanvasText;font:600 12px/28px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.12);cursor:pointer;white-space:nowrap}
+      #${ROOT_ID}{position:fixed;z-index:2147482400;top:12px;right:152px;height:30px;padding:0 10px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:6px;background:color-mix(in srgb,Canvas 92%,transparent);color:CanvasText;font:600 12px/28px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.12);cursor:pointer;white-space:nowrap;-webkit-app-region:no-drag}
       #${ROOT_ID}:hover,#${ROOT_ID}[data-open="true"]{background:color-mix(in srgb,CanvasText 9%,Canvas)}
       #${ROOT_ID}[data-state="failed"]{color:#dc2626}#${ROOT_ID}[data-state="loading"]{opacity:.72}
       #${PANEL_ID}{position:fixed;z-index:2147482401;top:50px;right:16px;width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 64px);overflow:auto;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;background:Canvas;color:CanvasText;box-shadow:0 18px 54px rgba(0,0,0,.24);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
@@ -199,7 +217,8 @@
       .crb-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:color-mix(in srgb,currentColor 12%,transparent);border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-stat{min-width:0;padding:12px 14px;background:Canvas}.crb-stat span{display:block;color:color-mix(in srgb,CanvasText 58%,transparent);font-size:11px}.crb-stat strong{display:block;margin-top:3px;font-size:15px;overflow-wrap:anywhere}
       .crb-message{padding:18px 16px;color:color-mix(in srgb,CanvasText 66%,transparent)}.crb-error{color:#dc2626}.crb-table-wrap{overflow:auto}.crb-table{width:100%;border-collapse:collapse;white-space:nowrap}.crb-table th,.crb-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 10%,transparent);text-align:right}.crb-table th{position:sticky;top:59px;background:Canvas;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px;font-weight:600}.crb-table th:first-child,.crb-table td:first-child{text-align:left;max-width:190px;overflow:hidden;text-overflow:ellipsis}.crb-total td{font-weight:700;background:color-mix(in srgb,CanvasText 4%,Canvas)}
       .crb-settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-field{display:grid;gap:5px}.crb-field-wide{grid-column:1/-1}.crb-field span{font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.crb-input{width:100%;padding:0 9px}.crb-settings-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px}
-      @media(max-width:720px){#${ROOT_ID}{top:8px;right:52px}.crb-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}.crb-table th{top:59px}}
+      .crb-head>div:first-child{min-width:0;overflow-wrap:anywhere}.crb-actions{flex-shrink:0}.crb-today{padding:16px}.crb-today strong{font-size:20px}
+      @media(max-width:720px){#${ROOT_ID}{top:8px}.crb-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}.crb-table th{top:59px}}
     `;
     document.documentElement.appendChild(style);
   }
@@ -231,6 +250,11 @@
   }
 
   function badgeText() {
+    if (state.provider === "owlai") {
+      if (state.status === "loading") return "今日已用 …";
+      if (state.status !== "ok") return "今日已用 --";
+      return `今日已用 ${state.todayUsed == null ? "暂无数据" : formatMoney(state.todayUsed, state.unit)}`;
+    }
     if (state.status === "loading") return "余额 …";
     if (state.status === "disabled") return "余额 设置";
     if (state.status !== "ok") return "余额 --";
@@ -245,14 +269,14 @@
     return `
       <div class="crb-summary">
         <div class="crb-stat"><span>当前余额</span><strong>${state.unlimited ? "无限" : escapeHtml(formatMoney(state.balance, state.unit))}</strong></div>
-        <div class="crb-stat"><span>实际扣费</span><strong>${escapeHtml(formatMoney(sum.actualCost, state.unit))}</strong></div>
+        <div class="crb-stat"><span>实际扣费</span><strong>${escapeHtml(formatMoney(models.length ? sum.actualCost : null, state.unit))}</strong></div>
         <div class="crb-stat"><span>实际倍率</span><strong>${multiplier == null ? "--" : `${multiplier.toFixed(2)}×`}</strong></div>
         <div class="crb-stat"><span>刷新间消耗速度</span><strong>${escapeHtml(speed)}</strong></div>
       </div>`;
   }
 
   function tableHtml(models) {
-    if (!models.length) return '<div class="crb-message">接口未返回 model_stats 模型统计。</div>';
+    if (!models.length) return '<div class="crb-message">接口未提供模型用量明细。</div>';
     const sum = totals(models);
     const row = (item, className = "") => `<tr class="${className}">
       <td title="${escapeHtml(item.model || "合计")}">${escapeHtml(item.model || "合计")}</td>
@@ -261,11 +285,15 @@
     return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>输入</th><th>缓存写入</th><th>缓存读取</th><th>输出</th><th>总 Token</th><th>标价</th><th>实际扣费</th><th>倍率</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${row({ ...sum, model: "合计", multiplier: sum.cost > 0 ? sum.actualCost / sum.cost : null }, "crb-total")}</tbody></table></div>`;
   }
 
+  function todayHtml() {
+    return `<div class="crb-stat crb-today"><span>今日已用</span><strong>${state.todayUsed == null ? "暂无数据" : escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>`;
+  }
+
   function settingsHtml() {
     if (!state.settingsOpen) return "";
     return `<div class="crb-settings">
-      <label class="crb-field crb-field-wide"><span>余额接口路径</span><input class="crb-input" data-config="usagePath" value="${escapeHtml(config.usagePath)}" placeholder="/v1/usage"></label>
-      <label class="crb-field"><span>统计时区</span><input class="crb-input" data-config="timezone" value="${escapeHtml(config.timezone)}"></label>
+      ${state.provider === "owlai" ? "" : `<label class="crb-field crb-field-wide"><span>余额接口路径</span><input class="crb-input" data-config="usagePath" value="${escapeHtml(config.usagePath)}" placeholder="/v1/usage"></label>
+      <label class="crb-field"><span>统计时区</span><input class="crb-input" data-config="timezone" value="${escapeHtml(config.timezone)}"></label>`}
       <label class="crb-field"><span>刷新间隔（分钟）</span><input class="crb-input" data-config="refreshMinutes" type="number" min="1" max="60" value="${config.refreshMinutes}"></label>
       <div class="crb-settings-actions"><button type="button" class="crb-button" data-action="reset">恢复默认</button><button type="button" class="crb-button" data-action="save">保存并刷新</button></div>
     </div>`;
@@ -275,16 +303,18 @@
     if (!panel) return;
     panel.hidden = !state.panelOpen;
     if (!state.panelOpen) return;
-    const rangeLabel = `${config.rangeDays} 天`;
+    if (state.settingsOpen && panel.querySelector(".crb-settings")) return;
+    const isToday = state.provider === "owlai";
+    const rangeLabel = isToday ? "今天（站点时区）" : `${config.rangeDays} 天`;
     const body = state.status === "loading"
-      ? '<div class="crb-message">正在读取中转余额与模型用量…</div>'
+      ? '<div class="crb-message">正在读取用量…</div>'
       : state.status === "ok"
-        ? `${summaryHtml(state.models)}${tableHtml(state.models)}`
+        ? isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
         : `<div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(state.message || "暂无数据")}</div>`;
     panel.innerHTML = `
-      <div class="crb-head"><div><div class="crb-title">中转余额</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
+      <div class="crb-head"><div><div class="crb-title">${isToday ? "OwlAI 今日用量" : "中转余额"}</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
       ${settingsHtml()}
-      <div class="crb-toolbar"><select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select><button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted">${state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel}</span></div>
+      <div class="crb-toolbar">${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}<button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted">${state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel}</span></div>
       ${body}`;
   }
 
@@ -307,30 +337,57 @@
     if (typeof window.__codexSessionDeleteBridge !== "function") {
       return Promise.reject(new Error("轩++ 后端桥接不可用，请重启轩++"));
     }
+    let timeout;
     return Promise.race([
       window.__codexSessionDeleteBridge(path, payload),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("余额请求超时")), 20_000)),
-    ]);
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("用量请求超时")), 20_000); }),
+    ]).finally(() => clearTimeout(timeout));
   }
 
   async function fetchUsage() {
-    const range = dateRange(config.rangeDays);
+    // 旧的自定义时区不应阻止 OwlAI 查询；通用方案仍在收到响应后校验。
+    let range;
+    let rangeError;
+    try { range = dateRange(config.rangeDays); } catch (error) { rangeError = error; }
     const result = await callBridge("/relay-balance/query", {
       usagePath: config.usagePath,
       timezone: config.timezone,
       ...range,
     });
-    if (!result || result.status === "failed") throw new Error(result?.message || "余额请求失败");
-    if (result.disabled) return { status: "disabled", message: result.message || "当前中转不支持余额查询", profileName: result.profileName || "" };
-    const balance = parseBalance(result.data || {});
-    const models = parseModels(result.data || {});
+    if (result?.status === "failed" && result.provider === "owlai") {
+      previousSnapshot = null;
+      return { status: "failed", provider: "owlai", todayUsed: null, balance: null, planName: "", models: [], speedPerHour: null, updatedAt: null, profileName: result.profileName || "", message: result.message || "今日用量查询失败" };
+    }
+    if (!result || result.status === "failed") throw new Error(result?.message || "用量请求失败");
+    if (result.disabled) return { status: "disabled", message: result.message || "当前中转不支持余额查询", profileName: result.profileName || "", provider: result.provider || "generic" };
+    if (result.provider === "owlai") {
+      previousSnapshot = null;
+      if (!result.data || !Object.hasOwn(result.data, "todayUsed")) throw new Error("未收到有效的今日用量数据");
+      const todayUsed = result.data.todayUsed;
+      if (todayUsed !== null && (typeof todayUsed !== "number" || !Number.isFinite(todayUsed) || todayUsed < 0)) {
+        throw new Error("今日用量数据无效");
+      }
+      return {
+        status: "ok", message: todayUsed == null ? "站点未提供今日实际扣费" : "已更新", provider: "owlai",
+        profileName: result.profileName || "", planName: "",
+        todayUsed, unit: "USD", updatedAt: new Date(),
+        balance: null, unlimited: false, models: [], speedPerHour: null,
+      };
+    }
+    if (rangeError) throw rangeError;
+    const payload = result.data?.data && !Array.isArray(result.data.data) && typeof result.data.data === "object"
+      ? result.data.data : result.data || {};
+    const balance = parseBalance(payload);
+    const models = parseModels(payload);
     const observedAt = Date.now();
     return {
       status: "ok",
+      provider: "generic",
+      todayUsed: null,
       message: "已更新",
       profileName: result.profileName || "",
       models,
-      speedPerHour: calculateSpeed(models, observedAt),
+      speedPerHour: calculateSpeed(models, observedAt, JSON.stringify([result.profileId, config.usagePath, config.timezone, range])),
       updatedAt: new Date(observedAt),
       ...balance,
     };
@@ -339,19 +396,23 @@
   async function refresh(force = false) {
     if (destroyed) return null;
     if (requestPromise) return requestPromise;
-    setState({ status: "loading", message: "正在读取余额" });
+    const revision = configRevision;
+    setState({ status: "loading", message: "正在读取用量" });
     const request = fetchUsage()
       .then((next) => {
-        setState(next);
+        if (!destroyed && revision === configRevision) setState(next);
         return next;
       })
       .catch((error) => {
-        setState({ status: "failed", balance: null, message: error?.message || String(error) });
+        if (!destroyed && revision === configRevision) setState({ status: "failed", balance: null, todayUsed: null, message: error?.message || "用量查询失败，请检查用量方案和统计时区" });
         return null;
       })
       .finally(() => {
         if (requestPromise === request) requestPromise = null;
-        schedule();
+        if (!destroyed && revision !== configRevision) {
+          previousSnapshot = null;
+          void refresh(true);
+        } else schedule();
       });
     requestPromise = request;
     return request;
@@ -369,6 +430,7 @@
     if (action === "settings") setState({ settingsOpen: !state.settingsOpen });
     if (action === "reset") {
       saveConfig(DEFAULT_CONFIG);
+      panel.querySelector(".crb-settings")?.remove();
       setState({ settingsOpen: true });
     }
     if (action === "save") {
@@ -399,6 +461,7 @@
 
   function destroy() {
     destroyed = true;
+    document.removeEventListener("DOMContentLoaded", start);
     window.clearTimeout(timer);
     observer?.disconnect();
     root?.remove();
@@ -409,6 +472,7 @@
 
   window[API_KEY] = { revision: REVISION, ensure, refresh, destroy };
   const start = () => {
+    if (destroyed) return;
     ensure();
     observer = new MutationObserver(() => ensure());
     observer.observe(document.documentElement, { childList: true, subtree: true });

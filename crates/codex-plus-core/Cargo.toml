@@ -10,10 +10,12 @@ aes-gcm.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
 base64.workspace = true
+chrono = "0.4"
 directories.workspace = true
 futures-util = "0.3"
 fs2.workspace = true
 reqwest.workspace = true
+ring = "0.17"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rusqlite.workspace = true
 serde.workspace = true
@@ -31,6 +33,7 @@ zstd.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
+  "Win32_Security_Cryptography",
   "Win32_Storage_EnhancedStorage",
   "Win32_Storage_FileSystem",
   "Win32_Storage_Packaging_Appx",
