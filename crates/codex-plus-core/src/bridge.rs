@@ -94,24 +94,52 @@ pub fn build_bridge_script(binding_name: &str) -> String {
     format!(
         r#"
 (() => {{
+  // 重连时结束旧请求，并保留编号，避免迟到响应误命中新请求。
+  const previousCallbacks = window.__codexSessionDeleteCallbacks;
+  if (previousCallbacks) {{
+    for (const callback of previousCallbacks.values()) {{
+      window.clearTimeout(callback.timer);
+      callback.resolve({{ status: "failed", message: "连接已重建，请重试" }});
+    }}
+    previousCallbacks.clear();
+  }}
   window.__codexSessionDeleteCallbacks = new Map();
-  window.__codexSessionDeleteSeq = 0;
+  window.__codexSessionDeleteSeq = window.__codexSessionDeleteSeq || 0;
+  const callbacks = window.__codexSessionDeleteCallbacks;
   window.__codexSessionDeleteResolve = (id, result) => {{
-    const callback = window.__codexSessionDeleteCallbacks.get(id);
+    const callback = callbacks.get(id);
     if (!callback) return;
-    window.__codexSessionDeleteCallbacks.delete(id);
+    callbacks.delete(id);
+    window.clearTimeout(callback.timer);
     callback.resolve(result);
   }};
   window.__codexSessionDeleteReject = (id, message) => {{
-    const callback = window.__codexSessionDeleteCallbacks.get(id);
+    const callback = callbacks.get(id);
     if (!callback) return;
-    window.__codexSessionDeleteCallbacks.delete(id);
+    callbacks.delete(id);
+    window.clearTimeout(callback.timer);
     callback.resolve({{ status: "failed", message }});
   }};
   window.__codexSessionDeleteBridge = (path, payload) => new Promise((resolve) => {{
     const id = String(++window.__codexSessionDeleteSeq);
-    window.__codexSessionDeleteCallbacks.set(id, {{ resolve }});
-    window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+    // 发送前的只读查询必须有界；不截断生成、导出等耗时操作，也不自动重放请求。
+    const timeoutMs = path === "/backend/status" ? 2000
+      : ["/settings/get", "/codex-model-catalog"].includes(path) ? 5000 : 0;
+    const callback = {{ resolve, timer: null }};
+    callbacks.set(id, callback);
+    if (timeoutMs) {{
+      callback.timer = window.setTimeout(() => {{
+        if (!callbacks.delete(id)) return;
+        resolve({{ status: "failed", message: "连接响应超时，请稍后重试", timeout: true }});
+      }}, timeoutMs);
+    }}
+    try {{
+      window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+    }} catch (_) {{
+      callbacks.delete(id);
+      window.clearTimeout(callback.timer);
+      resolve({{ status: "failed", message: "连接不可用，请稍后重试" }});
+    }}
   }});
 }})();
 "#

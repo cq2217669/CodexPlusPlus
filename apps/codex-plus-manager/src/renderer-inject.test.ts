@@ -390,6 +390,7 @@ function marketplacePatchRuntime(renderer: string, patchSucceeds: boolean): Mark
     "codexPluginMarketplaceUnlockVersion",
     "pluginPatchDisabledInRelayMode",
     "codexPlusSettings",
+    "codexOfficialAppModulePatchesReady",
     "loadAppServerRequestCandidates",
     "patchPluginMarketplaceRequestClient",
     "sendCodexPlusDiagnostic",
@@ -402,6 +403,7 @@ function marketplacePatchRuntime(renderer: string, patchSucceeds: boolean): Mark
     1,
     () => false,
     () => ({ pluginMarketplaceUnlock: true }),
+    () => true,
     // 每轮 sweep 在真实实现里会 fetch 全部 app asset，这里只计数并挂起，
     // 好让测试能在「上一轮尚未结束」的时刻再次调用 install。
     () =>
@@ -530,6 +532,7 @@ function dispatcherPatchRuntime(renderer: string, dispatcherFound: boolean): Dis
   const factory = new Function(
     "window",
     "codexServiceTierRequestOverrideVersion",
+    "codexOfficialAppModulePatchesReady",
     "loadCodexAppModule",
     "codexServiceTierDispatcherFromModule",
     "dispatchCodexPlusMessage",
@@ -541,6 +544,7 @@ function dispatcherPatchRuntime(renderer: string, dispatcherFound: boolean): Dis
   const install = factory(
     fakeWindow,
     1,
+    () => true,
     // 真实实现每轮会依次试三个前缀，每个 miss 都触发一轮全量 asset 扫描。
     () =>
       new Promise((resolve, reject) => {
@@ -565,6 +569,64 @@ function dispatcherPatchRuntime(renderer: string, dispatcherFound: boolean): Dis
   };
 
   return { install, attempts: () => attempts, diagnostics: () => diagnostics, settle };
+}
+
+function officialAppSafetyRuntime(renderer: string) {
+  const start = renderer.indexOf("  const codexOfficialAppPatchReadyVersion = ");
+  const end = renderer.indexOf("\n  function uniqueCodexAppAssetUrls(", start);
+  assert.ok(start >= 0 && end > start, "official app startup safety block not found");
+  const source = renderer.slice(start, end);
+  let now = 1_000_000;
+  const diagnostics: string[] = [];
+  const calls = { cancel: 0, refetch: 0, cancelled: [] as string[], refetched: [] as string[] };
+  const stalled = {
+    queryKey: ["vscode", "codex-home", '{"hostId":"local"}'],
+    queryHash: "stalled-codex-home",
+    state: { status: "pending", fetchStatus: "fetching", dataUpdatedAt: 0 },
+  };
+  const healthy = {
+    queryKey: ["vscode", "codex-home"],
+    queryHash: "healthy-codex-home",
+    state: { status: "success", fetchStatus: "idle", dataUpdatedAt: 1 },
+  };
+  const unrelated = {
+    queryKey: ["vscode", "paths-exist"],
+    queryHash: "unrelated",
+    state: { status: "pending", fetchStatus: "fetching", dataUpdatedAt: 0 },
+  };
+  const queries = [stalled, healthy, unrelated];
+  const client = {
+    getQueryCache: () => ({ getAll: () => queries }),
+    cancelQueries: async ({ predicate }: { predicate: (query: (typeof queries)[number]) => boolean }) => {
+      calls.cancel += 1;
+      calls.cancelled = queries.filter(predicate).map((query) => query.queryHash);
+    },
+    refetchQueries: async ({ predicate }: { predicate: (query: (typeof queries)[number]) => boolean }) => {
+      calls.refetch += 1;
+      calls.refetched = queries.filter(predicate).map((query) => query.queryHash);
+    },
+  };
+  const fiber = { memoizedProps: { client }, child: null, sibling: null, return: null };
+  const root = { "__reactContainer$test": { current: fiber } };
+  const document = { getElementById: (id: string) => id === "root" ? root : null };
+  const windowValue: Record<string, unknown> = {};
+  const factory = new Function(
+    "window",
+    "document",
+    "Date",
+    "sendCodexPlusDiagnostic",
+    `${source}\nreturn { codexOfficialAppModulePatchesReady, recoverStalledCodexHomeQueries };`,
+  ) as (
+    windowValue: Record<string, unknown>,
+    documentValue: typeof document,
+    dateValue: { now: () => number },
+    diagnostic: (event: string) => void,
+  ) => {
+    codexOfficialAppModulePatchesReady: () => boolean;
+    recoverStalledCodexHomeQueries: () => Promise<boolean>;
+  };
+  const runtime = factory(windowValue, document, { now: () => now }, (event: string) => diagnostics.push(event));
+  return { runtime, calls, diagnostics, advance: (ms: number) => { now += ms; } };
 }
 
 describe("renderer injection service tier dispatcher patch", () => {
@@ -607,6 +669,61 @@ describe("renderer injection service tier dispatcher patch", () => {
 
     assert.equal(harness.attempts(), 1);
     assert.deepEqual(harness.diagnostics(), ["service_tier_dispatcher_patch_installed"]);
+  });
+});
+
+describe("renderer injection official app startup safety", () => {
+  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  it("does not replace global event dispatch primitives", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+
+    assert.doesNotMatch(renderer, /window\.dispatchEvent\s*=/);
+    assert.match(renderer, /window\.addEventListener\("codex-message-from-view"/);
+  });
+
+  it("only patches marketplace responses for explicitly tracked request ids", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+
+    const strictGate = /if \(!\(requestIds instanceof Set\) \|\| !requestIds\.has\(requestId\)\) return false;/g;
+    assert.equal(Array.from(renderer.matchAll(strictGate)).length, 2);
+  });
+
+  it("defers official module patches and installs a one-shot codex-home recovery", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+
+    assert.match(renderer, /function codexOfficialAppModulePatchesReady\(/);
+    assert.match(renderer, /function recoverStalledCodexHomeQueries\(/);
+    assert.match(renderer, /window\.__codexHomeQueryRecoveryAttempted = codexOfficialAppPatchReadyVersion;/);
+    assert.match(renderer, /await queryClient\.cancelQueries\(filters\);/);
+    assert.match(renderer, /await queryClient\.refetchQueries\(filters\);/);
+    assert.match(renderer, /function installCodexServiceTierDispatcherPatch\(\) \{[\s\S]*?if \(!codexOfficialAppModulePatchesReady\(\)\) return;/);
+    assert.match(renderer, /async function installDictationSupportPatch\(\) \{[\s\S]*?if \(!codexOfficialAppModulePatchesReady\(\)\) return;/);
+  });
+
+  it("verifies the context bridge patch before reporting success", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+
+    assert.match(renderer, /bridge\.sendMessageFromView !== patchedSendMessageFromView/);
+    assert.match(renderer, /plugin_marketplace_bridge_patch_not_writable/);
+    assert.match(renderer, /installPluginMarketplaceRequestPatch\(\);/);
+  });
+
+  it("retries only the stalled codex-home query and runs once", async () => {
+    const harness = officialAppSafetyRuntime(await readFile(rendererPath, "utf8"));
+
+    assert.equal(harness.runtime.codexOfficialAppModulePatchesReady(), false);
+    harness.advance(1001);
+    assert.equal(harness.runtime.codexOfficialAppModulePatchesReady(), true);
+    assert.equal(await harness.runtime.recoverStalledCodexHomeQueries(), true);
+    assert.equal(await harness.runtime.recoverStalledCodexHomeQueries(), false);
+    assert.deepEqual(harness.calls, {
+      cancel: 1,
+      refetch: 1,
+      cancelled: ["stalled-codex-home"],
+      refetched: ["stalled-codex-home"],
+    });
+    assert.deepEqual(harness.diagnostics, ["codex_home_query_recovered"]);
   });
 });
 

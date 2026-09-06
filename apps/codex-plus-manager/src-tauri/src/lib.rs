@@ -70,6 +70,7 @@ pub fn run() {
             mobile_remote::mobile_remote_pair,
             mobile_remote::mobile_remote_enable,
             mobile_remote::mobile_remote_confirm,
+            mobile_remote::mobile_remote_auto_sync,
             mobile_remote::mobile_remote_select,
             mobile_remote::mobile_remote_tasks,
             commands::backend_version,

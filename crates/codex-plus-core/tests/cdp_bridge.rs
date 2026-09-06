@@ -44,6 +44,123 @@ fn bridge_script_defines_expected_globals_and_binding() {
 }
 
 #[test]
+fn bridge_script_settles_requests_on_reconnect_timeout_and_binding_failure() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let script_path = temp.path().join("bridge.js");
+    let harness_path = temp.path().join("bridge-lifecycle.cjs");
+    std::fs::write(&script_path, bridge::build_bridge_script(BRIDGE_BINDING_NAME))
+        .expect("bridge script should be written");
+    std::fs::write(
+        &harness_path,
+        r#"
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const source = require("node:fs").readFileSync(process.argv[2], "utf8");
+const timers = new Map();
+const calls = [];
+let nextTimer = 0;
+const window = {
+  setTimeout(fn, delay) {
+    const id = ++nextTimer;
+    timers.set(id, { fn, delay });
+    return id;
+  },
+  clearTimeout(id) { timers.delete(id); },
+  codexSessionDeleteV2(value) { calls.push(JSON.parse(value)); },
+};
+const context = vm.createContext({ window });
+const install = () => vm.runInContext(source, context);
+const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+(async () => {
+  install();
+  let oldResult;
+  window.__codexSessionDeleteBridge("/settings/get", {}).then(value => { oldResult = value; });
+  const oldId = calls.at(-1).id;
+  const oldCallbacks = window.__codexSessionDeleteCallbacks;
+  assert.equal(timers.size, 1);
+  install();
+  await flush();
+  assert.equal(oldResult?.status, "failed");
+  assert.equal(oldCallbacks.size, 0);
+  assert.equal(timers.size, 0);
+
+  let currentResult;
+  window.__codexSessionDeleteBridge("/settings/get", {}).then(value => { currentResult = value; });
+  const currentId = calls.at(-1).id;
+  assert.notEqual(currentId, oldId);
+  window.__codexSessionDeleteResolve(oldId, { stale: true });
+  window.__codexSessionDeleteReject(oldId, "late failure");
+  await flush();
+  assert.equal(currentResult, undefined);
+  assert.equal(window.__codexSessionDeleteCallbacks.size, 1);
+  window.__codexSessionDeleteResolve(currentId, { status: "ok" });
+  await flush();
+  assert.equal(currentResult.status, "ok");
+  assert.equal(timers.size, 0);
+
+  for (const [path, delay] of [
+    ["/settings/get", 5000], ["/codex-model-catalog", 5000], ["/backend/status", 2000],
+  ]) {
+    let result;
+    window.__codexSessionDeleteBridge(path, {}).then(value => { result = value; });
+    const id = calls.at(-1).id;
+    const [timerId, timer] = [...timers][0];
+    assert.equal(timer.delay, delay);
+    timers.delete(timerId);
+    timer.fn();
+    await flush();
+    assert.equal(result.status, "failed");
+    assert.equal(result.timeout, true);
+    assert.equal(window.__codexSessionDeleteCallbacks.size, 0);
+    window.__codexSessionDeleteResolve(id, { status: "ok" });
+    assert.equal(result.status, "failed");
+  }
+
+  let rejectedResult;
+  window.__codexSessionDeleteBridge("/settings/get", {}).then(value => { rejectedResult = value; });
+  window.__codexSessionDeleteReject(calls.at(-1).id, "failed");
+  await flush();
+  assert.equal(rejectedResult.status, "failed");
+  assert.equal(timers.size, 0);
+
+  window.codexSessionDeleteV2 = () => { throw new Error("binding unavailable"); };
+  const unavailable = await window.__codexSessionDeleteBridge("/settings/get", {});
+  assert.equal(unavailable.status, "failed");
+  assert.equal(window.__codexSessionDeleteCallbacks.size, 0);
+  assert.equal(timers.size, 0);
+  window.codexSessionDeleteV2 = value => calls.push(JSON.parse(value));
+  const cyclic = {};
+  cyclic.self = cyclic;
+  const invalid = await window.__codexSessionDeleteBridge("/settings/get", cyclic);
+  assert.equal(invalid.status, "failed");
+  assert.equal(window.__codexSessionDeleteCallbacks.size, 0);
+  assert.equal(timers.size, 0);
+
+  let exported;
+  window.__codexSessionDeleteBridge("/session/export", {}).then(value => { exported = value; });
+  assert.equal(timers.size, 0);
+  window.__codexSessionDeleteResolve(calls.at(-1).id, { status: "ok" });
+  await flush();
+  assert.equal(exported.status, "ok");
+  assert.equal(window.__codexSessionDeleteCallbacks.size, 0);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"#,
+    )
+    .expect("harness should be written");
+    let output = Command::new("node")
+        .arg(&harness_path)
+        .arg(&script_path)
+        .output()
+        .expect("node should run bridge lifecycle harness");
+    assert!(
+        output.status.success(),
+        "bridge lifecycle harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn screenshot_command_uses_png_from_surface() {
     assert_eq!(
         bridge::capture_screenshot_params(),
@@ -2232,7 +2349,7 @@ fn injection_script_does_not_unlock_disabled_plugin_install_buttons() {
 fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"16\""));
     assert!(!script.contains("function pluginMarketplaceAliasForName"));
     assert!(
         !script.contains("if (name === \"openai-bundled\") return \"codex-plus-openai-bundled\"")
@@ -2244,7 +2361,7 @@ fn injection_script_keeps_bundled_marketplace_name_for_default_filter() {
 fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"16\""));
     assert!(script.contains("codexPluginFilterSourceCache = new WeakMap()"));
     assert!(script.contains("function codexPluginFilterCallbackSource(callback)"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
@@ -2259,7 +2376,7 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
 fn injection_script_expands_api_key_plugin_marketplace_requests() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"15\""));
+    assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"16\""));
     assert!(script.contains("installPluginMarketplaceRequestPatch"));
     assert!(script.contains("installPluginMarketplaceBridgePatch"));
     assert!(script.contains("installPluginBuildFlavorFilterPatch"));
@@ -3295,6 +3412,9 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["modelSwitchResumeProvider"], "");
     assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
     assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
+    assert_eq!(cases["bridgeTimeoutSendCompleted"], true);
+    assert_eq!(cases["bridgeReconnectSendCompleted"], true);
+    assert_eq!(cases["bridgeRecoveredSendCount"], 3);
 }
 
 fn run_service_tier_contract_harness() -> serde_json::Value {
@@ -3974,6 +4094,74 @@ await failedModelSwitchClient.sendRequest("turn/start", {{
 }});
 const failedModelSwitchResumeAttempts = failedModelSwitchCalls.filter((call) => call.method === "thread/resume").length;
 const failedModelSwitchTurnAttempts = failedModelSwitchCalls.filter((call) => call.method === "turn/start").length;
+const bridgeSource = {bridge_source};
+const installBridge = () => require("node:vm").runInThisContext(bridgeSource);
+const bridgeTimers = new Map();
+const nativeSetTimeout = window.setTimeout;
+const nativeClearTimeout = window.clearTimeout;
+let bridgeTimerSeq = 0;
+window.setTimeout = (fn, delay) => {{
+  const id = ++bridgeTimerSeq;
+  bridgeTimers.set(id, {{ fn, delay }});
+  return id;
+}};
+window.clearTimeout = id => bridgeTimers.delete(id);
+window.codexSessionDeleteV2 = value => {{
+  const request = JSON.parse(value);
+  if (request.path !== "/settings/get") {{
+    window.__codexSessionDeleteResolve(request.id, {{ status: "ok" }});
+  }}
+}};
+installBridge();
+const bridgeSendCalls = [];
+const bridgeSendClient = {{
+  async sendRequest(method, params, options) {{
+    bridgeSendCalls.push({{ method, params, options }});
+    return {{ ok: true }};
+  }},
+}};
+api.patchAppServerClient(bridgeSendClient);
+const bridgeSendParams = {{ threadId: "thread-restart", model: "model-old", input: [], modelProvider: "openai" }};
+const bridgeSendOptions = {{ signal: "restart-send" }};
+const flushBridge = async () => {{ for (let i = 0; i < 30; i++) await Promise.resolve(); }};
+let bridgeTimeoutSendCompleted = false;
+void bridgeSendClient.sendRequest("turn/start", bridgeSendParams, bridgeSendOptions)
+  .then(() => {{ bridgeTimeoutSendCompleted = true; }});
+await flushBridge();
+require("node:assert/strict").equal(bridgeSendCalls.length, 0);
+for (const [id, timer] of [...bridgeTimers]) {{
+  if (timer.delay !== 5000) continue;
+  bridgeTimers.delete(id);
+  timer.fn();
+}}
+await flushBridge();
+require("node:assert/strict").equal(bridgeTimeoutSendCompleted, true);
+require("node:assert/strict").equal(bridgeSendCalls[0].params, bridgeSendParams);
+require("node:assert/strict").equal(bridgeSendCalls[0].options, bridgeSendOptions);
+let bridgeReconnectSendCompleted = false;
+void bridgeSendClient.sendRequest("turn/start", bridgeSendParams, bridgeSendOptions)
+  .then(() => {{ bridgeReconnectSendCompleted = true; }});
+await flushBridge();
+installBridge();
+await flushBridge();
+require("node:assert/strict").equal(bridgeReconnectSendCompleted, true);
+window.codexSessionDeleteV2 = value => {{
+  const request = JSON.parse(value);
+  window.__codexSessionDeleteResolve(request.id, request.path === "/settings/get" ? {{
+    launchMode: "patch",
+    enhancementsEnabled: true,
+    providerSyncEnabled: true,
+    relayProfilesEnabled: true,
+    activeRelayId: "official",
+    relayProfiles: [{{ id: "official", relayMode: "official", officialMixApiKey: false }}],
+  }} : {{ status: "ok" }});
+}};
+await bridgeSendClient.sendRequest("turn/start", bridgeSendParams, bridgeSendOptions);
+const bridgeRecoveredSendCount = bridgeSendCalls.length;
+require("node:assert/strict").equal(window.__codexSessionDeleteCallbacks.size, 0);
+require("node:assert/strict").equal(bridgeTimers.size, 0);
+window.setTimeout = nativeSetTimeout;
+window.clearTimeout = nativeClearTimeout;
 process.stdout.write(JSON.stringify({{
   supportedFast,
   unsupportedModel,
@@ -4049,12 +4237,17 @@ process.stdout.write(JSON.stringify({{
   modelSwitchResumeProvider,
   failedModelSwitchResumeAttempts,
   failedModelSwitchTurnAttempts,
+  bridgeTimeoutSendCompleted,
+  bridgeReconnectSendCompleted,
+  bridgeRecoveredSendCount,
 }}), () => process.exit(0));
 }}).catch((error) => {{
   console.error(error);
   process.exit(1);
 }});
 "#,
+        bridge_source = serde_json::to_string(&bridge::build_bridge_script(BRIDGE_BINDING_NAME))
+            .expect("bridge source should serialize"),
         script_path = serde_json::to_string(&script_path.to_string_lossy().to_string())
             .expect("script path should serialize")
     )

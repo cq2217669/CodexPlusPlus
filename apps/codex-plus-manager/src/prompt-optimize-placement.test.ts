@@ -29,6 +29,7 @@ class TestElement {
   getAttribute(name: string) { return this.attributes.get(name) ?? null; }
   hasAttribute(name: string) { return this.attributes.has(name); }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+  contains(node: TestElement): boolean { return node === this || this.children.some((child) => child.contains(node)); }
   getBoundingClientRect() { return this.rect; }
   appendChild(child: TestElement) { this.insertBefore(child, null); }
   insertBefore(child: TestElement, before: TestElement | null) {
@@ -135,6 +136,17 @@ describe("润色按钮定位", () => {
     fixture.ensureButton();
     assert.equal(fixture.toolbar.children[0], fixture.model);
     assert.equal(fixture.toolbar.children[1].nextSibling, fixture.send);
+  });
+
+  it("输入为空时不把按钮插进纵向模型控件", async () => {
+    const fixture = await setup();
+    const modelControl = new TestElement();
+    fixture.toolbar.insertBefore(modelControl, fixture.model);
+    modelControl.appendChild(fixture.model);
+    fixture.ensureButton();
+    assert.deepEqual(fixture.toolbar.children.map((child) => child.tagName), ["SPAN", "DIV", "BUTTON"]);
+    assert.equal(fixture.toolbar.firstChild?.nextSibling, modelControl);
+    assert.equal(modelControl.firstChild, fixture.model);
   });
 
   it("不把其他行的模型按钮当作底栏锚点", async () => {

@@ -8,12 +8,17 @@ try {
         'crates/codex-plus-core/src/remote_mobile/mod.rs',
         'crates/codex-plus-core/src/remote_mobile/store.rs',
         'crates/codex-plus-core/src/remote_mobile/official_tasks.rs',
+        'crates/codex-plus-core/src/remote_mobile/live_source.rs',
+        'crates/codex-plus-core/src/remote_mobile/live_source.js',
         'crates/codex-plus-core/src/remote_mobile/integration_tests.rs',
         'apps/codex-plus-manager/src-tauri/src/mobile_remote.rs',
         'apps/codex-plus-manager/src/MobileRemoteScreen.tsx',
         'apps/codex-plus-manager/src/mobile-remote.css',
+        'apps/xuan-plus-remote/app/entry/src/main/ets/pages/Index.ets',
+        'apps/xuan-plus-remote/app/entry/src/main/ets/remote/LiveReplyStreamCoordinator.ets',
         'apps/xuan-plus-remote/cloud-service/src/main.rs',
         'scripts/test-mobile-remote.ps1',
+        'scripts/test-mobile-task-detail.mjs',
         'scripts/test-mobile-remote-ui.mjs'
     )
     $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
@@ -24,6 +29,8 @@ try {
             throw "源码编码检查失败：$relative"
         }
     }
+    & node (Join-Path $root 'scripts/test-mobile-task-detail.mjs')
+    if ($LASTEXITCODE -ne 0) { throw '手机任务详情回归测试失败。' }
     $manifest = Join-Path $root 'apps/xuan-plus-remote/cloud-service/Cargo.toml'
     $arguments = @('test', '--manifest-path', $manifest, '--offline', '--locked', '--no-run', '--message-format=json')
     if ($UseCachedMirror) {

@@ -58,13 +58,15 @@ try {
     ];
     const state = {
       enabled: true, connected: true, bound: false, message: "手机已扫码，等待本机确认",
-      qrImage: null, qrExpiresAt: null, selected: [], lastSyncedAt: null, syncError: null,
+      qrImage: null, qrExpiresAt: null, autoSync: true,
+      selected: tasks.map(task => task.id), lastSyncedAt: null, syncError: null,
       pending: { requestId: "isolated_request_0001", phoneName: "集成测试手机", safetyPhrase: "青山 · 流水",
         expiresAt: new Date(Date.now() + 300000).toISOString() },
     };
     window.__TAURI_INTERNALS__ = {
       invoke: async (command, args) => {
         if (command === "mobile_remote_tasks") return structuredClone(tasks);
+        if (command === "mobile_remote_auto_sync") state.autoSync = args.enabled;
         if (command === "mobile_remote_select") state.selected = args.selected;
         if (command === "mobile_remote_confirm") {
           state.bound = args.confirmed; state.pending = null;
@@ -84,8 +86,9 @@ try {
   await page.screenshot({ path: path.join(output, "desktop.png"), fullPage: true });
   await page.getByRole("button", { name: "确认绑定", exact: true }).click();
   await page.getByRole("status").filter({ hasText: "手机已绑定" }).waitFor();
+  await page.getByRole("checkbox", { name: "自动同步最近 50 个任务", exact: true }).uncheck();
   const firstTask = page.locator(".mobile-remote-task").first().getByRole("checkbox");
-  await firstTask.check();
+  await firstTask.uncheck();
   await page.getByText("已选择 1 项", { exact: true }).waitFor();
   await page.getByRole("textbox", { name: "搜索任务" }).fill("较长");
   assert.equal(await page.locator(".mobile-remote-task").count(), 1);
@@ -109,7 +112,7 @@ try {
   await page.getByRole("checkbox", { name: "连接手机", exact: true }).uncheck();
   await page.getByRole("status").filter({ hasText: "手机连接已暂停" }).waitFor();
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ ok: true, checks: ["确认绑定", "选择任务", "搜索", "暂停连接", "窄屏布局", "内部标识隐藏"], transport: "仅模拟界面调用", screenshots: output }));
+  console.log(JSON.stringify({ ok: true, checks: ["确认绑定", "自动同步", "选择任务", "搜索", "暂停连接", "窄屏布局", "内部标识隐藏"], transport: "仅模拟界面调用", screenshots: output }));
 } finally {
   if (browser) await browser.close();
   await server.close();

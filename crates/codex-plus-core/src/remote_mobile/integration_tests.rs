@@ -162,6 +162,13 @@ impl AppDevice {
         query["remoteTaskId"] = json!(task);
         self.get(&format!("/v1/tasks/{task}"), &query).await
     }
+
+    async fn tasks(&self, pc_device_id: &str) -> Value {
+        let mut query = self.envelope("app/task-list-query");
+        query["pcDeviceId"] = json!(pc_device_id);
+        self.get(&format!("/v1/pc-devices/{pc_device_id}/tasks"), &query)
+            .await
+    }
 }
 
 async fn action(tx: &mpsc::Sender<Request>, action: Action) -> Result<(), String> {
@@ -192,6 +199,20 @@ async fn wait_reply(app: &AppDevice, task: &str, expected: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("云端未收到预期回复");
+}
+
+async fn wait_task_count(app: &AppDevice, pc_device_id: &str, expected: usize) -> Value {
+    for _ in 0..120 {
+        let response = app.tasks(pc_device_id).await;
+        if response["tasks"]
+            .as_array()
+            .is_some_and(|tasks| tasks.len() == expected)
+        {
+            return response;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("云端任务数量未在时限内更新为 {expected}");
 }
 
 #[tokio::test]
@@ -255,11 +276,6 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
         rusqlite::params![task_id, path.to_str().unwrap()],
     )
     .unwrap();
-    db.execute(
-        "INSERT INTO threads VALUES (?1, '不应同步的任务', 'E:/private', 'missing.jsonl', 0, 2)",
-        [id()],
-    )
-    .unwrap();
     drop(db);
     let state_path = temp.path().join("desktop.sqlite");
     let status = Arc::new(Mutex::new(MobileStatus::default()));
@@ -277,10 +293,6 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
         confirmation: None,
         confirmation_id: None,
     };
-    worker
-        .apply_action(Action::Select(BTreeSet::from([task_id.clone()])), None)
-        .await
-        .unwrap();
     let pairing = worker.register_pairing().await.unwrap();
     let pc_id = worker.store.state.pc_id.clone();
     let (tx, rx) = mpsc::channel(16);
@@ -302,6 +314,54 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
         .unwrap();
     wait_status(&status, |s| s.bound).await;
     wait_reply(&app, &task_id, "处理中").await;
+
+    let created_task_id = id();
+    let created_path = home.join("sessions/created.jsonl");
+    let mut created_file = std::fs::File::create(&created_path).unwrap();
+    for value in [
+        json!({"type":"session_meta","payload":{"id":created_task_id,"source":"vscode"}}),
+        json!({"type":"turn_context","payload":{"model":"新增模型"}}),
+        json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"created-turn"}}),
+    ] {
+        writeln!(created_file, "{value}").unwrap();
+    }
+    let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (?1, '新增任务', 'E:/新增项目', ?2, 0, 3)",
+        rusqlite::params![created_task_id, created_path.to_str().unwrap()],
+    )
+    .unwrap();
+    drop(db);
+    let created_list = wait_task_count(&app, &pc_id, 2).await;
+    assert!(
+        created_list["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| {
+                task["remoteTaskId"] == created_task_id && task["workspaceName"] == "新增项目"
+            })
+    );
+
+    let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute(
+        "UPDATE threads SET title='已编辑任务', cwd='E:/已编辑项目', updated_at=4 WHERE id=?1",
+        [&created_task_id],
+    )
+    .unwrap();
+    drop(db);
+    let mut edited = false;
+    for _ in 0..120 {
+        let snapshot = app.snapshot(&created_task_id).await;
+        if snapshot["snapshot"]["name"] == "已编辑任务"
+            && snapshot["snapshot"]["workspaceName"] == "已编辑项目"
+        {
+            edited = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(edited, "任务名称与项目归属未实时更新");
 
     let stream_query = app.envelope("app/reply-stream-connect");
     let stream_request =
@@ -326,11 +386,13 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
     )
     .unwrap();
     writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"current-turn","last_agent_message":complete}})).unwrap();
-    let snapshot = wait_reply(&app, &task_id, &complete).await;
-    assert_eq!(snapshot["lastReply"]["byteLength"], complete.len());
+    let mut history = format!("处理中\n\n---\n\n{complete}");
+    let snapshot = wait_reply(&app, &task_id, &history).await;
+    assert_eq!(snapshot["lastReply"]["byteLength"], history.len());
     assert_eq!(snapshot["turnStatus"], "completed");
-    let old_version = snapshot["stateVersion"].as_u64().unwrap();
     let mut got_complete = false;
+    let mut streamed_history = String::new();
+    let mut stream_seq = 0;
     for _ in 0..10 {
         let frame = tokio::time::timeout(Duration::from_secs(5), stream.next())
             .await
@@ -339,10 +401,16 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
             .unwrap();
         if let Message::Text(text) = frame {
             let frame: Value = serde_json::from_str(&text).unwrap();
-            if frame["messageType"] == "reply-stream/reset" && frame["text"] == complete {
+            if frame["messageType"] == "reply-stream/reset" {
                 assert_eq!(frame["streamSeq"], 1);
-                got_complete = true;
+                stream_seq = 1;
+                streamed_history = frame["text"].as_str().unwrap().to_owned();
+            } else if frame["messageType"] == "reply-stream/append" {
+                assert_eq!(frame["streamSeq"], stream_seq + 1);
+                stream_seq += 1;
+                streamed_history.push_str(frame["text"].as_str().unwrap());
             }
+            got_complete = streamed_history == history;
             if frame["messageType"] == "reply-stream/end" && got_complete {
                 break;
             }
@@ -350,12 +418,30 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
     }
     assert!(got_complete, "回复流没有完整内容");
     stream.close(None).await.unwrap();
-    let mut list = app.envelope("app/task-list-query");
-    list["pcDeviceId"] = json!(pc_id);
-    let listed = app
-        .get(&format!("/v1/pc-devices/{pc_id}/tasks"), &list)
-        .await;
-    assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
+    writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"next-turn"}})).unwrap();
+    let mut next_turn_running = false;
+    for _ in 0..120 {
+        let snapshot = app.snapshot(&task_id).await;
+        if snapshot["snapshot"]["turnStatus"] == "running" {
+            assert_eq!(snapshot["snapshot"]["lastReply"]["text"], history);
+            next_turn_running = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(next_turn_running, "新回合状态必须自动同步，并保留之前的回复");
+    for value in [
+        json!({"type":"event_msg","payload":{"type":"agent_message","message":"第二轮回复"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"第二轮回复"}]}}),
+        json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"next-turn","last_agent_message":"第二轮回复"}}),
+    ] {
+        writeln!(file, "{value}").unwrap();
+    }
+    history.push_str("\n\n---\n\n第二轮回复");
+    let snapshot = wait_reply(&app, &task_id, &history).await;
+    let old_version = snapshot["stateVersion"].as_u64().unwrap();
+    let listed = app.tasks(&pc_id).await;
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 2);
 
     let command = app.post(&format!("/v1/tasks/{task_id}/commands"), &json!({
         "schemaVersion":"1.5","messageType":"app/command","messageId":id(),"environment":"dev",
@@ -391,24 +477,12 @@ async fn desktop_binding_and_reply_sync_with_real_local_cloud() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(advanced, "重连后同步版本不能回退");
-    action(&tx, Action::Select(BTreeSet::new())).await.unwrap();
-    let mut removed = false;
-    for _ in 0..100 {
-        let query = {
-            let mut v = app.envelope("app/task-list-query");
-            v["pcDeviceId"] = json!(pc_id);
-            v
-        };
-        let result = app
-            .get(&format!("/v1/pc-devices/{pc_id}/tasks"), &query)
-            .await;
-        if result["tasks"].as_array().is_some_and(|v| v.is_empty()) {
-            removed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(removed, "取消同步后云端必须移除任务");
+    let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+    db.execute("DELETE FROM threads WHERE id=?1", [&created_task_id])
+        .unwrap();
+    drop(db);
+    let remaining = wait_task_count(&app, &pc_id, 1).await;
+    assert_eq!(remaining["tasks"][0]["remoteTaskId"], task_id);
     action(&tx, Action::Enable(false)).await.unwrap();
     action(&tx, Action::Pair).await.unwrap();
     wait_status(&status, |s| s.bound && s.qr_image.is_some()).await;

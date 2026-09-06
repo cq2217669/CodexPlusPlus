@@ -15,7 +15,7 @@
  */
 (() => {
   const SCRIPT_VERSION = "1.1.0";
-  const INSTANCE_REVISION = "official-2026-09-v7";
+  const INSTANCE_REVISION = "official-2026-09-v8";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -320,6 +320,22 @@
       .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] || null;
   }
 
+  function modelControlAnchor(modelSelector, send) {
+    if (!(modelSelector instanceof HTMLElement) || !(send instanceof HTMLElement)) return null;
+    let commonParent = modelSelector.parentElement;
+    while (commonParent && !commonParent.contains(send)) {
+      commonParent = commonParent.parentElement;
+    }
+    if (!commonParent) return null;
+
+    let modelBranch = modelSelector;
+    while (modelBranch.parentElement && modelBranch.parentElement !== commonParent) {
+      modelBranch = modelBranch.parentElement;
+    }
+    if (modelBranch.parentElement !== commonParent) return null;
+    return { node: commonParent, before: modelBranch };
+  }
+
   function findComposerInput() {
     const editable = Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
       .filter((element) => isVisible(element) && !isInSidebar(element))
@@ -606,8 +622,9 @@
       });
       if (send) {
         const modelSelector = modelSelectorBeforeSend(clickables, send);
-        if (modelSelector && modelSelector.parentElement) {
-          return { node: modelSelector.parentElement, before: modelSelector };
+        const modelAnchor = modelControlAnchor(modelSelector, send);
+        if (modelAnchor) {
+          return modelAnchor;
         }
         return { node: send.parentElement || send.parentNode, before: send };
       }

@@ -33,6 +33,7 @@ export interface LiveReplyUpdate {
   text: string;
   streamId: string;
   streamSeq: number;
+  observedAt: string;
 }
 
 type UpdateHandler = (update: LiveReplyUpdate) => void;
@@ -45,6 +46,9 @@ export class LiveReplyStreamCoordinator {
   private static streamId: string = '';
   private static streamSeq: number = 0;
   private static text: string = '';
+  private static streamStartedAt: number = 0;
+  private static retiredStreamIds: string[] = [];
+  private static connectTimer?: number = undefined;
 
   static async connect(registration: DeviceRegistrationResult, task: RemoteTaskSnapshot,
     onUpdate: UpdateHandler, onEnd: EndHandler, onStatus: StatusHandler): Promise<void> {
@@ -85,8 +89,13 @@ export class LiveReplyStreamCoordinator {
     LiveReplyStreamCoordinator.streamId = '';
     LiveReplyStreamCoordinator.streamSeq = 0;
     LiveReplyStreamCoordinator.text = '';
+    LiveReplyStreamCoordinator.streamStartedAt = 0;
     socket.on('open', (_error: BusinessError): void => {
       if (generation === LiveReplyStreamCoordinator.generation) {
+        if (LiveReplyStreamCoordinator.connectTimer !== undefined) {
+          clearTimeout(LiveReplyStreamCoordinator.connectTimer);
+          LiveReplyStreamCoordinator.connectTimer = undefined;
+        }
         LiveReplyStreamCoordinator.log('socket-open');
         onStatus(true, '正在接收电脑端实时回复');
       }
@@ -105,21 +114,41 @@ export class LiveReplyStreamCoordinator {
         LiveReplyStreamCoordinator.disconnect();
         return;
       }
-      if (!LiveReplyStreamCoordinator.validFrame(frame, task)) {
-        LiveReplyStreamCoordinator.logFrame('frame-rejected', frame);
+      if (frame === null || typeof frame !== 'object' || !LiveReplyStreamCoordinator.validFrame(frame, task)) {
+        LiveReplyStreamCoordinator.log('frame-rejected: invalid-contract');
         onStatus(false, '实时回复协议校验失败');
         LiveReplyStreamCoordinator.disconnect();
         return;
       }
+      // 重放帧不应追加两次；同一流的旧 reset 也不能把已收到的内容回退。
+      if (frame.streamId === LiveReplyStreamCoordinator.streamId &&
+        frame.streamSeq <= LiveReplyStreamCoordinator.streamSeq) {
+        return;
+      }
+      if (LiveReplyStreamCoordinator.retiredStreamIds.includes(frame.streamId)) {
+        return;
+      }
       if (frame.messageType === 'reply-stream/reset') {
+        if (Date.parse(frame.sentAt) < LiveReplyStreamCoordinator.streamStartedAt) {
+          return;
+        }
         LiveReplyStreamCoordinator.logFrame('frame-accepted', frame);
+        if (frame.streamId !== LiveReplyStreamCoordinator.streamId &&
+          LiveReplyStreamCoordinator.streamId.length > 0) {
+          LiveReplyStreamCoordinator.retiredStreamIds.push(LiveReplyStreamCoordinator.streamId);
+          if (LiveReplyStreamCoordinator.retiredStreamIds.length > 32) {
+            LiveReplyStreamCoordinator.retiredStreamIds.shift();
+          }
+        }
+        LiveReplyStreamCoordinator.streamStartedAt = Date.parse(frame.sentAt);
         LiveReplyStreamCoordinator.streamId = frame.streamId;
         LiveReplyStreamCoordinator.streamSeq = frame.streamSeq;
         LiveReplyStreamCoordinator.text = frame.text ?? '';
         onUpdate({
           text: LiveReplyStreamCoordinator.text,
           streamId: frame.streamId,
-          streamSeq: frame.streamSeq
+          streamSeq: frame.streamSeq,
+          observedAt: frame.sentAt
         });
         return;
       }
@@ -135,7 +164,8 @@ export class LiveReplyStreamCoordinator {
         LiveReplyStreamCoordinator.text = text;
         LiveReplyStreamCoordinator.streamSeq = frame.streamSeq;
         LiveReplyStreamCoordinator.logFrame('frame-accepted', frame);
-        onUpdate({ text: text, streamId: frame.streamId, streamSeq: frame.streamSeq });
+        onUpdate({ text: text, streamId: frame.streamId, streamSeq: frame.streamSeq,
+          observedAt: frame.sentAt });
         return;
       }
       if (frame.streamId !== LiveReplyStreamCoordinator.streamId ||
@@ -152,7 +182,7 @@ export class LiveReplyStreamCoordinator {
     socket.on('close', (_error: BusinessError): void => {
       if (generation === LiveReplyStreamCoordinator.generation) {
         LiveReplyStreamCoordinator.log('socket-close');
-        LiveReplyStreamCoordinator.socket = undefined;
+        LiveReplyStreamCoordinator.disconnect();
         onStatus(false, '实时回复连接已断开；最终答复仍会通过任务快照同步');
       }
     });
@@ -164,6 +194,12 @@ export class LiveReplyStreamCoordinator {
       }
     });
     try {
+      LiveReplyStreamCoordinator.connectTimer = setTimeout((): void => {
+        if (generation === LiveReplyStreamCoordinator.generation) {
+          onStatus(false, '实时连接超时，正在重新连接');
+          LiveReplyStreamCoordinator.disconnect();
+        }
+      }, 15000);
       await socket.connect(
         `${RemoteEnvironmentConfig.replyStreamWssBaseUrl}/${task.remoteTaskId}/reply-stream?${query}`,
         { header: headers });
@@ -178,15 +214,28 @@ export class LiveReplyStreamCoordinator {
 
   static disconnect(): void {
     LiveReplyStreamCoordinator.generation++;
+    if (LiveReplyStreamCoordinator.connectTimer !== undefined) {
+      clearTimeout(LiveReplyStreamCoordinator.connectTimer);
+      LiveReplyStreamCoordinator.connectTimer = undefined;
+    }
     const socket: webSocket.WebSocket | undefined = LiveReplyStreamCoordinator.socket;
     LiveReplyStreamCoordinator.socket = undefined;
     LiveReplyStreamCoordinator.streamId = '';
     LiveReplyStreamCoordinator.streamSeq = 0;
     LiveReplyStreamCoordinator.text = '';
+    LiveReplyStreamCoordinator.streamStartedAt = 0;
+    LiveReplyStreamCoordinator.retiredStreamIds = [];
     if (socket !== undefined) {
+      socket.off('open');
+      socket.off('message');
+      socket.off('close');
+      socket.off('error');
       try {
-        socket.close({ code: 1000, reason: 'detail_closed' });
+        void socket.close({ code: 1000, reason: 'detail_closed' }).catch((): void => {
+          LiveReplyStreamCoordinator.log('socket-close: already unavailable');
+        });
       } catch (_error) {
+        LiveReplyStreamCoordinator.log('socket-close: already unavailable');
       }
     }
   }

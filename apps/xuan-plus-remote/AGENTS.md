@@ -16,6 +16,12 @@
 ## 修改与验证
 
 - 仅复用用户授权的应用签名和手机已有 HUKS 设备密钥别名、本机绑定选择；不得导出设备私钥、读取无关凭据和运行数据，不修改原项目及其部署环境。
+- 本机工具路径（2026-09-06 已验证）：
+  - DevEco Studio：`E:\Program Files\Huawei\DevEco Studio\bin\devecostudio64.exe`
+  - DevEco 根目录：`E:\Program Files\Huawei\DevEco Studio`
+  - HarmonyOS SDK：`E:\Program Files\Huawei\DevEco Studio\sdk`
+  - HDC：`E:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe`
+  - 签名 HAP：`app/entry/build/default/outputs/default/entry-default-signed.hap`
 - 构建：在 `app/build-dev.ps1` 显式传入本机 DevEco/SDK 路径；编译使用 DevEco 自带 SDK，最低兼容及目标版本保留 API 20；只用原装工具链，依赖缺失时不得擅自安装。
 - 签名构建使用 `app/build-dev.ps1 -SigningConfigSource <原项目的 build-profile.json5>`；仅引用外部证书与密钥文件。构建时的本地忽略配置必须在退出时原样恢复，并由 `clear-signing-cache.ps1` 移除 Hvigor 生成的单个 `task-cache.json`；签名内容不得进入版本控制、命令行和日志。
 - 开发 HAP 安装仅用 `app/install-dev.ps1`；只接受本目录的已签名 HAP，严格校验原开发 Bundle。仅通过 `install -r` 覆盖，不卸载、不清空手机数据。

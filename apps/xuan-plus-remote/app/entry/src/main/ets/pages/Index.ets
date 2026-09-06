@@ -14,9 +14,11 @@ import { AppLifecycleCoordinator } from '../remote/AppLifecycleCoordinator';
 import { LiveReplyStreamCoordinator, LiveReplyUpdate } from '../remote/LiveReplyStreamCoordinator';
 import { MarkdownPreview } from '../components/MarkdownPreview';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { KeyboardAvoidMode } from '@kit.ArkUI';
 
 const DOMAIN = 0x5741;
 const TAG = 'XuanPlusRemote';
+const TASK_REFRESH_INTERVAL_MS = 30000;
 const CHINA_TIME_OFFSET_MS: number = 8 * 60 * 60 * 1000;
 const FONT_SYSTEM_SANS = 'HarmonyOS Sans';
 const COLOR_INK: ResourceColor = $r('app.color.remote_ink');
@@ -124,6 +126,16 @@ struct Index {
   private taskVisibilityGeneration: number = 0;
   private taskRefreshPending: boolean = false;
   private taskCursorsSeen: string[] = [];
+  private taskSyncGeneration: number = 0;
+  private taskSyncTimer: number = -1;
+  private taskDetailGeneration: number = 0;
+  private refreshingSelectedTask: boolean = false;
+  private selectedTaskRefreshPending: boolean = false;
+  private pageMounted: boolean = true;
+  private replyScroller: Scroller = new Scroller();
+  private replyFollowBottom: boolean = true;
+  private replyScrollTimer?: number = undefined;
+  private previousKeyboardAvoidMode?: KeyboardAvoidMode = undefined;
   @State private selectedTaskId: string = '';
   @State private activePage: string = 'home';
   @State private selectedWorkspaceSourceTaskId: string = '';
@@ -143,6 +155,9 @@ struct Index {
   private pendingLiveReplyText: string = '';
   private liveReplyRenderTimer?: number = undefined;
   private liveReplyReconnectTimer?: number = undefined;
+  private liveReplyGeneration: number = 0;
+  private liveReplyReconnectAttempt: number = 0;
+  private liveReplyObservedAt: string = '';
   @State private notice: string = '请先在电脑端开启远程控制并完成绑定';
   @State private registrationError: string = '';
   @State private registrationFailure?: RemoteFailureNotice = undefined;
@@ -157,6 +172,7 @@ struct Index {
   private pcDeviceRevokeTouchStartOffset: number = 0;
 
   aboutToAppear(): void {
+    this.pageMounted = true;
     PushNotificationCoordinator.setRefreshHandler(async (refreshRef: string): Promise<boolean> => {
       return await this.handlePushRefresh(refreshRef);
     });
@@ -166,25 +182,46 @@ struct Index {
       this.notificationPermissionChecking = false;
     });
     AppLifecycleCoordinator.setForegroundHandler(async (): Promise<void> => {
+      if (!this.pageMounted) {
+        return;
+      }
+      const generation: number = this.taskDetailGeneration;
       await this.refreshBindingStatus(false);
+      if (!this.pageMounted || generation !== this.taskDetailGeneration ||
+        !AppLifecycleCoordinator.isForeground()) {
+        return;
+      }
       if (this.pcIsOnline()) {
         await this.refreshTasks(false);
       }
       PushNotificationCoordinator.retryPendingRefresh();
       if (this.activePage === 'detail') {
-        this.startLiveReplyStream();
+        this.startTaskSyncLoop();
+        this.startLiveReplyStream(true);
+        void this.refreshSelectedTask(this.selectedTaskId);
       }
     });
     AppLifecycleCoordinator.setBackgroundHandler((): void => {
+      this.invalidateDetailRequest();
+      this.taskVisibilityGeneration++;
+      this.stopTaskSyncLoop();
       this.stopLiveReplyStream(true);
+      this.cancelReplyScroll();
     });
     this.registerDevice();
   }
 
   aboutToDisappear(): void {
+    this.pageMounted = false;
+    this.taskVisibilityGeneration++;
+    this.invalidateDetailRequest();
     AppLifecycleCoordinator.clearForegroundHandler();
     AppLifecycleCoordinator.clearBackgroundHandler();
+    this.stopTaskSyncLoop();
     this.stopLiveReplyStream(true);
+    this.cancelReplyScroll();
+    this.restoreKeyboardAvoidMode();
+    PushNotificationCoordinator.setRefreshHandler(async (_refreshRef: string): Promise<boolean> => false);
     PushNotificationCoordinator.setNotificationPermissionHandler((): void => {});
     this.bindingMonitorGeneration++;
     this.bindingMonitorTask = undefined;
@@ -673,6 +710,10 @@ struct Index {
   }
 
   private clearTaskProjection(notice: string): void {
+    this.invalidateDetailRequest();
+    this.stopTaskSyncLoop();
+    this.cancelReplyScroll();
+    this.restoreKeyboardAvoidMode();
     if (this.activePage === 'detail') {
       this.stopLiveReplyStream(false);
       this.activePage = 'home';
@@ -689,7 +730,53 @@ struct Index {
     this.taskNotice = notice;
   }
 
+  private startTaskSyncLoop(): void {
+    this.stopTaskSyncLoop();
+    const generation: number = this.taskSyncGeneration;
+    this.scheduleTaskSync(generation);
+  }
+
+  private stopTaskSyncLoop(): void {
+    this.taskSyncGeneration++;
+    if (this.taskSyncTimer >= 0) {
+      clearTimeout(this.taskSyncTimer);
+      this.taskSyncTimer = -1;
+    }
+  }
+
+  private scheduleTaskSync(generation: number): void {
+    if (generation !== this.taskSyncGeneration || !this.pageMounted ||
+      this.activePage !== 'detail' || !AppLifecycleCoordinator.isForeground()) {
+      return;
+    }
+    if (this.taskSyncTimer >= 0) {
+      clearTimeout(this.taskSyncTimer);
+    }
+    this.taskSyncTimer = setTimeout((): void => {
+      this.taskSyncTimer = -1;
+      void this.runTaskSync(generation);
+    }, TASK_REFRESH_INTERVAL_MS);
+  }
+
+  private async runTaskSync(generation: number): Promise<void> {
+    if (generation !== this.taskSyncGeneration || !this.pageMounted ||
+      this.activePage !== 'detail' || !AppLifecycleCoordinator.isForeground()) {
+      return;
+    }
+    if (this.pcIsOnline()) {
+      if (this.activePage === 'detail') {
+        await this.refreshSelectedTask(this.selectedTaskId);
+      } else {
+        await this.refreshTasks(false);
+      }
+    }
+    this.scheduleTaskSync(generation);
+  }
+
   private async refreshTasks(showProgress: boolean = true): Promise<void> {
+    if (!this.pageMounted || !AppLifecycleCoordinator.isForeground()) {
+      return;
+    }
     if (this.refreshingTasks) {
       this.taskRefreshPending = this.pcIsOnline();
       return;
@@ -709,7 +796,8 @@ struct Index {
     try {
       const response: TaskListResponse = await TaskSyncCoordinator.listTasks(
         this.deviceRegistration, this.activePcDevice);
-      if (this.activePcDevice === undefined || this.pcDeviceKey(this.activePcDevice) !== requestedPcDeviceKey ||
+      if (!this.pageMounted || !AppLifecycleCoordinator.isForeground() ||
+        this.activePcDevice === undefined || this.pcDeviceKey(this.activePcDevice) !== requestedPcDeviceKey ||
         !this.pcIsOnline() || requestedVisibilityGeneration !== this.taskVisibilityGeneration) {
         return;
       }
@@ -720,7 +808,17 @@ struct Index {
           return;
         }
       }
-      this.tasks = this.sortTasks(response.tasks.slice());
+      const selected: RemoteTaskSnapshot | undefined = this.selectedTask();
+      const retained: RemoteTaskSnapshot[] = this.tasks.filter((current: RemoteTaskSnapshot): boolean =>
+        response.tasks.some((incoming: RemoteTaskSnapshot): boolean =>
+          incoming.remoteTaskId === current.remoteTaskId));
+      // 首页没有选中任务不代表它已删除，详情可能来自后续分页。
+      if (this.activePage === 'detail' && selected !== undefined && response.nextCursor !== null &&
+        !retained.some((current: RemoteTaskSnapshot): boolean => current.remoteTaskId === selected.remoteTaskId)) {
+        retained.push(selected);
+      }
+      this.tasks = this.mergeTaskPage(retained, response.tasks);
+      this.calibrateLiveReply();
       this.nextTaskCursor = response.nextCursor;
       this.taskCursorsSeen = [];
       this.lastTaskSyncAt = response.serverReceivedAt;
@@ -730,8 +828,8 @@ struct Index {
         this.selectedWorkspaceSourceTaskId = workspaces.length === 0 ? '' : workspaces[0].sourceTaskId;
       }
       let selectionExists: boolean = false;
-      for (let index: number = 0; index < response.tasks.length; index++) {
-        if (response.tasks[index].remoteTaskId === this.selectedTaskId) {
+      for (let index: number = 0; index < this.tasks.length; index++) {
+        if (this.tasks[index].remoteTaskId === this.selectedTaskId) {
           selectionExists = true;
           break;
         }
@@ -747,6 +845,9 @@ struct Index {
         `已同步 ${response.tasks.length} 个任务${response.nextCursor === null ? '，已到底' : '，可继续加载'}`;
       PushNotificationCoordinator.retryPendingRefresh();
     } catch (error) {
+      if (!this.pageMounted || !AppLifecycleCoordinator.isForeground()) {
+        return;
+      }
       if (!this.pcIsOnline() || requestedVisibilityGeneration !== this.taskVisibilityGeneration) {
         this.hideTasksForDisconnectedPc();
         return;
@@ -757,9 +858,11 @@ struct Index {
       this.taskNotice = '任务同步未完成';
       hilog.warn(DOMAIN, TAG, '%{public}s', 'Task list refresh failed');
     } finally {
-      this.refreshingTasks = false;
+      if (this.pageMounted) {
+        this.refreshingTasks = false;
+      }
       if (this.taskRefreshPending) {
-        const shouldRefresh: boolean = this.pcIsOnline();
+        const shouldRefresh: boolean = this.pageMounted && AppLifecycleCoordinator.isForeground() && this.pcIsOnline();
         this.taskRefreshPending = false;
         if (shouldRefresh) {
           await this.refreshTasks(false);
@@ -972,7 +1075,40 @@ struct Index {
   }
 
   private replyHeading(task: RemoteTaskSnapshot): string {
-    return this.taskIsRunning(task) && task.lastReply !== null ? '上一轮完整回复' : '最近一轮完整回复';
+    return this.taskIsRunning(task) ? '回复记录（持续更新）' : '回复记录';
+  }
+
+  private detailReplyText(task: RemoteTaskSnapshot): string {
+    if (task.lastReplyState === ReplyState.WITHHELD) {
+      return '';
+    }
+    const snapshotText: string = task.lastReply?.text ?? '';
+    if (!this.liveReplyActive && this.liveReplyObservedAt.length > 0 &&
+      Date.parse(task.pcObservedAt) > Date.parse(this.liveReplyObservedAt)) {
+      return snapshotText;
+    }
+    // 实时流与快照携带同一份回复记录，快照已追平时不重复展示，也不退回较短的流内容。
+    if ((this.liveReplyActive || this.liveReplyAwaitingFinalSnapshot) && this.liveReplyText.length > 0 &&
+      !snapshotText.startsWith(this.liveReplyText)) {
+      return this.liveReplyText;
+    }
+    return snapshotText;
+  }
+
+  private calibrateLiveReply(): void {
+    const task: RemoteTaskSnapshot | undefined = this.selectedTask();
+    if (task === undefined || !this.liveReplyAwaitingFinalSnapshot) {
+      return;
+    }
+    const snapshotText: string = task.lastReply?.text ?? '';
+    if (task.lastReplyState !== ReplyState.WITHHELD &&
+      (this.taskHasActiveTurn(task) || !snapshotText.startsWith(this.pendingLiveReplyText))) {
+      return;
+    }
+    this.liveReplyText = '';
+    this.pendingLiveReplyText = '';
+    this.liveReplyAwaitingFinalSnapshot = false;
+    this.liveReplyNotice = '';
   }
 
   private replyStateTitle(task: RemoteTaskSnapshot): string {
@@ -997,7 +1133,7 @@ struct Index {
     }
     if (task.lastReplyState === ReplyState.TRUNCATED) {
       const bytes: number = task.lastReply?.byteLength ?? 0;
-      return `该回复来自旧版本截断快照，当前可用内容为 ${bytes} B；刷新后将读取新版本完整回复。`;
+      return `当前收到的回复记录不完整，可用内容为 ${bytes} B；将自动同步电脑端完整记录。`;
     }
     return `电脑观测：${formatChinaDateTime(task.pcObservedAt)}`;
   }
@@ -1121,6 +1257,13 @@ struct Index {
   }
 
   private openTaskDetail(task: RemoteTaskSnapshot): void {
+    this.invalidateDetailRequest();
+    this.cancelReplyScroll();
+    this.replyFollowBottom = true;
+    if (this.previousKeyboardAvoidMode === undefined) {
+      this.previousKeyboardAvoidMode = this.getUIContext().getKeyboardAvoidMode();
+      this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
+    }
     if (this.selectedTaskId !== task.remoteTaskId) {
       this.instruction = '';
     }
@@ -1129,9 +1272,15 @@ struct Index {
     this.commandFailure = undefined;
     this.commandNotice = `当前任务：${task.name.length === 0 ? '未命名任务' : task.name}`;
     this.startLiveReplyStream();
+    this.startTaskSyncLoop();
+    void this.refreshSelectedTask(task.remoteTaskId);
   }
 
   private leaveTaskDetail(): void {
+    this.invalidateDetailRequest();
+    this.stopTaskSyncLoop();
+    this.cancelReplyScroll();
+    this.restoreKeyboardAvoidMode();
     this.stopLiveReplyStream(false);
     this.activePage = 'home';
   }
@@ -1146,25 +1295,74 @@ struct Index {
     }
   }
 
-  private startLiveReplyStream(): void {
+  private invalidateDetailRequest(): void {
+    this.taskDetailGeneration++;
+    this.refreshingSelectedTask = false;
+    this.selectedTaskRefreshPending = false;
+  }
+
+  private restoreKeyboardAvoidMode(): void {
+    if (this.previousKeyboardAvoidMode !== undefined) {
+      this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardAvoidMode);
+      this.previousKeyboardAvoidMode = undefined;
+    }
+  }
+
+  private cancelReplyScroll(): void {
+    if (this.replyScrollTimer !== undefined) {
+      clearTimeout(this.replyScrollTimer);
+      this.replyScrollTimer = undefined;
+    }
+  }
+
+  private followReplyBottom(): void {
+    if (!this.replyFollowBottom || !this.pageMounted || this.activePage !== 'detail' ||
+      !AppLifecycleCoordinator.isForeground() || this.replyScrollTimer !== undefined) {
+      return;
+    }
+    this.replyScrollTimer = setTimeout((): void => {
+      this.replyScrollTimer = undefined;
+      if (this.replyFollowBottom && this.pageMounted && this.activePage === 'detail' &&
+        AppLifecycleCoordinator.isForeground()) {
+        this.replyScroller.scrollEdge(Edge.Bottom);
+      }
+    }, 0);
+  }
+
+  private trackReplyScroll(yOffset: number, scrollState: ScrollState): void {
+    // 仅用户滚动改变跟随意图；布局变化和程序滚动不能误判为向上阅读。
+    if (scrollState !== ScrollState.Idle && yOffset !== 0) {
+      this.replyFollowBottom = yOffset > 0 && this.replyScroller.isAtEnd();
+      if (!this.replyFollowBottom) {
+        this.cancelReplyScroll();
+      }
+    }
+  }
+
+  private startLiveReplyStream(preserveContent: boolean = false): void {
     const task: RemoteTaskSnapshot | undefined = this.selectedTask();
     const registration: DeviceRegistrationResult | undefined = this.deviceRegistration;
-    if (this.activePage !== 'detail' || task === undefined || registration === undefined ||
+    if (!this.pageMounted || this.activePage !== 'detail' || task === undefined || registration === undefined ||
       !this.pcIsOnline() || !AppLifecycleCoordinator.isForeground()) {
       return;
     }
     const taskId: string = task.remoteTaskId;
-    this.stopLiveReplyStream(false);
+    this.stopLiveReplyStream(preserveContent);
+    const generation: number = this.liveReplyGeneration;
     this.liveReplyNotice = '正在连接实时回复…';
     void LiveReplyStreamCoordinator.connect(
       registration,
       task,
       (update: LiveReplyUpdate): void => {
-        if (this.activePage !== 'detail' || this.selectedTaskId !== taskId) {
+        if (generation !== this.liveReplyGeneration || !this.pageMounted ||
+          this.activePage !== 'detail' || this.selectedTaskId !== taskId ||
+          !AppLifecycleCoordinator.isForeground()) {
           return;
         }
         this.liveReplyActive = true;
         this.liveReplyAwaitingFinalSnapshot = false;
+        this.liveReplyReconnectAttempt = 0;
+        this.liveReplyObservedAt = update.observedAt;
         this.pendingLiveReplyText = update.text;
         if (this.liveReplyRenderTimer === undefined) {
           this.liveReplyRenderTimer = setTimeout((): void => {
@@ -1174,7 +1372,9 @@ struct Index {
         }
       },
       (_outcome: string): void => {
-        if (this.activePage !== 'detail' || this.selectedTaskId !== taskId) {
+        if (generation !== this.liveReplyGeneration || !this.pageMounted ||
+          this.activePage !== 'detail' || this.selectedTaskId !== taskId ||
+          !AppLifecycleCoordinator.isForeground()) {
           return;
         }
         if (this.liveReplyRenderTimer !== undefined) {
@@ -1188,25 +1388,36 @@ struct Index {
         void this.refreshSelectedTask(taskId);
       },
       (connected: boolean, notice: string): void => {
-        if (this.activePage !== 'detail' || this.selectedTaskId !== taskId) {
+        if (generation !== this.liveReplyGeneration || !this.pageMounted ||
+          this.activePage !== 'detail' || this.selectedTaskId !== taskId ||
+          !AppLifecycleCoordinator.isForeground()) {
           return;
         }
         this.liveReplyConnected = connected;
         this.liveReplyNotice = notice;
+        if (connected) {
+          if (this.liveReplyReconnectTimer !== undefined) {
+            clearTimeout(this.liveReplyReconnectTimer);
+            this.liveReplyReconnectTimer = undefined;
+          }
+          // 每次建立连接都补拉快照，覆盖离线期间完成且已不在流缓存中的回复。
+          void this.refreshSelectedTask(taskId);
+        }
         if (!connected && this.liveReplyReconnectTimer === undefined && this.pcIsOnline() &&
           AppLifecycleCoordinator.isForeground()) {
           this.liveReplyReconnectTimer = setTimeout((): void => {
             this.liveReplyReconnectTimer = undefined;
             if (this.activePage === 'detail' && this.selectedTaskId === taskId && this.pcIsOnline() &&
               AppLifecycleCoordinator.isForeground()) {
-              this.startLiveReplyStream();
+              this.startLiveReplyStream(true);
             }
-          }, 3000);
+          }, Math.min(30000, 1000 * Math.pow(2, this.liveReplyReconnectAttempt++)));
         }
       });
   }
 
   private stopLiveReplyStream(preservePageState: boolean): void {
+    this.liveReplyGeneration++;
     LiveReplyStreamCoordinator.disconnect();
     if (this.liveReplyRenderTimer !== undefined) {
       clearTimeout(this.liveReplyRenderTimer);
@@ -1216,10 +1427,17 @@ struct Index {
       clearTimeout(this.liveReplyReconnectTimer);
       this.liveReplyReconnectTimer = undefined;
     }
-    this.pendingLiveReplyText = '';
-    this.liveReplyText = '';
+    if (preservePageState) {
+      this.liveReplyText = this.pendingLiveReplyText || this.liveReplyText;
+      this.liveReplyAwaitingFinalSnapshot = this.liveReplyText.length > 0;
+    } else {
+      this.pendingLiveReplyText = '';
+      this.liveReplyText = '';
+      this.liveReplyObservedAt = '';
+      this.liveReplyReconnectAttempt = 0;
+      this.liveReplyAwaitingFinalSnapshot = false;
+    }
     this.liveReplyActive = false;
-    this.liveReplyAwaitingFinalSnapshot = false;
     this.liveReplyConnected = false;
     this.liveReplyNotice = preservePageState ? '应用回到前台后将恢复实时回复' : '';
   }
@@ -1227,45 +1445,54 @@ struct Index {
   private async refreshSelectedTask(taskId: string): Promise<void> {
     const registration: DeviceRegistrationResult | undefined = this.deviceRegistration;
     const task: RemoteTaskSnapshot | undefined = this.selectedTask();
-    if (registration === undefined || task === undefined || task.remoteTaskId !== taskId) {
+    if (!this.pageMounted || registration === undefined || task === undefined || task.remoteTaskId !== taskId ||
+      this.activePage !== 'detail' || !this.pcIsOnline() || !AppLifecycleCoordinator.isForeground()) {
       return;
     }
-    const priorReplyVersion: number | null = task.lastReplyVersion;
-    const retryDelays: number[] = [0, 250, 500, 1000];
-    for (let attempt: number = 0; attempt < retryDelays.length; attempt++) {
-      if (retryDelays[attempt] > 0) {
-        await this.waitForNextBindingPoll(retryDelays[attempt]);
-      }
-      if (this.activePage !== 'detail' || this.selectedTaskId !== taskId) {
+    if (this.refreshingSelectedTask) {
+      this.selectedTaskRefreshPending = true;
+      return;
+    }
+    const generation: number = this.taskDetailGeneration;
+    const visibilityGeneration: number = this.taskVisibilityGeneration;
+    this.refreshingSelectedTask = true;
+    try {
+      const response = await TaskSyncCoordinator.getTask(registration, task);
+      if (!this.pageMounted || generation !== this.taskDetailGeneration || visibilityGeneration !== this.taskVisibilityGeneration ||
+        this.activePage !== 'detail' || this.selectedTaskId !== taskId || !this.pcIsOnline() ||
+        !AppLifecycleCoordinator.isForeground()) {
         return;
       }
-      try {
-        const response = await TaskSyncCoordinator.getTask(registration, task);
-        if (this.activePage !== 'detail' || this.selectedTaskId !== taskId) {
-          return;
-        }
-        this.tasks = this.tasks.map((current: RemoteTaskSnapshot): RemoteTaskSnapshot =>
-          current.remoteTaskId === taskId ? response.snapshot : current);
-        this.lastTaskSyncAt = response.serverReceivedAt;
-        const replyChanged: boolean = response.snapshot.lastReplyVersion !== priorReplyVersion;
-        const finalSnapshotCalibrated: boolean = replyChanged ||
-          response.snapshot.lastReplyState === ReplyState.WITHHELD;
-        if (!finalSnapshotCalibrated) {
-          continue;
-        }
-        this.liveReplyText = '';
-        this.pendingLiveReplyText = '';
-        this.liveReplyAwaitingFinalSnapshot = false;
-        this.liveReplyNotice = '';
+      if (response.snapshot.pcConnectionState !== PcConnectionState.ONLINE) {
+        this.connectionState = response.snapshot.pcConnectionState;
+        this.hideTasksForDisconnectedPc();
         return;
-      } catch (_error) {
-        if (attempt + 1 < retryDelays.length) {
-          continue;
+      }
+      this.tasks = this.mergeTaskPage(this.tasks, [response.snapshot]);
+      this.lastTaskSyncAt = response.serverReceivedAt;
+      this.calibrateLiveReply();
+      if (this.liveReplyAwaitingFinalSnapshot) {
+        this.liveReplyNotice = '回复记录仍在同步，将自动重试';
+      } else if (!this.liveReplyConnected) {
+        this.liveReplyNotice = '回复记录已同步，正在恢复实时连接';
+      }
+    } catch (_error) {
+      if (this.pageMounted && AppLifecycleCoordinator.isForeground() &&
+        generation === this.taskDetailGeneration && visibilityGeneration === this.taskVisibilityGeneration &&
+        this.activePage === 'detail' && this.selectedTaskId === taskId) {
+        this.liveReplyNotice = '任务详情同步暂未完成，将自动重试';
+        // 详情可能已被取消同步，通过列表复核删除状态，避免继续操作失效任务。
+        await this.refreshTasks(false);
+      }
+    } finally {
+      if (generation === this.taskDetailGeneration) {
+        this.refreshingSelectedTask = false;
+        if (this.selectedTaskRefreshPending) {
+          this.selectedTaskRefreshPending = false;
+          void this.refreshSelectedTask(taskId);
         }
       }
     }
-    this.liveReplyNotice = '完整最终答复仍在同步，当前保留本轮实时内容；可稍后手动刷新';
-    await this.refreshTasks(false);
   }
 
   private handleTaskPageBackTouch(event: TouchEvent): void {
@@ -1584,15 +1811,19 @@ struct Index {
         Row() {
           Column({ space: 4 }) {
             Text(this.activePage === 'home' ? '轩++远程' :
-              (this.activePage === 'detail' ? '任务详情' : '新建任务'))
+              (this.activePage === 'detail' ? (this.selectedTask()?.name || '未命名任务') : '新建任务'))
               .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(24)
+              .fontSize(this.activePage === 'detail' ? 18 : 24)
               .fontWeight(FontWeight.Bold)
               .fontColor(COLOR_INK)
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (this.activePage !== 'detail') {
             Text('开发环境 · API 20+ · 0.1.9-dev')
               .fontFamily(FONT_SYSTEM_SANS)
               .fontSize(13)
               .fontColor(COLOR_MUTED)
+            }
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
@@ -1610,6 +1841,7 @@ struct Index {
               })
           }
 
+          if (this.activePage !== 'detail') {
           Text(this.environment === RemoteEnvironment.DEV ? 'DEV' : 'PROD')
             .fontFamily(FONT_SYSTEM_SANS)
             .fontSize(12)
@@ -1618,6 +1850,7 @@ struct Index {
             .backgroundColor(COLOR_ACCENT)
             .borderRadius(12)
             .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+          }
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
@@ -2295,15 +2528,9 @@ struct Index {
         }
 
         if (this.activePage === 'detail') {
-        Column({ space: 12 }) {
-          Text(this.selectedTask() === undefined ? '任务已不可用' :
-            (this.selectedTask()!.name.length === 0 ? '未命名任务' : this.selectedTask()!.name))
-            .fontFamily(FONT_SYSTEM_SANS)
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(COLOR_INK)
-            .width('100%')
-
+        Column({ space: 8 }) {
+          Scroll(this.replyScroller) {
+          Column({ space: 12 }) {
           Text(this.selectedTask() === undefined ? '请返回任务列表重新选择' :
             `${this.selectedTask()!.workspaceName} · ${this.selectedTask()!.modelLabel} · ${this.taskStatusText(this.selectedTask()!)}`)
             .fontFamily(FONT_SYSTEM_SANS)
@@ -2336,8 +2563,8 @@ struct Index {
             .accessibilityText(`当前执行状态：${this.detailExecutionText(this.selectedTask()!)}`)
           }
 
-          if (this.liveReplyActive || this.liveReplyText.length > 0) {
-            Text(this.liveReplyActive ? '正在生成的回复' : '本轮回复（等待最终校准）')
+          if (this.liveReplyActive || this.liveReplyText.length > 0 || this.liveReplyNotice.length > 0) {
+            Text(this.liveReplyActive ? '正在生成回复' : '回复同步状态')
               .fontFamily(FONT_SYSTEM_SANS)
               .fontSize(16)
               .fontWeight(FontWeight.Bold)
@@ -2349,13 +2576,7 @@ struct Index {
               .fontSize(12)
               .fontColor(this.liveReplyConnected ? COLOR_MUTED_LIGHT : COLOR_WARNING_TEXT)
               .width('100%')
-            if (this.liveReplyText.length > 0) {
-              MarkdownPreview({ content: this.liveReplyText })
-                .width('100%')
-                .padding(14)
-                .backgroundColor(COLOR_ACCENT_SOFT)
-                .borderRadius(12)
-            } else {
+            if (this.liveReplyActive && this.liveReplyText.length === 0) {
               Text('模型正在准备回复…')
                 .fontFamily(FONT_SYSTEM_SANS)
                 .fontSize(14)
@@ -2367,15 +2588,14 @@ struct Index {
             }
           }
 
-          Text(this.selectedTask() === undefined ? '完整回复' : this.replyHeading(this.selectedTask()!))
+          Text(this.selectedTask() === undefined ? '回复记录' : this.replyHeading(this.selectedTask()!))
             .fontFamily(FONT_SYSTEM_SANS)
             .fontSize(16)
             .fontWeight(FontWeight.Bold)
             .fontColor(COLOR_INK)
             .width('100%')
 
-          if (this.selectedTask() !== undefined && this.selectedTask()!.lastReply !== null &&
-            this.selectedTask()!.lastReply!.text !== null) {
+          if (this.selectedTask() !== undefined && this.detailReplyText(this.selectedTask()!).length > 0) {
             if (this.selectedTask()!.lastReplyState === ReplyState.TRUNCATED) {
               Text(this.replyStateDescription(this.selectedTask()!))
                 .fontFamily(FONT_SYSTEM_SANS)
@@ -2387,13 +2607,13 @@ struct Index {
                 .borderRadius(10)
                 .accessibilityText(`答复状态：${this.replyStateDescription(this.selectedTask()!)}`)
             }
-            MarkdownPreview({ content: this.selectedTask()!.lastReply!.text! })
+            MarkdownPreview({ content: this.detailReplyText(this.selectedTask()!) })
               .width('100%')
               .padding(14)
               .backgroundColor(COLOR_SURFACE_INPUT)
               .borderRadius(12)
             if (this.selectedTask()!.lastReplyState === ReplyState.TRUNCATED) {
-              Text('这是旧版本截断快照；当前版本不再截断新回复，请刷新任务读取完整内容。')
+              Text('当前内容尚不完整，正在等待电脑端同步完整回复记录。')
                 .fontFamily(FONT_SYSTEM_SANS)
                 .fontSize(13)
                 .fontColor(COLOR_WARNING_TEXT)
@@ -2444,32 +2664,45 @@ struct Index {
               `答复状态：${this.replyStateTitle(this.selectedTask()!)}，${this.replyStateDescription(this.selectedTask()!)}`)
           }
 
-          Text('继续此任务')
-            .fontFamily(FONT_SYSTEM_SANS)
-            .fontSize(16)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(COLOR_INK)
-            .width('100%')
-
           if (this.commandFailure !== undefined) {
             this.failureCard(this.commandFailure!)
-          } else {
+          }
+          }
+          .width('100%')
+          .padding({ top: 4, bottom: 12 })
+          .onAreaChange(() => {
+            this.followReplyBottom();
+          })
+          }
+          .width('100%')
+          .layoutWeight(1)
+          .align(Alignment.TopStart)
+          .edgeEffect(EdgeEffect.None)
+          .onDidScroll((_xOffset: number, yOffset: number, state: ScrollState) => {
+            this.trackReplyScroll(yOffset, state);
+          })
+          .onAreaChange(() => {
+            this.followReplyBottom();
+          })
+
+          Column({ space: 8 }) {
             Text(this.commandNotice)
               .fontFamily(FONT_SYSTEM_SANS)
               .fontSize(13)
               .fontColor(COLOR_INK_BODY)
               .width('100%')
-          }
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
 
           TextArea({
             placeholder: '连接电脑并选择任务后输入指令',
             text: this.instruction
           })
             .fontFamily(FONT_SYSTEM_SANS)
-            .height(124)
+            .height(80)
             .fontSize(15)
             .backgroundColor(COLOR_SURFACE_INPUT)
-            .borderRadius(14)
+            .borderRadius(8)
             .enabled(this.canSendSelected())
             .onChange((value: string) => {
               this.instruction = value;
@@ -2479,7 +2712,7 @@ struct Index {
             Button(this.commandSubmitting ? '处理中…' : '发送消息')
               .fontFamily(FONT_SYSTEM_SANS)
               .layoutWeight(1)
-              .height(50)
+              .height(44)
               .fontWeight(FontWeight.Medium)
               .backgroundColor(COLOR_ACCENT)
               .enabled(this.canSendSelected() && this.instruction.trim().length > 0)
@@ -2489,7 +2722,7 @@ struct Index {
             Button('停止')
               .fontFamily(FONT_SYSTEM_SANS)
               .width(88)
-              .height(50)
+              .height(44)
               .fontColor(COLOR_DANGER)
               .backgroundColor(COLOR_DANGER_SOFT)
               .enabled(this.canStopSelected())
@@ -2498,8 +2731,13 @@ struct Index {
               })
           }
           .width('100%')
+          }
+          .width('100%')
+          .padding({ top: 8, bottom: 4 })
+          .border({ width: { top: 1 }, color: COLOR_RULE })
         }
         .width('100%')
+        .layoutWeight(1)
         .padding(0)
         .backgroundColor(COLOR_PAGE)
         .borderRadius(0)
@@ -2698,6 +2936,7 @@ struct Index {
         .borderRadius(16)
         }
 
+        if (this.activePage !== 'detail') {
         Text('手机只提交受限命令；模型与工具始终由电脑端 Codex App Server 执行。')
           .fontFamily(FONT_SYSTEM_SANS)
           .fontSize(12)
@@ -2705,11 +2944,14 @@ struct Index {
           .textAlign(TextAlign.Center)
           .width('100%')
           .padding({ left: 10, right: 10, bottom: 14 })
+        }
       }
       .width('100%')
+      .height(this.activePage === 'detail' ? '100%' : undefined)
       .constraintSize({ minHeight: '100%' })
-      .padding({ left: 16, right: 16, top: 12, bottom: 24 })
+      .padding({ left: 16, right: 16, top: 12, bottom: this.activePage === 'detail' ? 8 : 24 })
     }
+    .scrollable(this.activePage === 'detail' ? ScrollDirection.None : ScrollDirection.Vertical)
     .onTouch((event: TouchEvent) => {
       this.handleTaskPageBackTouch(event);
     })

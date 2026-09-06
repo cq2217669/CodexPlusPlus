@@ -27,6 +27,14 @@ pub fn codex_session_db_paths_from_home(home: &Path) -> Vec<PathBuf> {
     codex_session_db_paths_in_home(&sqlite_home)
 }
 
+pub(crate) fn codex_db_candidate_paths_from_home(home: &Path) -> Vec<PathBuf> {
+    let sqlite_home = resolve_sqlite_home_home_or_default(home);
+    // 旁路同步自行执行不等待锁的探测，避免复用常规发现流程的逐表等待。
+    let mut paths = codex_sqlite_dir_dbs_with_tables(&sqlite_home, &[]);
+    paths.push(legacy_state_db_path(&sqlite_home));
+    paths
+}
+
 fn codex_session_db_paths_in_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = codex_sqlite_dir_session_dbs(home);
     let legacy = legacy_state_db_path(home);
@@ -114,7 +122,7 @@ fn codex_sqlite_dir_dbs_with_tables(home: &Path, tables: &[&str]) -> Vec<PathBuf
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .filter(|path| is_sqlite_candidate(path))
-        .filter(|path| has_any_table(path, tables))
+        .filter(|path| tables.is_empty() || has_any_table(path, tables))
         .collect::<Vec<_>>();
     candidates.sort_by_key(|path| {
         (

@@ -1,4 +1,5 @@
 pub mod official_tasks;
+mod live_source;
 mod store;
 
 use std::collections::{BTreeSet, HashMap};
@@ -21,8 +22,48 @@ use store::Store;
 
 const SERVICE_CONFIG: &str =
     include_str!("../../../../apps/xuan-plus-remote/environment/shared-remote-service.json");
+const MAX_SYNCED_TASKS: usize = 50;
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[derive(Default)]
+struct ReplyStreamState {
+    stream_id: String,
+    seq: u64,
+    text: String,
+    ended: bool,
+}
+
+impl ReplyStreamState {
+    fn updates(&mut self, text: &str, outcome: &str, reset: bool) -> Vec<Value> {
+        let mut frames = Vec::new();
+        // 重连和正文校正使用完整 reset，正常增长只发后缀，不重新传输全部历史。
+        if reset || self.stream_id.is_empty() || (self.ended && self.text != text)
+            || !text.starts_with(&self.text)
+        {
+            self.stream_id = id();
+            self.seq = 1;
+            self.ended = false;
+            frames.push(json!({"messageType": "reply-stream/reset", "text": text}));
+        } else if text.len() > self.text.len() {
+            self.seq += 1;
+            frames.push(json!({"messageType": "reply-stream/append", "text": &text[self.text.len()..]}));
+        }
+        if let Some(frame) = frames.last_mut() {
+            frame["streamSeq"] = self.seq.into();
+        }
+        self.text = text.to_owned();
+        if !self.ended && matches!(outcome, "completed" | "failed" | "interrupted" | "stopped") {
+            self.seq += 1;
+            self.ended = true;
+            frames.push(json!({"messageType": "reply-stream/end", "streamSeq": self.seq, "outcome": outcome}));
+        }
+        for frame in &mut frames {
+            frame["streamId"] = self.stream_id.clone().into();
+        }
+        frames
+    }
+}
 
 pub(super) fn id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
@@ -88,6 +129,7 @@ pub struct MobileStatus {
     pub qr_image: Option<String>,
     pub qr_expires_at: Option<String>,
     pub pending: Option<PendingBinding>,
+    pub auto_sync: bool,
     pub selected: BTreeSet<String>,
     pub last_synced_at: Option<String>,
     pub sync_error: Option<String>,
@@ -106,6 +148,7 @@ enum Action {
     Pair,
     Enable(bool),
     Confirm(String, bool),
+    AutoSync(bool),
     Select(BTreeSet<String>),
 }
 struct Request {
@@ -163,23 +206,48 @@ impl MobileRemote {
         if let Some(tx) = sender.as_ref().filter(|tx| !tx.is_closed()) {
             return Ok(tx.clone());
         }
-        let store = Store::open(&self.path)?;
         let config = service_config()?;
         let (tx, rx) = mpsc::channel(16);
-        let mut worker = Worker {
-            store,
-            config,
-            home: self.home.clone(),
-            status: Arc::clone(&self.status),
-            pairing_id: None,
-            confirmation: None,
-            confirmation_id: None,
-        };
-        worker.update(|s| {
-            s.enabled = worker.store.state.enabled;
-            s.selected = worker.store.state.selected.clone();
-        });
-        tokio::spawn(async move { worker.run(rx).await });
+        let path = self.path.clone();
+        let home = self.home.clone();
+        let status = Arc::clone(&self.status);
+        let (ready, initialized) = oneshot::channel();
+        // 身份库、官方索引和会话解析均为同步 I/O，不能占用主功能的异步执行线程。
+        std::thread::Builder::new()
+            .name("mobile-remote".into())
+            .spawn(move || {
+                let setup = (|| -> anyhow::Result<_> {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    let worker = Worker {
+                        store: Store::open(&path)?,
+                        config,
+                        home,
+                        status,
+                        pairing_id: None,
+                        confirmation: None,
+                        confirmation_id: None,
+                    };
+                    worker.update(|s| {
+                        s.enabled = worker.store.state.enabled;
+                        s.auto_sync = worker.store.state.auto_sync;
+                        s.selected = worker.store.state.selected.clone();
+                    });
+                    Ok((runtime, worker))
+                })();
+                match setup {
+                    Ok((runtime, mut worker)) => {
+                        if ready.send(Ok(())).is_ok() {
+                            runtime.block_on(worker.run(rx));
+                        }
+                    }
+                    Err(error) => {
+                        let _ = ready.send(Err(error));
+                    }
+                }
+            })?;
+        initialized.await??;
         *sender = Some(tx.clone());
         Ok(tx)
     }
@@ -210,8 +278,11 @@ impl MobileRemote {
     ) -> Result<MobileStatus, String> {
         self.action(Action::Confirm(request_id, confirmed)).await
     }
+    pub async fn auto_sync(&self, enabled: bool) -> Result<MobileStatus, String> {
+        self.action(Action::AutoSync(enabled)).await
+    }
     pub async fn select(&self, selected: BTreeSet<String>) -> Result<MobileStatus, String> {
-        if selected.len() > 50 || selected.iter().any(|id| !opaque_id(id)) {
+        if selected.len() > MAX_SYNCED_TASKS || selected.iter().any(|id| !opaque_id(id)) {
             return Err("最多可同步 50 个有效任务".into());
         }
         self.action(Action::Select(selected)).await
@@ -235,6 +306,7 @@ impl Worker {
 
     async fn run(&mut self, mut rx: mpsc::Receiver<Request>) {
         let mut retry = 1_u64;
+        let mut readers = HashMap::new();
         loop {
             if self.store.state.enabled && self.store.state.enrolled {
                 self.update(|s| {
@@ -242,7 +314,7 @@ impl Worker {
                     s.connected = false;
                     s.bound = false;
                 });
-                let _result = self.session(&mut rx).await;
+                let _result = self.session(&mut rx, &mut readers).await;
                 self.confirmation = None;
                 self.update(|s| {
                     s.connected = false;
@@ -357,12 +429,31 @@ impl Worker {
                     .into();
                 });
             }
+            Action::AutoSync(enabled) => {
+                let previous = self.store.state.auto_sync;
+                self.store.state.auto_sync = enabled;
+                if enabled {
+                    if let Err(error) = official_tasks::list_tasks(&self.home)
+                        .and_then(|tasks| self.refresh_auto_selection(&tasks))
+                    {
+                        self.store.state.auto_sync = previous;
+                        return Err(error);
+                    }
+                    self.store.save().context("无法保存自动同步设置")?;
+                    self.update(|s| s.auto_sync = true);
+                } else {
+                    self.store.save().context("无法保存自动同步设置")?;
+                    self.update(|s| s.auto_sync = false);
+                }
+            }
             Action::Select(selected) => {
-                for task_id in selected.difference(&self.store.state.selected) {
-                    let task = official_tasks::find_task(&self.home, task_id)?
-                        .context("所选任务已归档或不可用，请刷新列表")?;
-                    TaskReader::default()
-                        .read(&self.home, &task)
+                let added = selected.difference(&self.store.state.selected).cloned().collect();
+                let tasks = official_tasks::find_tasks(&self.home, &added)?;
+                if tasks.len() != added.len() {
+                    bail!("所选任务已归档或不可用，请刷新列表");
+                }
+                for task in tasks {
+                    TaskReader::validate(&self.home, &task)
                         .context("所选任务记录暂不可用，未启用同步")?;
                 }
                 self.store
@@ -370,14 +461,46 @@ impl Worker {
                     .removed
                     .extend(self.store.state.selected.difference(&selected).cloned());
                 self.store.state.removed.retain(|id| !selected.contains(id));
+                self.store.state.auto_sync = false;
                 self.store.state.selected = selected.clone();
                 self.store.save().context("无法保存任务同步选择")?;
                 self.update(|s| {
+                    s.auto_sync = false;
                     s.selected = selected;
                     s.sync_error = None;
                 });
             }
         }
+        Ok(())
+    }
+
+    fn refresh_auto_selection(
+        &mut self,
+        tasks: &[official_tasks::OfficialTask],
+    ) -> anyhow::Result<()> {
+        if !self.store.state.auto_sync {
+            return Ok(());
+        }
+        let selected: BTreeSet<String> = tasks
+            .iter()
+            .take(MAX_SYNCED_TASKS)
+            .map(|task| task.id.clone())
+            .collect();
+        if selected == self.store.state.selected {
+            self.update(|s| s.auto_sync = true);
+            return Ok(());
+        }
+        self.store
+            .state
+            .removed
+            .extend(self.store.state.selected.difference(&selected).cloned());
+        self.store.state.removed.retain(|id| !selected.contains(id));
+        self.store.state.selected = selected.clone();
+        self.store.save().context("无法保存自动同步任务")?;
+        self.update(|s| {
+            s.auto_sync = true;
+            s.selected = selected;
+        });
         Ok(())
     }
 
@@ -506,18 +629,28 @@ impl Worker {
         )
     }
 
-    async fn session(&mut self, rx: &mut mpsc::Receiver<Request>) -> anyhow::Result<()> {
+    async fn session(
+        &mut self,
+        rx: &mut mpsc::Receiver<Request>,
+        readers: &mut HashMap<String, TaskReader>,
+    ) -> anyhow::Result<()> {
         let mut socket = self.connect_gateway().await?;
         self.update(|s| {
             s.connected = true;
             s.message = "云服务已连接，等待绑定".into();
         });
         let mut bound = false;
-        let mut readers: HashMap<String, TaskReader> = HashMap::new();
         let mut sent: HashMap<String, Value> = HashMap::new();
         let mut outstanding: HashMap<String, (String, u64, bool, Instant)> = HashMap::new();
         let mut subscriptions = BTreeSet::new();
+        let mut streams: HashMap<String, ReplyStreamState> = HashMap::new();
+        let mut overlays: HashMap<String, live_source::ReplyOverlay> = HashMap::new();
+        let (source_scope, scope_receiver) = tokio::sync::watch::channel(BTreeSet::new());
+        let (source_output, mut source_events) = mpsc::channel(64);
+        let source = live_source::run(scope_receiver, source_output);
+        tokio::pin!(source);
         let mut tick = tokio::time::interval(Duration::from_secs(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut heartbeat = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(15),
             Duration::from_secs(15),
@@ -528,6 +661,26 @@ impl Worker {
         );
         loop {
             tokio::select! {
+                _ = &mut source => break,
+                event = source_events.recv() => {
+                    let Some(event) = event else { continue; };
+                    let task_id = event.thread_id.clone();
+                    if !bound || !subscriptions.contains(&task_id)
+                        || !self.store.state.selected.contains(&task_id)
+                        || readers.get(&task_id).is_some_and(|reader| reader.last_item_id == event.item_id)
+                    {
+                        continue;
+                    }
+                    let Some(snapshot) = sent.get(&task_id) else { continue; };
+                    let history = snapshot["lastReply"]["text"].as_str().unwrap_or("");
+                    let overlay = overlays.entry(task_id.clone()).or_default();
+                    if !overlay.apply(event, history) { continue; }
+                    let mut projected = snapshot.clone();
+                    projected["lastReply"] = json!({"text": overlay.render(history)});
+                    projected["lastTurnOutcome"] = json!("none");
+                    self.live_reply(&mut socket, &task_id, &projected,
+                        streams.entry(task_id.clone()).or_default(), false).await?;
+                }
                 _ = binding_refresh.tick(), if bound => {
                     if !self.binding_is_active().await? {
                         self.update(|s| {
@@ -544,6 +697,9 @@ impl Worker {
                     readers.retain(|id, _| self.store.state.selected.contains(id));
                     sent.retain(|id, _| self.store.state.selected.contains(id));
                     subscriptions.retain(|id| self.store.state.selected.contains(id));
+                    streams.retain(|id, _| subscriptions.contains(id));
+                    overlays.retain(|id, _| subscriptions.contains(id));
+                    live_source::set_scope(&source_scope, &subscriptions);
                 }
                 _ = heartbeat.tick() => {
                     let mut message = self.event("pc/heartbeat")?;
@@ -558,6 +714,29 @@ impl Worker {
                     }
                     if !bound { continue; }
                     let mut error = false;
+                    let tasks = if self.store.state.auto_sync {
+                        official_tasks::list_tasks(&self.home)
+                    } else {
+                        official_tasks::find_tasks(&self.home, &self.store.state.selected)
+                    };
+                    // 索引繁忙不等于任务被删除；保留原选择，等待下一轮只读同步。
+                    let tasks = match tasks {
+                        Ok(tasks) => tasks,
+                        Err(_) => {
+                            self.update(|s| {
+                                s.sync_error = Some("任务索引暂忙，已延后同步，不影响本机使用".into());
+                            });
+                            continue;
+                        }
+                    };
+                    self.refresh_auto_selection(&tasks)?;
+                    let tasks: HashMap<_, _> = tasks.into_iter().map(|task| (task.id.clone(), task)).collect();
+                    readers.retain(|id, _| self.store.state.selected.contains(id));
+                    sent.retain(|id, _| self.store.state.selected.contains(id));
+                    subscriptions.retain(|id| self.store.state.selected.contains(id));
+                    streams.retain(|id, _| subscriptions.contains(id));
+                    overlays.retain(|id, _| subscriptions.contains(id));
+                    live_source::set_scope(&source_scope, &subscriptions);
                     for task_id in self.store.state.removed.clone() {
                         if outstanding.values().any(|(task, _, tombstone, _)| task == &task_id && *tombstone) { continue; }
                         let mut message = self.event("snapshot/tombstone")?;
@@ -568,21 +747,25 @@ impl Worker {
                     }
                     for task_id in self.store.state.selected.clone() {
                         if outstanding.values().any(|(task, _, _, _)| task == &task_id) { continue; }
-                        let task = match official_tasks::find_task(&self.home, &task_id) {
-                            Ok(Some(task)) => task,
-                            Ok(None) => {
+                        let task = match tasks.get(&task_id) {
+                            Some(task) => task,
+                            None => {
                                 self.store.state.selected.remove(&task_id);
                                 self.store.state.removed.insert(task_id.clone());
                                 self.store.save()?;
                                 self.update(|s| { s.selected.remove(&task_id); });
                                 continue;
                             }
-                            Err(_) => { error = true; continue; }
                         };
-                        let snapshot = match readers.entry(task_id.clone()).or_default().read(&self.home, &task) {
+                        let snapshot = match readers.entry(task_id.clone()).or_default().read(&self.home, task) {
                             Ok(snapshot) => snapshot,
                             Err(_) => { error = true; continue; }
                         };
+                        if overlays.get(&task_id).is_some_and(|overlay|
+                            overlay.persisted(&readers[&task_id].last_item_id))
+                        {
+                            overlays.remove(&task_id);
+                        }
                         if sent.get(&task_id) == Some(&snapshot) { continue; }
                         let terminal = sent.get(&task_id).is_some_and(|previous| previous["turnStatus"] == "running")
                             && snapshot["turnStatus"] == "completed";
@@ -599,7 +782,16 @@ impl Worker {
                         track(&mut outstanding, &message, &task_id, false);
                         send(&mut socket, &message).await?;
                         if subscriptions.contains(&task_id) {
-                            self.live_reply(&mut socket, &task_id, &snapshot).await?;
+                            let mut projected = snapshot.clone();
+                            let history = snapshot["lastReply"]["text"].as_str().unwrap_or("");
+                            if let Some(overlay) = overlays.get(&task_id)
+                                && overlay.pending(history)
+                            {
+                                projected["lastReply"] = json!({"text": overlay.render(history)});
+                                projected["lastTurnOutcome"] = json!("none");
+                            }
+                            self.live_reply(&mut socket, &task_id, &projected,
+                                streams.entry(task_id.clone()).or_default(), false).await?;
                         }
                         sent.insert(task_id, snapshot);
                     }
@@ -629,6 +821,9 @@ impl Worker {
                                     self.store.save()?;
                                     bound = true;
                                     sent.clear(); outstanding.clear(); subscriptions.clear();
+                                    streams.clear();
+                                    overlays.clear();
+                                    live_source::set_scope(&source_scope, &subscriptions);
                                     if pairing_completed {
                                         self.confirmation = None;
                                         self.confirmation_id = None;
@@ -663,9 +858,23 @@ impl Worker {
                                     if message["active"] == true && self.store.state.selected.contains(task) {
                                         subscriptions.insert(task.to_owned());
                                         if let Some(snapshot) = sent.get(task) {
-                                            self.live_reply(&mut socket, task, snapshot).await?;
+                                            let mut projected = snapshot.clone();
+                                            let history = snapshot["lastReply"]["text"].as_str().unwrap_or("");
+                                            if let Some(overlay) = overlays.get(task)
+                                                && overlay.pending(history)
+                                            {
+                                                projected["lastReply"] = json!({"text": overlay.render(history)});
+                                                projected["lastTurnOutcome"] = json!("none");
+                                            }
+                                            self.live_reply(&mut socket, task, &projected,
+                                                streams.entry(task.to_owned()).or_default(), true).await?;
                                         }
-                                    } else { subscriptions.remove(task); }
+                                    } else {
+                                        subscriptions.remove(task);
+                                        streams.remove(task);
+                                        overlays.remove(task);
+                                    }
+                                    live_source::set_scope(&source_scope, &subscriptions);
                                 }
                                 "command/dispatch" => {
                                     self.validate_identity(&message)?;
@@ -782,23 +991,18 @@ impl Worker {
         socket: &mut Socket,
         task: &str,
         snapshot: &Value,
+        state: &mut ReplyStreamState,
+        reset: bool,
     ) -> anyhow::Result<()> {
-        let mut frame = self.base("reply-stream/reset");
-        frame["bindingEpoch"] = json!(self.store.state.epoch);
-        frame["remoteTaskId"] = json!(task);
-        frame["streamId"] = json!(id());
-        frame["streamSeq"] = json!(1);
-        frame["text"] = snapshot["lastReply"]["text"].as_str().unwrap_or("").into();
-        send(socket, &frame).await?;
-        if matches!(
-            snapshot["lastTurnOutcome"].as_str(),
-            Some("completed" | "failed" | "interrupted")
+        for update in state.updates(
+            snapshot["lastReply"]["text"].as_str().unwrap_or(""),
+            snapshot["lastTurnOutcome"].as_str().unwrap_or("none"),
+            reset,
         ) {
-            frame["messageType"] = json!("reply-stream/end");
-            frame["messageId"] = json!(id());
-            frame["streamSeq"] = json!(2);
-            frame.as_object_mut().unwrap().remove("text");
-            frame["outcome"] = snapshot["lastTurnOutcome"].clone();
+            let mut frame = self.base(update["messageType"].as_str().unwrap());
+            frame["bindingEpoch"] = json!(self.store.state.epoch);
+            frame["remoteTaskId"] = json!(task);
+            frame.as_object_mut().unwrap().extend(update.as_object().unwrap().clone());
             send(socket, &frame).await?;
         }
         Ok(())
@@ -841,6 +1045,65 @@ async fn send(socket: &mut Socket, value: &Value) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reply_stream_appends_history_and_ends_once() {
+        let mut state = ReplyStreamState::default();
+        let first = state.updates("第一轮", "none", false);
+        assert_eq!(first[0]["messageType"], "reply-stream/reset");
+        assert_eq!(first[0]["streamSeq"], 1);
+        let next = state.updates("第一轮\n\n---\n\n第二轮", "none", false);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0]["messageType"], "reply-stream/append");
+        assert_eq!(next[0]["text"], "\n\n---\n\n第二轮");
+        assert_eq!(next[0]["streamSeq"], 2);
+        assert_eq!(next[0]["streamId"], first[0]["streamId"]);
+        let end = state.updates("第一轮\n\n---\n\n第二轮", "completed", false);
+        assert_eq!(end[0]["messageType"], "reply-stream/end");
+        assert_eq!(end[0]["streamSeq"], 3);
+        assert!(state.updates("第一轮\n\n---\n\n第二轮", "completed", false).is_empty());
+    }
+
+    #[test]
+    fn reply_stream_reconnect_and_corrections_reset_complete_history() {
+        let text = "历史回复\n\n---\n\n".repeat(100_000);
+        let mut state = ReplyStreamState::default();
+        let initial = state.updates(&text, "none", false);
+        let reconnect = state.updates(&text, "none", true);
+        assert_eq!(reconnect[0]["text"], text);
+        assert_ne!(reconnect[0]["streamId"], initial[0]["streamId"]);
+        let corrected = state.updates("更正回复", "completed", false);
+        assert_eq!(corrected.len(), 2);
+        assert_eq!(corrected[0]["messageType"], "reply-stream/reset");
+        assert_eq!(corrected[0]["text"], "更正回复");
+        let next = state.updates("更正回复\n\n---\n\n新回合", "none", false);
+        assert_eq!(next[0]["messageType"], "reply-stream/reset");
+        assert_ne!(next[0]["streamId"], corrected[0]["streamId"]);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn locked_mobile_store_does_not_block_the_calling_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mobile.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE fixture(id INTEGER); BEGIN EXCLUSIVE;")
+            .unwrap();
+        let remote = MobileRemote::new(path, dir.path().to_path_buf());
+        let startup = remote.ensure_started();
+        tokio::pin!(startup);
+        let started = Instant::now();
+        tokio::select! {
+            biased;
+            _ = &mut startup => panic!("锁定的身份库不应立即完成初始化"),
+            _ = tokio::time::sleep(Duration::from_millis(30)) => {
+                assert!(started.elapsed() < Duration::from_millis(500));
+                assert!(!remote.status().enabled);
+            }
+        }
+        assert!(startup.await.is_err());
+        db.execute_batch("ROLLBACK").unwrap();
+    }
 
     #[test]
     fn existing_service_and_qr_contract_are_preserved() {

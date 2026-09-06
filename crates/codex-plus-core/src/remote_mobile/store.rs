@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct SavedState {
     pub enabled: bool,
@@ -17,8 +17,25 @@ pub(super) struct SavedState {
     pub installation_id: String,
     pub epoch: u64,
     pub version: u64,
+    pub auto_sync: bool,
     pub selected: BTreeSet<String>,
     pub removed: BTreeSet<String>,
+}
+
+impl Default for SavedState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enrolled: false,
+            pc_id: String::new(),
+            installation_id: String::new(),
+            epoch: 0,
+            version: 0,
+            auto_sync: true,
+            selected: BTreeSet::new(),
+            removed: BTreeSet::new(),
+        }
+    }
 }
 
 pub(super) struct Store {
@@ -201,6 +218,7 @@ mod tests {
         assert_eq!(identity, store.state.pc_id);
         assert_eq!(public, store.key.public_key().as_ref());
         assert_eq!(store.version().unwrap(), 2);
+        assert!(store.state.auto_sync);
         assert!(store.state.selected.contains("test_task_00000001"));
         let encrypted: Vec<u8> = store
             .db
@@ -209,5 +227,13 @@ mod tests {
             })
             .unwrap();
         assert!(Ed25519KeyPair::from_pkcs8(&encrypted).is_err());
+    }
+
+    #[test]
+    fn legacy_state_enables_automatic_sync_after_upgrade() {
+        let state: SavedState =
+            serde_json::from_str(r#"{"enabled":true,"selected":["test_task_00000001"]}"#).unwrap();
+        assert!(state.auto_sync);
+        assert!(state.selected.contains("test_task_00000001"));
     }
 }

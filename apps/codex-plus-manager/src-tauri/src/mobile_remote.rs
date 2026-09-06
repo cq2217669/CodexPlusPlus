@@ -37,6 +37,11 @@ pub async fn mobile_remote_confirm(
 }
 
 #[tauri::command]
+pub async fn mobile_remote_auto_sync(enabled: bool) -> Result<MobileStatus, String> {
+    runtime().auto_sync(enabled).await
+}
+
+#[tauri::command]
 pub async fn mobile_remote_select(selected: BTreeSet<String>) -> Result<MobileStatus, String> {
     runtime().select(selected).await
 }

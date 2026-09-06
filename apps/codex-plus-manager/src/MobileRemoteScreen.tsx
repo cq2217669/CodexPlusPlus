@@ -14,6 +14,7 @@ type RemoteStatus = {
   qrImage: string | null;
   qrExpiresAt: string | null;
   pending: { requestId: string; phoneName: string; safetyPhrase: string; expiresAt: string } | null;
+  autoSync: boolean;
   selected: string[];
   lastSyncedAt: string | null;
   syncError: string | null;
@@ -143,6 +144,11 @@ export function MobileRemoteScreen() {
           <Button variant="ghost" size="icon" title="刷新任务" aria-label="刷新任务" disabled={busy}
             onClick={() => void refreshTasks()}><RefreshCw size={16} /></Button>
         </div>
+        <label className="mobile-remote-toggle">
+          <input type="checkbox" checked={status?.autoSync ?? false} disabled={busy || !status}
+            onChange={event => void action("mobile_remote_auto_sync", { enabled: event.target.checked })} />
+          自动同步最近 50 个任务
+        </label>
         <Input aria-label="搜索任务" placeholder="搜索任务" value={query} onChange={event => setQuery(event.target.value)} />
         {missing > 0 && <div className="mobile-remote-toolbar">
           <span>另有 {missing} 项不在当前列表</span>
@@ -153,7 +159,7 @@ export function MobileRemoteScreen() {
         <div className="mobile-remote-task-list">
           {visible.map(task => (
             <label className="mobile-remote-task" key={task.id}>
-              <input type="checkbox" checked={selected.has(task.id)} disabled={busy || !status}
+              <input type="checkbox" checked={selected.has(task.id)} disabled={busy || !status || status.autoSync}
                 onChange={event => {
                   const next = new Set(selected);
                   if (event.target.checked) next.add(task.id); else next.delete(task.id);
