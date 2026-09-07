@@ -147,7 +147,7 @@ export function MobileRemoteScreen() {
         <label className="mobile-remote-toggle">
           <input type="checkbox" checked={status?.autoSync ?? false} disabled={busy || !status}
             onChange={event => void action("mobile_remote_auto_sync", { enabled: event.target.checked })} />
-          自动同步最近 50 个任务
+          自动同步最近 20 个任务
         </label>
         <Input aria-label="搜索任务" placeholder="搜索任务" value={query} onChange={event => setQuery(event.target.value)} />
         {missing > 0 && <div className="mobile-remote-toolbar">

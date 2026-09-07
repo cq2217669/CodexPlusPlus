@@ -48,8 +48,11 @@ fn bridge_script_settles_requests_on_reconnect_timeout_and_binding_failure() {
     let temp = tempfile::tempdir().expect("temp dir should be created");
     let script_path = temp.path().join("bridge.js");
     let harness_path = temp.path().join("bridge-lifecycle.cjs");
-    std::fs::write(&script_path, bridge::build_bridge_script(BRIDGE_BINDING_NAME))
-        .expect("bridge script should be written");
+    std::fs::write(
+        &script_path,
+        bridge::build_bridge_script(BRIDGE_BINDING_NAME),
+    )
+    .expect("bridge script should be written");
     std::fs::write(
         &harness_path,
         r#"
@@ -326,6 +329,31 @@ fn prompt_optimize_sends_bounded_conversation_and_conditional_project_context() 
 }
 
 #[test]
+fn prompt_optimize_confirms_the_effective_composer_before_clipboard_fallback() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("async function confirmComposerWrite(result)"));
+    assert!(script.contains("const activeInput = findComposerInput();"));
+    assert!(script.contains("composerTextMatches(activeInput, result.next)"));
+    assert!(!script.contains("const writeToken = (runtime.writeToken"));
+}
+
+#[test]
+fn prompt_optimize_clears_restore_state_after_a_confirmed_send() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("function installComposerSendCleanup()"));
+    assert!(script.contains("window.addEventListener(\"click\", runtime.sendClickHandler, true);"));
+    assert!(script.contains("window.addEventListener(\"keydown\", runtime.sendKeyHandler, true);"));
+    assert!(
+        script.contains("window.addEventListener(\"submit\", runtime.sendSubmitHandler, true);")
+    );
+    assert!(script.contains("promptOptimizeState.shouldClearSentSnapshot(state, currentText)"));
+    assert!(script.contains("if (currentThreadKey() !== threadKey) return;"));
+    assert!(script.contains("installComposerSendCleanup();"));
+}
+
+#[test]
 fn relay_balance_runtime_is_opt_in_and_keeps_credentials_in_rust() {
     let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
     assert!(!disabled.contains("__codexPlusRelayBalance"));
@@ -339,6 +367,31 @@ fn relay_balance_runtime_is_opt_in_and_keeps_credentials_in_rust() {
     assert!(enabled.contains("/relay-balance/query"));
     assert!(!assets::relay_balance_script().contains("Authorization:"));
     assert!(!assets::relay_balance_script().contains("apiKey"));
+}
+
+#[test]
+fn workspace_search_runtime_is_opt_in() {
+    let disabled = assets::injection_script_with_settings(57321, &BackendSettings::default());
+    assert!(!disabled.contains("__codexPlusWorkspaceSearch"));
+
+    let settings = BackendSettings {
+        codex_app_workspace_search_enabled: true,
+        ..BackendSettings::default()
+    };
+    let enabled = assets::injection_script_with_settings(57321, &settings);
+    assert!(enabled.contains("__codexPlusWorkspaceSearch"));
+    assert!(enabled.contains("/workspace-search/start"));
+    assert!(enabled.contains("Ctrl+Shift+F"));
+
+    let disabled_by_master = BackendSettings {
+        enhancements_enabled: false,
+        codex_app_workspace_search_enabled: true,
+        ..BackendSettings::default()
+    };
+    assert!(
+        !assets::injection_script_with_settings(57321, &disabled_by_master)
+            .contains("__codexPlusWorkspaceSearch")
+    );
 }
 
 #[test]
@@ -3254,8 +3307,14 @@ fn injection_script_applies_fast_service_tier_contract() {
         serde_json::Value::Null
     );
 
-    assert_eq!(cases["inheritUnsetStatus"], "继承 Codex 默认设置：Fast 已关闭");
-    assert_eq!(cases["inheritFastStatus"], "继承 Codex 默认设置：Fast 已开启");
+    assert_eq!(
+        cases["inheritUnsetStatus"],
+        "继承 Codex 默认设置：Fast 已关闭"
+    );
+    assert_eq!(
+        cases["inheritFastStatus"],
+        "继承 Codex 默认设置：Fast 已开启"
+    );
     assert_eq!(
         cases["inheritStandardStatus"],
         "继承 Codex 默认设置：Fast 已关闭"
@@ -4444,6 +4503,32 @@ fn runtime_evaluate_params_can_await_promise_for_bridge_health_checks() {
     assert_eq!(params["expression"], "Promise.resolve(true)");
     assert_eq!(params["awaitPromise"], true);
     assert_eq!(params["allowUnsafeEvalBlockedByCSP"], true);
+}
+
+#[tokio::test]
+async fn runtime_evaluate_can_use_a_command_specific_timeout() {
+    let (websocket_url, closed) = spawn_cdp_server(|mut socket| async move {
+        let request = recv_json(&mut socket).await;
+        assert_eq!(request["method"], "Runtime.evaluate");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    let error = bridge::evaluate_script_with_await_promise_timeout(
+        &websocket_url,
+        "Promise.resolve(true)",
+        true,
+        Duration::from_millis(20),
+    )
+    .await
+    .expect_err("custom command timeout should be honored");
+    assert!(
+        error
+            .to_string()
+            .contains("timed out waiting for CDP command Runtime.evaluate")
+    );
+    closed.await.expect("CDP server should close");
 }
 
 #[test]

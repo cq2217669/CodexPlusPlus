@@ -1045,3 +1045,78 @@ describe("Stepwise generation mode contracts", () => {
     );
   });
 });
+
+describe("mobile remote command bridge", () => {
+  it("executes only create, text, and stop commands through the app-server client", async () => {
+    const renderer = await readFile(
+      new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
+      "utf8",
+    );
+    const start = renderer.indexOf("  function installCodexMobileRemoteCommandClient(");
+    const end = renderer.indexOf("\n  const appServerModelRequestPatchMaxMisses", start);
+    assert.ok(start >= 0 && end > start);
+    const window: Record<string, any> = {};
+    const runtime = new Function(
+      "window",
+      `${renderer.slice(start, end)}; return { installCodexMobileRemoteCommandClient };`,
+    )(window);
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const client = {
+      async sendRequest(method: string, params: Record<string, unknown>) {
+        calls.push({ method, params });
+        if (method === "thread/start") return { thread: { id: "created-thread-0001" } };
+        if (method === "turn/start") return { turn: { id: "accepted-turn-0001" } };
+        return {};
+      },
+    };
+    assert.equal(runtime.installCodexMobileRemoteCommandClient(client), true);
+
+    const create = await window.__codexPlusMobileRemoteCommand({
+      commandType: "create_task",
+      clientRequestId: "create-request-0001",
+      cwd: "D:/workspace",
+      model: "gpt-test",
+      provider: "test-provider",
+      name: "手机新任务",
+      text: "检查项目",
+    });
+    assert.deepEqual(create, {
+      status: "completed",
+      threadId: "created-thread-0001",
+      turnId: "accepted-turn-0001",
+    });
+    assert.deepEqual(calls.slice(0, 3).map((call) => call.method), [
+      "thread/start",
+      "turn/start",
+      "thread/name/set",
+    ]);
+
+    calls.length = 0;
+    const sent = await window.__codexPlusMobileRemoteCommand({
+      commandType: "send_input",
+      threadId: "existing-thread-0001",
+      clientRequestId: "send-request-0001",
+      text: "继续处理",
+    });
+    assert.equal(sent.status, "completed");
+    assert.deepEqual(calls.map((call) => call.method), ["thread/resume", "turn/start"]);
+    assert.equal((calls[1].params.input as Array<{ text: string }>)[0].text, "继续处理");
+
+    calls.length = 0;
+    const stopped = await window.__codexPlusMobileRemoteCommand({
+      commandType: "stop_task",
+      threadId: "existing-thread-0001",
+      turnId: "running-turn-0001",
+    });
+    assert.equal(stopped.status, "completed");
+    assert.deepEqual(calls, [{
+      method: "turn/interrupt",
+      params: { threadId: "existing-thread-0001", turnId: "running-turn-0001" },
+    }]);
+
+    calls.length = 0;
+    const rejected = await window.__codexPlusMobileRemoteCommand({ commandType: "resume_task" });
+    assert.deepEqual(rejected, { status: "rejected", errorCode: "unsupported_operation" });
+    assert.equal(calls.length, 0);
+  });
+});

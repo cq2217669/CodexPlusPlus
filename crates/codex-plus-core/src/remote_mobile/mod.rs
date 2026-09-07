@@ -1,5 +1,6 @@
-pub mod official_tasks;
+mod command_source;
 mod live_source;
+pub mod official_tasks;
 mod store;
 
 use std::collections::{BTreeSet, HashMap};
@@ -22,9 +23,54 @@ use store::Store;
 
 const SERVICE_CONFIG: &str =
     include_str!("../../../../apps/xuan-plus-remote/environment/shared-remote-service.json");
-const MAX_SYNCED_TASKS: usize = 50;
+const MAX_SYNCED_TASKS: usize = 20;
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelConfigSummary {
+    id: String,
+    model: String,
+    provider: String,
+}
+
+fn model_configs(home: &std::path::Path) -> Vec<ModelConfigSummary> {
+    let Ok(settings) = crate::settings::SettingsStore::default().load() else {
+        return Vec::new();
+    };
+    let profile = settings.active_relay_profile();
+    let provider = crate::model_catalog::codex_model_provider_for_relay_profile(home, &profile);
+    let provider = if provider.trim().is_empty() {
+        profile.id.trim().to_owned()
+    } else {
+        provider.trim().to_owned()
+    };
+    let mut seen = BTreeSet::new();
+    profile
+        .model_list
+        .split(['\r', '\n', ','])
+        .chain(std::iter::once(profile.model.as_str()))
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .filter_map(|model| {
+            let model = crate::model_suffix::parse_model_suffix(model).0;
+            if model.is_empty() || model.len() > 256 || !seen.insert(model.clone()) {
+                return None;
+            }
+            let id = format!(
+                "{:x}",
+                Sha256::digest(format!("xuanplus-mobile-model-v1\n{provider}\n{model}").as_bytes())
+            );
+            Some(ModelConfigSummary {
+                id,
+                model,
+                provider: provider.clone(),
+            })
+        })
+        .take(100)
+        .collect()
+}
 
 #[derive(Default)]
 struct ReplyStreamState {
@@ -38,7 +84,9 @@ impl ReplyStreamState {
     fn updates(&mut self, text: &str, outcome: &str, reset: bool) -> Vec<Value> {
         let mut frames = Vec::new();
         // 重连和正文校正使用完整 reset，正常增长只发后缀，不重新传输全部历史。
-        if reset || self.stream_id.is_empty() || (self.ended && self.text != text)
+        if reset
+            || self.stream_id.is_empty()
+            || (self.ended && self.text != text)
             || !text.starts_with(&self.text)
         {
             self.stream_id = id();
@@ -47,7 +95,9 @@ impl ReplyStreamState {
             frames.push(json!({"messageType": "reply-stream/reset", "text": text}));
         } else if text.len() > self.text.len() {
             self.seq += 1;
-            frames.push(json!({"messageType": "reply-stream/append", "text": &text[self.text.len()..]}));
+            frames.push(
+                json!({"messageType": "reply-stream/append", "text": &text[self.text.len()..]}),
+            );
         }
         if let Some(frame) = frames.last_mut() {
             frame["streamSeq"] = self.seq.into();
@@ -283,7 +333,7 @@ impl MobileRemote {
     }
     pub async fn select(&self, selected: BTreeSet<String>) -> Result<MobileStatus, String> {
         if selected.len() > MAX_SYNCED_TASKS || selected.iter().any(|id| !opaque_id(id)) {
-            return Err("最多可同步 50 个有效任务".into());
+            return Err(format!("最多可同步 {MAX_SYNCED_TASKS} 个有效任务"));
         }
         self.action(Action::Select(selected)).await
     }
@@ -447,7 +497,10 @@ impl Worker {
                 }
             }
             Action::Select(selected) => {
-                let added = selected.difference(&self.store.state.selected).cloned().collect();
+                let added = selected
+                    .difference(&self.store.state.selected)
+                    .cloned()
+                    .collect();
                 let tasks = official_tasks::find_tasks(&self.home, &added)?;
                 if tasks.len() != added.len() {
                     bail!("所选任务已归档或不可用，请刷新列表");
@@ -646,7 +699,7 @@ impl Worker {
         let mut streams: HashMap<String, ReplyStreamState> = HashMap::new();
         let mut overlays: HashMap<String, live_source::ReplyOverlay> = HashMap::new();
         let (source_scope, scope_receiver) = tokio::sync::watch::channel(BTreeSet::new());
-        let (source_output, mut source_events) = mpsc::channel(64);
+        let (source_output, mut source_events) = mpsc::channel(8);
         let source = live_source::run(scope_receiver, source_output);
         tokio::pin!(source);
         let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -704,7 +757,7 @@ impl Worker {
                 _ = heartbeat.tick() => {
                     let mut message = self.event("pc/heartbeat")?;
                     message["pcObservedAt"] = json!(now());
-                    message["modelConfigs"] = json!([]);
+                    message["modelConfigs"] = serde_json::to_value(model_configs(&self.home))?;
                     send(&mut socket, &message).await?;
                 }
                 _ = tick.tick() => {
@@ -879,11 +932,42 @@ impl Worker {
                                 "command/dispatch" => {
                                     self.validate_identity(&message)?;
                                     if !bound || message["bindingEpoch"] != self.store.state.epoch { bail!("命令身份不匹配"); }
+                                    let command_id = message["command"]["commandId"]
+                                        .as_str()
+                                        .filter(|value| opaque_id(value))
+                                        .context("命令标识无效")?;
+                                    let payload_digest = message["command"]["payloadDigest"]
+                                        .as_str()
+                                        .filter(|value| lowercase_sha256(value))
+                                        .context("命令摘要无效")?;
+                                    let receipt = self.store.command_receipt(command_id)?;
+                                    let (status, error_code) = if let Some(receipt) = receipt {
+                                        if receipt.payload_digest == payload_digest {
+                                            (receipt.status, receipt.error_code)
+                                        } else {
+                                            ("rejected".into(), Some("invalid_request".into()))
+                                        }
+                                    } else {
+                                        let (status, error_code) = self
+                                            .execute_command(&message, &sent, readers)
+                                            .await;
+                                        self.store.save_command_receipt(
+                                            command_id,
+                                            payload_digest,
+                                            status,
+                                            error_code,
+                                        )?;
+                                        (status.into(), error_code.map(str::to_owned))
+                                    };
                                     let mut result = self.event("command/result")?;
                                     result["causationId"] = message["eventId"].clone();
                                     result["command"] = message["command"].clone();
-                                    result["command"]["status"] = json!("rejected");
-                                    result["command"]["errorCode"] = json!("unsupported_operation");
+                                    result["command"]["status"] = json!(status);
+                                    if let Some(error_code) = error_code.as_deref() {
+                                        result["command"]["errorCode"] = json!(error_code);
+                                    } else if let Some(command) = result["command"].as_object_mut() {
+                                        command.remove("errorCode");
+                                    }
                                     result["command"]["appliedStateVersion"] = result["stateVersion"].clone();
                                     send(&mut socket, &result).await?;
                                 }
@@ -908,6 +992,132 @@ impl Worker {
             bail!("远程设备身份不匹配");
         }
         Ok(())
+    }
+
+    async fn execute_command(
+        &mut self,
+        message: &Value,
+        sent: &HashMap<String, Value>,
+        readers: &mut HashMap<String, TaskReader>,
+    ) -> (&'static str, Option<&'static str>) {
+        match self.command_request(message, sent, readers) {
+            Ok(request) => match command_source::execute(request).await {
+                Ok(result) if result["status"] == "completed" => ("completed", None),
+                Ok(result) if result["status"] == "rejected" => {
+                    ("rejected", Some(public_command_error(&result["errorCode"])))
+                }
+                Ok(result) => ("failed", Some(public_command_error(&result["errorCode"]))),
+                Err(_) => ("failed", Some("internal")),
+            },
+            Err(code) => ("rejected", Some(code)),
+        }
+    }
+
+    fn command_request(
+        &self,
+        message: &Value,
+        sent: &HashMap<String, Value>,
+        readers: &mut HashMap<String, TaskReader>,
+    ) -> Result<Value, &'static str> {
+        self.command_request_with_configs(message, sent, readers, &model_configs(&self.home))
+    }
+
+    fn command_request_with_configs(
+        &self,
+        message: &Value,
+        sent: &HashMap<String, Value>,
+        readers: &mut HashMap<String, TaskReader>,
+        model_configs: &[ModelConfigSummary],
+    ) -> Result<Value, &'static str> {
+        let command = message.get("command").ok_or("invalid_request")?;
+        let command_type = command["commandType"].as_str().ok_or("invalid_request")?;
+        let task_id = command["remoteTaskId"].as_str().ok_or("invalid_request")?;
+        let client_request_id = command["clientRequestId"]
+            .as_str()
+            .ok_or("invalid_request")?;
+        let expected_version = command["expectedStateVersion"]
+            .as_u64()
+            .ok_or("invalid_request")?;
+        if !opaque_id(task_id)
+            || !opaque_id(client_request_id)
+            || message["stateVersion"].as_u64() != Some(expected_version)
+            || !future(&command["expiresAt"])
+        {
+            return Err("invalid_request");
+        }
+        if !self.store.state.selected.contains(task_id) {
+            return Err("not_found");
+        }
+        let task = official_tasks::find_tasks(&self.home, &BTreeSet::from([task_id.to_owned()]))
+            .map_err(|_| "internal")?
+            .into_iter()
+            .next()
+            .ok_or("not_found")?;
+        let current = readers
+            .entry(task_id.to_owned())
+            .or_default()
+            .read(&self.home, &task)
+            .map_err(|_| "internal")?;
+        if command_type != "create_task"
+            && sent
+                .get(task_id)
+                .is_some_and(|snapshot| snapshot != &current)
+        {
+            return Err("state_conflict");
+        }
+        let status = current["taskStatus"].as_str().unwrap_or("");
+        let allowed = match command_type {
+            "create_task" => true,
+            "start_task" => matches!(status, "created" | "stopped" | "failed"),
+            "send_input" => matches!(status, "running" | "stopped" | "failed"),
+            "stop_task" => matches!(
+                status,
+                "queued" | "starting" | "running" | "pausing" | "paused"
+            ),
+            _ => return Err("unsupported_operation"),
+        };
+        if !allowed {
+            return Err("invalid_command_state");
+        }
+        let payload = &message["payload"];
+        let text = match command_type {
+            "create_task" => payload["initialText"].as_str().ok_or("invalid_request")?,
+            "start_task" | "send_input" => payload["text"].as_str().ok_or("invalid_request")?,
+            "stop_task" => "",
+            _ => unreachable!(),
+        };
+        if command_type != "stop_task" && (text.trim().is_empty() || text.len() > 8_192) {
+            return Err("invalid_request");
+        }
+        let (model, provider, name) = if command_type == "create_task" {
+            let model_id = payload["modelConfigId"].as_str().ok_or("invalid_request")?;
+            let config = model_configs
+                .iter()
+                .find(|config| config.id == model_id)
+                .ok_or("invalid_command_state")?;
+            let name = payload["text"].as_str().ok_or("invalid_request")?;
+            if name.trim().is_empty() || name.chars().count() > 60 {
+                return Err("invalid_request");
+            }
+            (config.model.clone(), config.provider.clone(), name)
+        } else {
+            (String::new(), String::new(), "")
+        };
+        let turn_id = readers.get(task_id).map(TaskReader::turn_id).unwrap_or("");
+        if command_type == "stop_task" && !opaque_id(turn_id) {
+            return Err("invalid_command_state");
+        }
+        Ok(command_source::request(
+            command_type,
+            task_id,
+            turn_id,
+            client_request_id,
+            &task.cwd.to_string_lossy(),
+            &model,
+            &provider,
+            text,
+            name,
+        ))
     }
 
     fn pending_confirmation(&mut self, value: Value) -> anyhow::Result<()> {
@@ -1002,7 +1212,10 @@ impl Worker {
             let mut frame = self.base(update["messageType"].as_str().unwrap());
             frame["bindingEpoch"] = json!(self.store.state.epoch);
             frame["remoteTaskId"] = json!(task);
-            frame.as_object_mut().unwrap().extend(update.as_object().unwrap().clone());
+            frame
+                .as_object_mut()
+                .unwrap()
+                .extend(update.as_object().unwrap().clone());
             send(socket, &frame).await?;
         }
         Ok(())
@@ -1014,6 +1227,13 @@ fn future(value: &Value) -> bool {
         .as_str()
         .and_then(|v| DateTime::parse_from_rfc3339(v).ok())
         .is_some_and(|v| v > Utc::now())
+}
+
+fn lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn track(
@@ -1042,9 +1262,234 @@ async fn send(socket: &mut Socket, value: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn public_command_error(value: &Value) -> &'static str {
+    match value.as_str().unwrap_or("") {
+        "invalid_request" => "invalid_request",
+        "not_found" => "not_found",
+        "state_conflict" => "state_conflict",
+        "invalid_command_state" => "invalid_command_state",
+        "command_expired" => "command_expired",
+        "unsupported_operation" => "unsupported_operation",
+        _ => "internal",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_digest_requires_lowercase_sha256_hex() {
+        assert!(lowercase_sha256(&"0123456789abcdef".repeat(4)));
+        assert!(!lowercase_sha256(&"A".repeat(64)));
+        assert!(!lowercase_sha256(&"g".repeat(64)));
+        assert!(!lowercase_sha256(&"0".repeat(63)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn auto_sync_keeps_latest_twenty_and_removes_previous_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("mobile.sqlite");
+        let db = rusqlite::Connection::open(dir.path().join("state_5.sqlite")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE threads(id TEXT, title TEXT, cwd TEXT, rollout_path TEXT,
+             archived INTEGER, updated_at INTEGER);",
+        )
+        .unwrap();
+        for index in 0..50 {
+            db.execute(
+                "INSERT INTO threads VALUES (?1, '测试任务', 'D:/workspace', 'sessions/task.jsonl', 0, ?2)",
+                rusqlite::params![format!("fixture_task_{index:04}"), index],
+            )
+            .unwrap();
+        }
+        let mut worker = Worker {
+            store: Store::open(&state_path).unwrap(),
+            config: service_config().unwrap(),
+            home: dir.path().to_path_buf(),
+            status: Arc::new(Mutex::new(MobileStatus::default())),
+            pairing_id: None,
+            confirmation: None,
+            confirmation_id: None,
+        };
+        // 模拟升级前已经同步 50 个任务，收窄后需通知云端移除旧任务。
+        worker.store.state.selected = (0..50)
+            .map(|index| format!("fixture_task_{index:04}"))
+            .collect();
+        worker
+            .store
+            .state
+            .removed
+            .insert("fixture_task_0049".into());
+        let tasks = official_tasks::list_tasks(dir.path()).unwrap();
+        worker.refresh_auto_selection(&tasks).unwrap();
+        let expected: BTreeSet<String> = (30..50)
+            .map(|index| format!("fixture_task_{index:04}"))
+            .collect();
+        assert_eq!(worker.store.state.selected, expected);
+        assert_eq!(worker.store.state.removed.len(), 30);
+        assert_eq!(worker.status.lock().unwrap().selected, expected);
+        assert_eq!(Store::open(&state_path).unwrap().state.selected, expected);
+
+        // 较旧任务重新活跃后进入最近 20 个，被挤出的任务进入移除队列。
+        db.execute(
+            "UPDATE threads SET updated_at=100 WHERE id='fixture_task_0000'",
+            [],
+        )
+        .unwrap();
+        worker
+            .refresh_auto_selection(&official_tasks::list_tasks(dir.path()).unwrap())
+            .unwrap();
+        assert_eq!(worker.store.state.selected.len(), 20);
+        assert!(worker.store.state.selected.contains("fixture_task_0000"));
+        assert!(!worker.store.state.selected.contains("fixture_task_0030"));
+        assert!(!worker.store.state.removed.contains("fixture_task_0000"));
+        assert!(worker.store.state.removed.contains("fixture_task_0030"));
+
+        // 手动选择不受自动收窄影响；不足 20 项时不补入旧任务。
+        worker.store.state.auto_sync = false;
+        let manual = BTreeSet::from(["fixture_task_0001".to_owned()]);
+        worker.store.state.selected = manual.clone();
+        worker.refresh_auto_selection(&tasks).unwrap();
+        assert_eq!(worker.store.state.selected, manual);
+        worker.store.state.auto_sync = true;
+        worker.refresh_auto_selection(&tasks[..3]).unwrap();
+        assert_eq!(worker.store.state.selected.len(), 3);
+        worker.refresh_auto_selection(&[]).unwrap();
+        assert!(worker.store.state.selected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn manual_sync_rejects_more_than_twenty_tasks_before_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("mobile.sqlite");
+        let remote = MobileRemote::new(state_path.clone(), dir.path().to_path_buf());
+        let selected = (0..21)
+            .map(|index| format!("fixture_task_{index:04}"))
+            .collect();
+        assert_eq!(
+            remote.select(selected).await.err().unwrap(),
+            "最多可同步 20 个有效任务"
+        );
+        assert!(!state_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn authorized_mobile_commands_build_scoped_desktop_requests() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let workspace = home.join("workspace");
+        let sessions = home.join("sessions");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&sessions).unwrap();
+        let task_id = "fixture_task_command_0001";
+        let turn_id = "fixture_turn_command_0001";
+        let path = sessions.join("task.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        for value in [
+            json!({"type":"session_meta","payload":{"id":task_id,"source":"vscode"}}),
+            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn_id}}),
+        ] {
+            writeln!(file, "{value}").unwrap();
+        }
+        let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE threads(id TEXT, title TEXT, cwd TEXT, rollout_path TEXT,
+             archived INTEGER, updated_at INTEGER);",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES (?1, '任务', ?2, ?3, 0, 1)",
+            rusqlite::params![task_id, workspace.to_string_lossy(), path.to_string_lossy()],
+        )
+        .unwrap();
+        let mut worker = Worker {
+            store: Store::open(&home.join("mobile.sqlite")).unwrap(),
+            config: service_config().unwrap(),
+            home: home.to_path_buf(),
+            status: Arc::new(Mutex::new(MobileStatus::default())),
+            pairing_id: None,
+            confirmation: None,
+            confirmation_id: None,
+        };
+        worker.store.state.selected.insert(task_id.into());
+        let task = official_tasks::find_tasks(home, &BTreeSet::from([task_id.to_owned()]))
+            .unwrap()
+            .remove(0);
+        let snapshot = TaskReader::default().read(home, &task).unwrap();
+        let sent = HashMap::from([(task_id.to_owned(), snapshot)]);
+        let configs = vec![ModelConfigSummary {
+            id: "a".repeat(64),
+            model: "gpt-test".into(),
+            provider: "test-provider".into(),
+        }];
+        let envelope = |command_type: &str, payload: Value| {
+            json!({
+                "stateVersion": 7,
+                "command": {
+                    "commandType": command_type,
+                    "remoteTaskId": task_id,
+                    "clientRequestId": "fixture_request_command_0001",
+                    "expectedStateVersion": 7,
+                    "expiresAt": (Utc::now() + chrono::Duration::minutes(1)).to_rfc3339(),
+                },
+                "payload": payload,
+            })
+        };
+
+        let send = worker
+            .command_request_with_configs(
+                &envelope("send_input", json!({"text":"继续"})),
+                &sent,
+                &mut HashMap::new(),
+                &configs,
+            )
+            .unwrap();
+        assert_eq!(send["commandType"], "send_input");
+        assert_eq!(send["threadId"], task_id);
+        assert_eq!(send["text"], "继续");
+
+        let create = worker
+            .command_request_with_configs(
+                &envelope(
+                    "create_task",
+                    json!({"text":"手机新任务","initialText":"检查项目","modelConfigId":"a".repeat(64)}),
+                ),
+                &sent,
+                &mut HashMap::new(),
+                &configs,
+            )
+            .unwrap();
+        assert_eq!(create["commandType"], "create_task");
+        assert_eq!(create["model"], "gpt-test");
+        assert_eq!(create["name"], "手机新任务");
+        assert_eq!(create["cwd"], workspace.to_string_lossy().as_ref());
+
+        let stop = worker
+            .command_request_with_configs(
+                &envelope("stop_task", json!({})),
+                &sent,
+                &mut HashMap::new(),
+                &configs,
+            )
+            .unwrap();
+        assert_eq!(stop["commandType"], "stop_task");
+        assert_eq!(stop["turnId"], turn_id);
+
+        assert_eq!(
+            worker.command_request_with_configs(
+                &envelope("resume_task", json!({})),
+                &sent,
+                &mut HashMap::new(),
+                &configs,
+            ),
+            Err("unsupported_operation")
+        );
+    }
 
     #[test]
     fn reply_stream_appends_history_and_ends_once() {
@@ -1061,7 +1506,11 @@ mod tests {
         let end = state.updates("第一轮\n\n---\n\n第二轮", "completed", false);
         assert_eq!(end[0]["messageType"], "reply-stream/end");
         assert_eq!(end[0]["streamSeq"], 3);
-        assert!(state.updates("第一轮\n\n---\n\n第二轮", "completed", false).is_empty());
+        assert!(
+            state
+                .updates("第一轮\n\n---\n\n第二轮", "completed", false)
+                .is_empty()
+        );
     }
 
     #[test]

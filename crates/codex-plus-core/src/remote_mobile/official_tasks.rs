@@ -6,6 +6,9 @@ use anyhow::{Context, bail};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+const MAX_REPLY_HISTORY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +16,8 @@ pub struct OfficialTask {
     pub id: String,
     pub name: String,
     pub workspace_name: String,
+    #[serde(skip)]
+    pub(super) cwd: PathBuf,
     #[serde(skip)]
     pub path: PathBuf,
     #[serde(skip)]
@@ -30,10 +35,7 @@ fn find_task(home: &Path, id: &str) -> anyhow::Result<Option<OfficialTask>> {
         .next())
 }
 
-pub(super) fn find_tasks(
-    home: &Path,
-    ids: &BTreeSet<String>,
-) -> anyhow::Result<Vec<OfficialTask>> {
+pub(super) fn find_tasks(home: &Path, ids: &BTreeSet<String>) -> anyhow::Result<Vec<OfficialTask>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -86,6 +88,7 @@ fn query_tasks(home: &Path, ids: Option<&BTreeSet<String>>) -> anyhow::Result<Ve
                         .unwrap_or("本地工作区"),
                     256,
                 ),
+                cwd: PathBuf::from(&cwd),
                 path: PathBuf::from(row.get::<_, String>(3)?),
                 updated_at: row.get(4)?,
             })
@@ -175,11 +178,12 @@ pub(super) struct TaskReader {
     created: Option<std::time::SystemTime>,
     verified: bool,
     pub reply: String,
+    reply_truncated: bool,
     pub model: String,
     pub outcome: String,
     pub last_item_id: String,
     turn_id: String,
-    last_message: String,
+    last_message_digest: Option<[u8; 32]>,
     last_message_source: &'static str,
 }
 
@@ -259,6 +263,8 @@ impl TaskReader {
         let text = &self.reply;
         let state = if text.is_empty() {
             "absent"
+        } else if self.reply_truncated {
+            "truncated"
         } else {
             "available"
         };
@@ -267,7 +273,8 @@ impl TaskReader {
             "modelLabel": if self.model.is_empty() { "Codex" } else { &self.model },
             "taskStatus": task_status, "turnStatus": turn_status, "lastTurnOutcome": outcome,
             "lastReply": if text.is_empty() { Value::Null } else {
-                json!({"state": state, "text": text, "byteLength": text.len(), "truncated": false})
+                json!({"state": state, "text": text, "byteLength": text.len(),
+                    "truncated": self.reply_truncated})
             },
             "lastReplyState": state, "lastError": null, "pcConnectionState": "online"
         }))
@@ -295,7 +302,7 @@ impl TaskReader {
             "event_msg" => match payload["type"].as_str().unwrap_or("") {
                 "task_started" => {
                     self.turn_id = payload["turn_id"].as_str().unwrap_or("").to_owned();
-                    self.last_message.clear();
+                    self.last_message_digest = None;
                     self.last_message_source = "";
                     self.outcome = "running".into();
                 }
@@ -311,7 +318,7 @@ impl TaskReader {
                         return Ok(());
                     }
                     if let Some(text) = payload["last_agent_message"].as_str()
-                        && text != self.last_message
+                        && self.last_message_digest != Some(reply_digest(text))
                     {
                         self.append_reply(text, "completion");
                     }
@@ -356,8 +363,9 @@ impl TaskReader {
         if text.is_empty() {
             return;
         }
+        let digest = reply_digest(text);
         // 同一条可见回复常同时写入事件和响应记录；仅合并相邻的双写副本，不去掉真实重复回复。
-        if text == self.last_message
+        if self.last_message_digest == Some(digest)
             && matches!(
                 (self.last_message_source, source),
                 ("event_msg", "response_item") | ("response_item", "event_msg")
@@ -370,7 +378,10 @@ impl TaskReader {
             self.reply.push_str("\n\n---\n\n");
         }
         self.reply.push_str(text);
-        self.last_message = text.to_owned();
+        if retain_utf8_suffix(&mut self.reply, MAX_REPLY_HISTORY_BYTES) {
+            self.reply_truncated = true;
+        }
+        self.last_message_digest = Some(digest);
         self.last_message_source = source;
     }
 
@@ -379,6 +390,26 @@ impl TaskReader {
             .as_str()
             .is_none_or(|id| self.turn_id.is_empty() || id == self.turn_id)
     }
+
+    pub(super) fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+}
+
+fn reply_digest(text: &str) -> [u8; 32] {
+    Sha256::digest(text.as_bytes()).into()
+}
+
+fn retain_utf8_suffix(text: &mut String, limit: usize) -> bool {
+    if text.len() <= limit {
+        return false;
+    }
+    let mut start = text.len() - limit;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    *text = text[start..].to_owned();
+    true
 }
 
 #[cfg(test)]
@@ -440,6 +471,7 @@ mod tests {
             id: "official_task_0001".into(),
             name: "任务".into(),
             workspace_name: "工作区".into(),
+            cwd: PathBuf::from("workspace"),
             path,
             updated_at: 1.0,
         };
@@ -494,12 +526,15 @@ mod tests {
         ] {
             reader.apply(&value, id).unwrap();
         }
-        assert_eq!(reader.reply, "正在检查\n\n---\n\n完成\n\n---\n\n完成\n\n---\n\n完成");
+        assert_eq!(
+            reader.reply,
+            "正在检查\n\n---\n\n完成\n\n---\n\n完成\n\n---\n\n完成"
+        );
         assert_eq!(reader.outcome, "completed");
     }
 
     #[test]
-    fn reply_history_is_not_truncated_at_two_megabytes() {
+    fn reply_history_keeps_recent_two_megabytes_and_marks_truncated() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let sessions = dir.path().join("sessions");
@@ -508,19 +543,55 @@ mod tests {
         let mut file = std::fs::File::create(&path).unwrap();
         let id = "official_task_0001";
         let text = "完整回复".repeat(180_000);
-        writeln!(file, "{}", json!({"type":"session_meta","payload":{"id":id,"source":"vscode"}})).unwrap();
-        writeln!(file, "{}", json!({"type":"event_msg","payload":{"type":"agent_message","message":text}})).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"session_meta","payload":{"id":id,"source":"vscode"}})
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"event_msg","payload":{"type":"agent_message","message":text}})
+        )
+        .unwrap();
         let task = OfficialTask {
-            id: id.into(), name: "任务".into(), workspace_name: "工作区".into(),
-            path, updated_at: 1.0,
+            id: id.into(),
+            name: "任务".into(),
+            workspace_name: "工作区".into(),
+            cwd: PathBuf::from("workspace"),
+            path,
+            updated_at: 1.0,
         };
         let mut reader = TaskReader::default();
         let snapshot = reader.read(dir.path(), &task).unwrap();
         assert!(text.len() > 2 * 1024 * 1024);
-        assert_eq!(snapshot["lastReply"]["text"], text);
-        assert_eq!(snapshot["lastReply"]["byteLength"], text.len());
-        assert_eq!(snapshot["lastReply"]["truncated"], false);
+        let retained = snapshot["lastReply"]["text"].as_str().unwrap();
+        assert!(retained.len() <= MAX_REPLY_HISTORY_BYTES);
+        assert!(text.ends_with(retained));
+        assert_eq!(snapshot["lastReply"]["byteLength"], retained.len());
+        assert_eq!(snapshot["lastReply"]["truncated"], true);
+        assert_eq!(snapshot["lastReplyState"], "truncated");
+        assert!(reader.reply.len() <= MAX_REPLY_HISTORY_BYTES);
         assert_eq!(snapshot, reader.read(dir.path(), &task).unwrap());
+    }
+
+    #[test]
+    fn reply_history_limit_preserves_utf8_and_latest_turns() {
+        let mut reader = TaskReader::default();
+        let id = "official_task_0001";
+        reader
+            .apply(
+                &json!({"type":"session_meta","payload":{"id":id,"source":"vscode"}}),
+                id,
+            )
+            .unwrap();
+        reader.append_reply(&"旧".repeat(MAX_REPLY_HISTORY_BYTES / 3), "event_msg");
+        reader.append_reply("最新回复", "event_msg");
+        assert!(reader.reply_truncated);
+        assert!(reader.reply.len() <= MAX_REPLY_HISTORY_BYTES);
+        assert!(reader.reply.ends_with("最新回复"));
+        assert!(std::str::from_utf8(reader.reply.as_bytes()).is_ok());
     }
 
     #[test]
@@ -541,6 +612,7 @@ mod tests {
             id: "selected_task_0001".into(),
             name: "".into(),
             workspace_name: "".into(),
+            cwd: PathBuf::from("workspace"),
             path,
             updated_at: 1.0,
         };
@@ -682,15 +754,21 @@ mod tests {
         db.execute_batch("COMMIT").unwrap();
         assert_eq!(list_tasks(dir.path()).unwrap().len(), 1);
         assert_eq!(
-            open_task_index(&path).unwrap().query_row(
-                "PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0)
-            ).unwrap(),
+            open_task_index(&path)
+                .unwrap()
+                .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, u64>(0))
+                .unwrap(),
             0
         );
         db.execute_batch("BEGIN EXCLUSIVE; UPDATE threads SET title='updated'; COMMIT;")
             .unwrap();
         assert_eq!(list_tasks(dir.path()).unwrap()[0].name, "updated");
-        assert!(open_task_index(&path).unwrap().execute("DELETE FROM threads", []).is_err());
+        assert!(
+            open_task_index(&path)
+                .unwrap()
+                .execute("DELETE FROM threads", [])
+                .is_err()
+        );
     }
 
     #[test]
@@ -732,10 +810,16 @@ mod tests {
             id: "official_task_0001".into(),
             name: "任务".into(),
             workspace_name: "工作区".into(),
+            cwd: PathBuf::from("workspace"),
             path,
             updated_at: 1.0,
         };
-        writeln!(file, "{}", json!({"type":"session_meta","payload":{"id":task.id,"source":"vscode"}})).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"session_meta","payload":{"id":task.id,"source":"vscode"}})
+        )
+        .unwrap();
         let output = json!({"type":"response_item","payload":{"type":"function_call_output","output":"x".repeat(16 * 1024)}});
         for _ in 0..80 {
             writeln!(file, "{output}").unwrap();

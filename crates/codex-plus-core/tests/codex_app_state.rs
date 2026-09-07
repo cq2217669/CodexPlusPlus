@@ -1,5 +1,5 @@
 use codex_plus_core::codex_app_state::{
-    capture_app_state_snapshot, sync_app_state_after_provider_switch,
+    capture_app_state_snapshot, sync_app_state_after_provider_switch, workspace_roots,
 };
 use serde_json::{Value, json};
 
@@ -232,4 +232,31 @@ fn app_state_sync_normalizes_current_state_and_writes_backup_before_change() {
         backup["electron-saved-workspace-roots"],
         json!(["C:/work/app", "C:\\work\\app\\"])
     );
+}
+
+#[test]
+fn workspace_roots_collects_existing_paths_from_saved_and_thread_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(
+        temp.path().join(".codex-global-state.json"),
+        json!({
+            "electron-saved-workspace-roots": [first],
+            "thread-workspace-root-hints": {
+                "thread-1": { "workspaceRoot": second },
+                "thread-missing": temp.path().join("missing")
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let roots = workspace_roots(temp.path()).unwrap();
+
+    assert_eq!(roots.len(), 2);
+    assert!(roots.contains(&std::fs::canonicalize(first).unwrap()));
+    assert!(roots.contains(&std::fs::canonicalize(second).unwrap()));
 }

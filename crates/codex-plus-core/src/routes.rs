@@ -258,6 +258,26 @@ pub async fn handle_bridge_request(
         "/relay-balance/query" => {
             relay_balance_query_value(ctx.settings.get_settings().await, payload.clone()).await
         }
+        "/workspace-search/roots" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::roots_response())
+        }
+        "/workspace-search/start" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::start_response(payload.clone()))
+        }
+        "/workspace-search/poll" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::poll_response(payload.clone()))
+        }
+        "/workspace-search/cancel" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::cancel_response(payload.clone()))
+        }
+        "/workspace-search/preview" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::preview_response(payload.clone()))
+        }
         "/workspace/unexecuted-tasks/preview" => {
             ctx.data
                 .preview_unexecuted_workspace_tasks(workspace_path_from_payload(&payload))
@@ -304,10 +324,11 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
-        "/session/export" => ctx
-            .data
-            .export_session_file(session_from_payload(&payload))
-            .await,
+        "/session/export" => {
+            ctx.data
+                .export_session_file(session_from_payload(&payload))
+                .await
+        }
         "/session/import" => ctx.data.import_session_file(payload.clone()).await,
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -334,6 +355,16 @@ pub async fn handle_bridge_request(
         }),
     );
     response
+}
+
+fn ensure_workspace_search_enabled(
+    settings: anyhow::Result<BackendSettings>,
+) -> anyhow::Result<()> {
+    let settings = settings?;
+    if !settings.enhancements_enabled || !settings.codex_app_workspace_search_enabled {
+        anyhow::bail!("工作区全文搜索未启用");
+    }
+    Ok(())
 }
 
 #[derive(Default)]

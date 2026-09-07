@@ -18,7 +18,7 @@ import { KeyboardAvoidMode } from '@kit.ArkUI';
 
 const DOMAIN = 0x5741;
 const TAG = 'XuanPlusRemote';
-const TASK_REFRESH_INTERVAL_MS = 30000;
+const TASK_REFRESH_INTERVAL_MS = 3000;
 const CHINA_TIME_OFFSET_MS: number = 8 * 60 * 60 * 1000;
 const FONT_SYSTEM_SANS = 'HarmonyOS Sans';
 const COLOR_INK: ResourceColor = $r('app.color.remote_ink');
@@ -77,6 +77,7 @@ interface WorkspaceChoice {
 interface TaskWorkspaceGroup {
   name: string;
   tasks: RemoteTaskSnapshot[];
+  runningTaskCount: number;
 }
 
 interface PcDeviceCardLayout {
@@ -119,6 +120,7 @@ struct Index {
   @State private nextTaskCursor: string | null = null;
   @State private taskSearchQuery: string = '';
   @State private taskFilter: TaskFilter = 'all';
+  @State private expandedTaskWorkspaces: string[] = [];
   @State private lastTaskSyncAt: string = '';
   @State private taskNotice: string = '绑定电脑后将自动同步任务';
   @State private taskFailure?: RemoteFailureNotice = undefined;
@@ -567,6 +569,9 @@ struct Index {
     this.activePcDevice = pcDevice;
     this.activePcDeviceKey = nextKey;
     this.connectionState = pcDevice.pcConnectionState;
+    if (this.activePage === 'create') {
+      this.refreshCreateState();
+    }
     if (currentKey === nextKey) {
       if (!this.pcIsOnline()) {
         this.hideTasksForDisconnectedPc();
@@ -721,6 +726,7 @@ struct Index {
     this.taskVisibilityGeneration++;
     this.taskRefreshPending = false;
     this.tasks = [];
+    this.expandedTaskWorkspaces = [];
     this.selectedTaskId = '';
     this.selectedWorkspaceSourceTaskId = '';
     this.taskFailure = undefined;
@@ -763,14 +769,13 @@ struct Index {
       this.activePage !== 'detail' || !AppLifecycleCoordinator.isForeground()) {
       return;
     }
-    if (this.pcIsOnline()) {
-      if (this.activePage === 'detail') {
+    try {
+      if (this.pcIsOnline()) {
         await this.refreshSelectedTask(this.selectedTaskId);
-      } else {
-        await this.refreshTasks(false);
       }
+    } finally {
+      this.scheduleTaskSync(generation);
     }
-    this.scheduleTaskSync(generation);
   }
 
   private async refreshTasks(showProgress: boolean = true): Promise<void> {
@@ -826,6 +831,9 @@ struct Index {
       if (this.activePage === 'create' && this.selectedWorkspaceSource() === undefined) {
         const workspaces: WorkspaceChoice[] = this.workspaceChoices();
         this.selectedWorkspaceSourceTaskId = workspaces.length === 0 ? '' : workspaces[0].sourceTaskId;
+      }
+      if (this.activePage === 'create') {
+        this.refreshCreateState();
       }
       let selectionExists: boolean = false;
       for (let index: number = 0; index < this.tasks.length; index++) {
@@ -1133,7 +1141,7 @@ struct Index {
     }
     if (task.lastReplyState === ReplyState.TRUNCATED) {
       const bytes: number = task.lastReply?.byteLength ?? 0;
-      return `当前收到的回复记录不完整，可用内容为 ${bytes} B；将自动同步电脑端完整记录。`;
+      return `手机端仅展示最近 ${bytes} B；完整记录仍保留在电脑端。`;
     }
     return `电脑观测：${formatChinaDateTime(task.pcObservedAt)}`;
   }
@@ -1162,12 +1170,49 @@ struct Index {
         }
       }
       if (existingGroup === undefined) {
-        existingGroup = { name: workspaceName, tasks: [] };
+        existingGroup = { name: workspaceName, tasks: [], runningTaskCount: 0 };
         groups.push(existingGroup);
       }
       existingGroup.tasks.push(task);
     }
-    return groups;
+    for (let taskIndex: number = 0; taskIndex < this.tasks.length; taskIndex++) {
+      const task: RemoteTaskSnapshot = this.tasks[taskIndex];
+      if (!this.taskIsRunning(task)) {
+        continue;
+      }
+      const workspaceName: string = task.workspaceName.trim().length === 0 ? '未命名工作区' : task.workspaceName;
+      for (let groupIndex: number = 0; groupIndex < groups.length; groupIndex++) {
+        if (groups[groupIndex].name === workspaceName) {
+          groups[groupIndex].runningTaskCount += 1;
+          break;
+        }
+      }
+    }
+    const runningGroups: TaskWorkspaceGroup[] = [];
+    const idleGroups: TaskWorkspaceGroup[] = [];
+    for (let groupIndex: number = 0; groupIndex < groups.length; groupIndex++) {
+      if (groups[groupIndex].runningTaskCount > 0) {
+        runningGroups.push(groups[groupIndex]);
+      } else {
+        idleGroups.push(groups[groupIndex]);
+      }
+    }
+    return runningGroups.concat(idleGroups);
+  }
+
+  private taskWorkspaceIsExpanded(workspaceName: string): boolean {
+    return this.expandedTaskWorkspaces.includes(workspaceName);
+  }
+
+  private toggleTaskWorkspace(workspaceName: string): void {
+    const expandedIndex: number = this.expandedTaskWorkspaces.indexOf(workspaceName);
+    if (expandedIndex >= 0) {
+      const nextExpandedWorkspaces: string[] = this.expandedTaskWorkspaces.slice();
+      nextExpandedWorkspaces.splice(expandedIndex, 1);
+      this.expandedTaskWorkspaces = nextExpandedWorkspaces;
+      return;
+    }
+    this.expandedTaskWorkspaces = this.expandedTaskWorkspaces.concat([workspaceName]);
   }
 
   private filteredTasks(): RemoteTaskSnapshot[] {
@@ -1405,6 +1450,8 @@ struct Index {
         }
         if (!connected && this.liveReplyReconnectTimer === undefined && this.pcIsOnline() &&
           AppLifecycleCoordinator.isForeground()) {
+          // 断流时立即补拉；后续详情轮询不依赖实时连接是否恢复。
+          void this.refreshSelectedTask(taskId);
           this.liveReplyReconnectTimer = setTimeout((): void => {
             this.liveReplyReconnectTimer = undefined;
             if (this.activePage === 'detail' && this.selectedTaskId === taskId && this.pcIsOnline() &&
@@ -1607,22 +1654,49 @@ struct Index {
     this.pcDeviceSwipeOffset = Math.max(-PC_DEVICE_REVOKE_ACTION_WIDTH, Math.min(0, nextOffset));
   }
 
-  private openCreateTask(): void {
+  private refreshCreateState(): void {
     const modelConfigs: ModelConfigSummary[] = this.activePcDevice?.modelConfigs ?? [];
     const workspaces: WorkspaceChoice[] = this.workspaceChoices();
-    this.activePage = 'create';
-    this.createFailure = undefined;
     if (this.selectedWorkspaceSource() === undefined) {
       this.selectedWorkspaceSourceTaskId = workspaces.length === 0 ? '' : workspaces[0].sourceTaskId;
     }
     if (this.selectedModelConfig() === undefined) {
       this.selectedModelConfigId = modelConfigs.length === 0 ? '' : modelConfigs[0].id;
     }
-    this.createNotice = workspaces.length === 0 ?
+    this.createNotice = this.activePcDevice === undefined ?
+      '当前没有已绑定电脑，请返回首页完成绑定' :
+      (this.connectionState !== PcConnectionState.ONLINE ?
+      '电脑当前不在线；恢复连接后即可创建任务' :
+      (workspaces.length === 0 ?
       '当前还没有可用于远程新建的工作区；请先在电脑端创建一个工作区任务' :
       (modelConfigs.length === 0 ?
       '当前电脑还没有已配置的模型，请先在电脑端配置模型' :
-      '选择只保存在当前页面；提交第一条指令后才会创建任务');
+      '选择只保存在当前页面；提交第一条指令后才会创建任务')));
+  }
+
+  private async openCreateTask(): Promise<void> {
+    this.activePage = 'create';
+    this.createFailure = undefined;
+    this.refreshCreateState();
+    if (this.deviceRegistration === undefined || this.activePcDevice === undefined || !this.pcIsOnline()) {
+      return;
+    }
+    const refreshModels: boolean = this.activePcDevice.modelConfigs.length === 0;
+    const refreshWorkspaces: boolean = this.workspaceChoices().length === 0;
+    if (refreshModels) {
+      this.createNotice = '正在刷新电脑模型配置…';
+      await this.refreshBindingStatus(false);
+    }
+    if (this.activePage !== 'create') {
+      return;
+    }
+    if (refreshWorkspaces && this.pcIsOnline()) {
+      this.createNotice = '正在刷新可用工作区…';
+      await this.refreshTasks(false);
+    }
+    if (this.activePage === 'create') {
+      this.refreshCreateState();
+    }
   }
 
   private canCreateTask(): boolean {
@@ -1805,8 +1879,8 @@ struct Index {
     .borderRadius(12)
   }
 
-  build() {
-    Scroll() {
+  @Builder
+  private pageContent() {
       Column({ space: 16 }) {
         Row() {
           Column({ space: 4 }) {
@@ -1854,6 +1928,7 @@ struct Index {
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
+        .flexShrink(0)
 
         if (this.activePage === 'home') {
         Column({ space: 12 }) {
@@ -2226,8 +2301,6 @@ struct Index {
               .fontColor(COLOR_SURFACE)
               .backgroundColor(COLOR_ACCENT)
               .height(48)
-              .enabled(this.activePcDevice !== undefined && this.connectionState === PcConnectionState.ONLINE &&
-                this.workspaceChoices().length > 0 && (this.activePcDevice?.modelConfigs ?? []).length > 0)
               .onClick(() => {
                 this.openCreateTask();
               })
@@ -2424,71 +2497,101 @@ struct Index {
             } else {
               ForEach(this.taskWorkspaceGroups(), (workspaceGroup: TaskWorkspaceGroup) => {
               Column({ space: 8 }) {
-                Row() {
-                  Text(workspaceGroup.name)
-                    .fontFamily(FONT_SYSTEM_SANS)
-                    .fontSize(15)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(COLOR_INK_STRONG)
-                    .layoutWeight(1)
-                    .maxLines(2)
+                Row({ space: 8 }) {
+                  Row({ space: 6 }) {
+                    Text(workspaceGroup.name)
+                      .fontFamily(FONT_SYSTEM_SANS)
+                      .fontSize(15)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor(COLOR_INK_STRONG)
+                      .layoutWeight(1)
+                      .maxLines(2)
+                    if (workspaceGroup.runningTaskCount > 0) {
+                      Text(`${workspaceGroup.runningTaskCount}`)
+                        .fontFamily(FONT_SYSTEM_SANS)
+                        .fontSize(11)
+                        .fontWeight(FontWeight.Bold)
+                        .fontColor(COLOR_SURFACE)
+                        .textAlign(TextAlign.Center)
+                        .width(20)
+                        .height(20)
+                        .borderRadius(10)
+                        .backgroundColor(COLOR_SUCCESS)
+                    }
+                  }
+                  .layoutWeight(1)
                   Text(`${workspaceGroup.tasks.length} 个任务`)
                     .fontFamily(FONT_SYSTEM_SANS)
                     .fontSize(12)
                     .fontColor(COLOR_MUTED)
+                  Text('›')
+                    .fontFamily(FONT_SYSTEM_SANS)
+                    .fontSize(22)
+                    .fontColor(COLOR_MUTED)
+                    .width(20)
+                    .height(24)
+                    .textAlign(TextAlign.Center)
+                    .rotate({ angle: this.taskWorkspaceIsExpanded(workspaceGroup.name) ? 90 : 0 })
                 }
                 .width('100%')
-                ForEach(workspaceGroup.tasks, (task: RemoteTaskSnapshot) => {
-                  Column({ space: 7 }) {
-                    Row() {
-                      Text(task.name.length === 0 ? '未命名任务' : task.name)
-                        .fontFamily(FONT_SYSTEM_SANS)
-                        .fontSize(16)
-                        .fontWeight(FontWeight.Bold)
-                        .fontColor(COLOR_INK)
-                        .maxLines(2)
-                        .layoutWeight(1)
-                      Text(this.taskStatusText(task))
-                        .fontFamily(FONT_SYSTEM_SANS)
-                        .fontSize(12)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor(this.taskStatusColor(task))
-                        .backgroundColor(this.taskStatusBackground(task))
-                        .borderRadius(10)
-                        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-                    }
-                    .width('100%')
-                    Text(this.turnStatusText(task))
-                      .fontFamily(FONT_SYSTEM_SANS)
-                      .fontSize(13)
-                      .fontColor(COLOR_MUTED)
+                .accessibilityText(this.taskWorkspaceIsExpanded(workspaceGroup.name) ?
+                  `收起项目 ${workspaceGroup.name}` : `展开项目 ${workspaceGroup.name}`)
+                .onClick(() => {
+                  this.toggleTaskWorkspace(workspaceGroup.name);
+                })
+                if (this.taskWorkspaceIsExpanded(workspaceGroup.name)) {
+                  ForEach(workspaceGroup.tasks, (task: RemoteTaskSnapshot) => {
+                    Column({ space: 7 }) {
+                      Row() {
+                        Text(task.name.length === 0 ? '未命名任务' : task.name)
+                          .fontFamily(FONT_SYSTEM_SANS)
+                          .fontSize(16)
+                          .fontWeight(FontWeight.Bold)
+                          .fontColor(COLOR_INK)
+                          .maxLines(2)
+                          .layoutWeight(1)
+                        Text(this.taskStatusText(task))
+                          .fontFamily(FONT_SYSTEM_SANS)
+                          .fontSize(12)
+                          .fontWeight(FontWeight.Medium)
+                          .fontColor(this.taskStatusColor(task))
+                          .backgroundColor(this.taskStatusBackground(task))
+                          .borderRadius(10)
+                          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+                      }
                       .width('100%')
-                    Text(`电脑观测：${formatChinaDateTime(task.pcObservedAt)}`)
-                      .fontFamily(FONT_SYSTEM_SANS)
-                      .fontSize(12)
-                      .fontColor(COLOR_MUTED_FAINT)
-                      .width('100%')
-                    if (task.lastError !== null) {
-                      Text(task.lastError)
+                      Text(this.turnStatusText(task))
                         .fontFamily(FONT_SYSTEM_SANS)
                         .fontSize(13)
-                        .fontColor(COLOR_DANGER)
-                        .maxLines(3)
+                        .fontColor(COLOR_MUTED)
                         .width('100%')
+                      Text(`电脑观测：${formatChinaDateTime(task.pcObservedAt)}`)
+                        .fontFamily(FONT_SYSTEM_SANS)
+                        .fontSize(12)
+                        .fontColor(COLOR_MUTED_FAINT)
+                        .width('100%')
+                      if (task.lastError !== null) {
+                        Text(task.lastError)
+                          .fontFamily(FONT_SYSTEM_SANS)
+                          .fontSize(13)
+                          .fontColor(COLOR_DANGER)
+                          .maxLines(3)
+                          .width('100%')
+                      }
                     }
-                  }
-                  .width('100%')
-                  .padding(14)
-                  .backgroundColor(COLOR_SURFACE)
-                  .border({
-                    width: 1,
-                    color: COLOR_RULE
-                  })
-                  .borderRadius(14)
-                  .onClick(() => {
-                    this.openTaskDetail(task);
-                  })
-                }, (task: RemoteTaskSnapshot) => task.remoteTaskId)
+                    .width('100%')
+                    .padding(14)
+                    .backgroundColor(COLOR_SURFACE)
+                    .border({
+                      width: 1,
+                      color: COLOR_RULE
+                    })
+                    .borderRadius(14)
+                    .onClick(() => {
+                      this.openTaskDetail(task);
+                    })
+                  }, (task: RemoteTaskSnapshot) => task.remoteTaskId)
+                }
               }
               .width('100%')
               .padding(14)
@@ -2677,6 +2780,7 @@ struct Index {
           .width('100%')
           .layoutWeight(1)
           .align(Alignment.TopStart)
+          .clip(true)
           .edgeEffect(EdgeEffect.None)
           .onDidScroll((_xOffset: number, yOffset: number, state: ScrollState) => {
             this.trackReplyScroll(yOffset, state);
@@ -2734,6 +2838,8 @@ struct Index {
           }
           .width('100%')
           .padding({ top: 8, bottom: 4 })
+          .flexShrink(0)
+          .backgroundColor(COLOR_PAGE)
           .border({ width: { top: 1 }, color: COLOR_RULE })
         }
         .width('100%')
@@ -2950,14 +3056,26 @@ struct Index {
       .height(this.activePage === 'detail' ? '100%' : undefined)
       .constraintSize({ minHeight: '100%' })
       .padding({ left: 16, right: 16, top: 12, bottom: this.activePage === 'detail' ? 8 : 24 })
+  }
+
+  build() {
+    Column() {
+      if (this.activePage === 'detail') {
+        this.pageContent()
+      } else {
+        Scroll() {
+          this.pageContent()
+        }
+        .width('100%')
+        .height('100%')
+        .edgeEffect(EdgeEffect.Spring)
+      }
     }
-    .scrollable(this.activePage === 'detail' ? ScrollDirection.None : ScrollDirection.Vertical)
     .onTouch((event: TouchEvent) => {
       this.handleTaskPageBackTouch(event);
     })
     .width('100%')
     .height('100%')
     .backgroundColor(COLOR_PAGE)
-    .edgeEffect(EdgeEffect.Spring)
   }
 }

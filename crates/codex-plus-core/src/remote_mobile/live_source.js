@@ -1,16 +1,9 @@
 (scope, binding, lease) => {
   const key = "__xuanMobileReplyObserver";
+  const maxTextLength = 256 * 1024;
   const previous = window[key];
-  if (previous?.binding === binding) {
-    previous.scope = new Set(scope);
-    previous.expires = Date.now() + lease;
-    for (const id of previous.items.keys()) {
-      if (!previous.scope.has(id)) {
-        clearTimeout(previous.items.get(id).timer);
-        previous.items.delete(id);
-      }
-    }
-    return previous.attach();
+  if (previous?.binding === binding && typeof previous.renew === "function") {
+    return previous.renew(scope, lease);
   }
   previous?.dispose();
   const state = {
@@ -26,6 +19,9 @@
         threadId, itemId: item.id, sequence: item.sequence, text: item.text,
         complete: item.complete,
       }));
+      if (item.complete && state.items.get(threadId) === item) {
+        state.items.delete(threadId);
+      }
     } catch {
       state.dispose();
     }
@@ -50,8 +46,18 @@
     if (item.complete || item.suppressed) return;
     if (method === "item/agentMessage/delta") {
       if (typeof params.delta !== "string") return;
+      if (item.text.length + params.delta.length > maxTextLength) {
+        clearTimeout(item.timer);
+        state.items.delete(threadId);
+        return;
+      }
       item.text += params.delta;
     } else if (typeof params.item.text === "string") {
+      if (params.item.text.length > maxTextLength) {
+        clearTimeout(item.timer);
+        state.items.delete(threadId);
+        return;
+      }
       item.text = params.item.text;
     }
     item.complete = method === "item/completed";
@@ -59,8 +65,19 @@
     if (method === "item/started" || item.complete) {
       emit(threadId, item);
     } else if (!item.timer) {
-      item.timer = setTimeout(() => emit(threadId, item), 100);
+      item.timer = setTimeout(() => emit(threadId, item), 500);
     }
+  };
+  state.renew = (nextScope, nextLease) => {
+    state.scope = new Set(nextScope);
+    state.expires = Date.now() + nextLease;
+    for (const id of state.items.keys()) {
+      if (!state.scope.has(id)) {
+        clearTimeout(state.items.get(id).timer);
+        state.items.delete(id);
+      }
+    }
+    return state.attach();
   };
   state.attach = () => {
     const dispatcher = window.__codexPlusRemoteSessionRecoveryDispatcher;
@@ -90,7 +107,7 @@
   // CDP 异常断开时也会自动撤销观察者，不留下永久监听和正文缓存。
   state.timer = setInterval(() => {
     if (Date.now() > state.expires) state.dispose();
-  }, lease);
+  }, Math.min(lease, 5000));
   window[key] = state;
   return state.attach();
 }

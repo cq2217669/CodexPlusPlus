@@ -26,15 +26,38 @@ assert.match(build, /WriteAllBytes\(\$buildProfile, \$originalBuildProfile\)/, "
 assert.match(build, /finally/, "失败出口也必须恢复配置");
 assert.match(build, /signingRedactions/, "签名日志必须脱敏");
 assert.ok(build.includes("'clear-signing-cache.ps1'"), "构建退出时必须清理含签名配置的任务缓存");
+assert.ok(build.includes("'E:\\Program Files\\Huawei\\DevEco Studio'"), "构建必须检测 E 盘工具链");
+assert.match(build, /Join-Path \$userProfileDirectory 'DevEco Studio'/, "构建必须回退当前用户目录工具链");
+assert.match(build, /\[IO\.Directory\]::Exists\(\$Candidate\)/, "不存在的候选盘符不能中断工具链检测");
+assert.match(build, /if \(\$env:CODEX_CI -eq '1'\)/, "受限构建环境必须使用无目录联接入口");
+const moduleAlias = await read("app/hvigor/deveco-module-alias.cjs");
+assert.match(moduleAlias, /@ohos\/hvigor-ohos-plugin/, "无目录联接入口必须加载 DevEco 内置插件");
 const cacheCleanup = await read("app/clear-signing-cache.ps1");
 assert.ok(cacheCleanup.includes("'.hvigor/cache/task-cache.json'"), "只能清理明确的签名缓存文件");
 assert.ok(!cacheCleanup.includes("-Recurse"), "禁止递归删除签名缓存目录");
 assert.match(installing, /moduleProfile\.app\.bundleName/, "安装前必须核对 HAP 内嵌身份");
 assert.match(installing, /processObserved=true/, "真机验证必须观察到应用进程");
+assert.ok(installing.includes("'E:\\Program Files\\Huawei\\DevEco Studio\\sdk'"),
+  "安装脚本必须检测 E 盘 HDC");
+assert.match(installing, /Join-Path \$userProfileDirectory 'DevEco Studio\\sdk'/,
+  "安装脚本必须回退当前用户目录 HDC");
+const opening = await read("app/open-in-deveco.ps1");
+assert.ok(opening.includes("'E:\\Program Files\\Huawei\\DevEco Studio\\bin\\devecostudio64.exe'"),
+  "打开工程脚本必须检测 E 盘 DevEco Studio");
+assert.match(opening, /Join-Path \$userProfileDirectory 'DevEco Studio\\bin\\devecostudio64\.exe'/,
+  "打开工程脚本必须回退当前用户目录 DevEco Studio");
 const identity = await read("app/entry/src/main/ets/remote/DeviceIdentityCoordinator.ets");
 assert.ok(identity.includes("'workagents_remote_dev_ed25519_v3'"), "覆盖时必须保留手机已有设备身份");
 const index = await read("app/entry/src/main/ets/pages/Index.ets");
 assert.ok(index.includes("'workagents.remote.activePcDeviceKey'"), "覆盖时必须保留原绑定选择");
+assert.match(index, /@State private expandedTaskWorkspaces: string\[\] = \[\]/,
+  "任务项目必须默认折叠");
+assert.match(index, /return runningGroups\.concat\(idleGroups\)/,
+  "包含运行中任务的项目必须排在前面");
+assert.match(index, /if \(workspaceGroup\.runningTaskCount > 0\)/,
+  "项目名称后必须显示运行中任务数量角标");
+assert.match(index, /if \(this\.taskWorkspaceIsExpanded\(workspaceGroup\.name\)\)/,
+  "任务卡片必须仅在项目展开后显示");
 const manifest = await read("cloud-service/Cargo.toml");
 assert.match(manifest, /^\[workspace\]/m, "云端应使用本目录内的独立 Cargo 工作区");
 assert.match(manifest, /name = "xuan-plus-remote-cloud"/);

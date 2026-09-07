@@ -13,28 +13,35 @@ $OutputEncoding = [Console]::OutputEncoding
 function Test-DevEcoRoot {
   param([string]$Candidate)
 
-  return -not [string]::IsNullOrWhiteSpace($Candidate) -and
-    (Test-Path -LiteralPath (Join-Path $Candidate 'tools\node\node.exe') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $Candidate 'tools\hvigor\bin\hvigorw.js') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $Candidate 'jbr\bin') -PathType Container)
+  if ([string]::IsNullOrWhiteSpace($Candidate) -or -not [IO.Directory]::Exists($Candidate)) {
+    return $false
+  }
+  return [IO.File]::Exists([IO.Path]::Combine($Candidate, 'tools\node\node.exe')) -and
+    [IO.File]::Exists([IO.Path]::Combine($Candidate, 'tools\hvigor\bin\hvigorw.js')) -and
+    [IO.Directory]::Exists([IO.Path]::Combine($Candidate, 'jbr\bin'))
 }
 
 function Test-HarmonySdkRoot {
   param([string]$Candidate)
 
-  return -not [string]::IsNullOrWhiteSpace($Candidate) -and
-    (Test-Path -LiteralPath (Join-Path $Candidate 'default\sdk-pkg.json') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $Candidate 'default\hms\ets\kits\@kit.ScanKit.d.ts') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $Candidate 'default\hms\ets\kits\@kit.PushKit.d.ts') -PathType Leaf)
+  if ([string]::IsNullOrWhiteSpace($Candidate) -or -not [IO.Directory]::Exists($Candidate)) {
+    return $false
+  }
+  return [IO.File]::Exists([IO.Path]::Combine($Candidate, 'default\sdk-pkg.json')) -and
+    [IO.File]::Exists([IO.Path]::Combine($Candidate, 'default\hms\ets\kits\@kit.ScanKit.d.ts')) -and
+    [IO.File]::Exists([IO.Path]::Combine($Candidate, 'default\hms\ets\kits\@kit.PushKit.d.ts'))
 }
 
 $userProfileDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+$alternateDevEcoRoot = 'E:\Program Files\Huawei\DevEco Studio'
 $perUserDevEcoRoot = Join-Path $userProfileDirectory 'DevEco Studio'
 $programFilesDevEcoRoot = 'C:\Program Files\Huawei\DevEco Studio'
 if (Test-DevEcoRoot -Candidate $DevEcoRoot) {
   $resolvedDevEcoRoot = (Resolve-Path -LiteralPath $DevEcoRoot).Path
 } elseif (Test-DevEcoRoot -Candidate $env:DEVECO_ROOT) {
   $resolvedDevEcoRoot = (Resolve-Path -LiteralPath $env:DEVECO_ROOT).Path
+} elseif (Test-DevEcoRoot -Candidate $alternateDevEcoRoot) {
+  $resolvedDevEcoRoot = (Resolve-Path -LiteralPath $alternateDevEcoRoot).Path
 } elseif (Test-DevEcoRoot -Candidate $perUserDevEcoRoot) {
   $resolvedDevEcoRoot = (Resolve-Path -LiteralPath $perUserDevEcoRoot).Path
 } elseif (Test-DevEcoRoot -Candidate $programFilesDevEcoRoot) {
@@ -61,6 +68,10 @@ if (Test-HarmonySdkRoot -Candidate $HarmonySdkRoot) {
 
 $nodePath = Join-Path $resolvedDevEcoRoot 'tools\node\node.exe'
 $hvigorWrapperPath = Join-Path $resolvedDevEcoRoot 'tools\hvigor\bin\hvigorw.js'
+$hvigorEngineRoot = Join-Path $resolvedDevEcoRoot 'tools\hvigor\hvigor'
+$hvigorPluginRoot = Join-Path $resolvedDevEcoRoot 'tools\hvigor\hvigor-ohos-plugin'
+$hvigorEnginePath = Join-Path $hvigorEngineRoot 'bin\hvigor.js'
+$hvigorModuleAliasPath = Join-Path $PSScriptRoot 'hvigor\deveco-module-alias.cjs'
 $devEcoJavaHome = Join-Path $resolvedDevEcoRoot 'jbr'
 $devEcoJavaBin = Join-Path $devEcoJavaHome 'bin'
 $harmonySdkPackage = Join-Path $resolvedHarmonySdkRoot 'default\sdk-pkg.json'
@@ -69,7 +80,9 @@ $pushKitDeclaration = Join-Path $resolvedHarmonySdkRoot 'default\hms\ets\kits\@k
 $buildProfileTemplate = Join-Path $PSScriptRoot 'build-profile.example.json5'
 $buildProfile = Join-Path $PSScriptRoot 'build-profile.json5'
 
-foreach ($requiredPath in @($nodePath, $hvigorWrapperPath, $resolvedHarmonySdkRoot, $devEcoJavaBin, $harmonySdkPackage, $scanKitDeclaration, $pushKitDeclaration, $buildProfileTemplate)) {
+foreach ($requiredPath in @($nodePath, $hvigorWrapperPath, $hvigorEnginePath, $hvigorPluginRoot, $hvigorModuleAliasPath,
+  $resolvedHarmonySdkRoot, $devEcoJavaBin, $harmonySdkPackage, $scanKitDeclaration, $pushKitDeclaration,
+  $buildProfileTemplate)) {
   if (-not (Test-Path -LiteralPath $requiredPath)) {
     throw "Required DevEco component not found: $requiredPath"
   }
@@ -151,7 +164,24 @@ try {
     [IO.File]::WriteAllBytes($buildProfile, $signedBuildProfile)
   }
   Set-Location -LiteralPath $PSScriptRoot
-  & $nodePath $hvigorWrapperPath @buildArgs 2>&1 | ForEach-Object {
+  $hvigorEntryPath = $hvigorWrapperPath
+  if ($env:CODEX_CI -eq '1') {
+    # Codex 的 Windows 沙箱禁止 Hvigor wrapper 创建目录联接，直接使用同一套内置引擎和插件。
+    if ([string]::IsNullOrWhiteSpace($env:HVIGOR_USER_HOME)) {
+      $env:HVIGOR_USER_HOME = Join-Path ([IO.Path]::GetTempPath()) 'xuan-plus-remote-hvigor-direct'
+    }
+    $env:XUANPLUS_HVIGOR_ENGINE = $hvigorEngineRoot
+    $env:XUANPLUS_HVIGOR_PLUGIN = $hvigorPluginRoot
+    $moduleAliasNodePath = $hvigorModuleAliasPath.Replace('\', '/')
+    $moduleAliasOption = "--require=`"$moduleAliasNodePath`""
+    $env:NODE_OPTIONS = if ([string]::IsNullOrWhiteSpace($env:NODE_OPTIONS)) {
+      $moduleAliasOption
+    } else {
+      "$($env:NODE_OPTIONS) $moduleAliasOption"
+    }
+    $hvigorEntryPath = $hvigorEnginePath
+  }
+  & $nodePath $hvigorEntryPath @buildArgs 2>&1 | ForEach-Object {
     $line = [string]$_
     foreach ($value in $signingRedactions) {
       if ($value.Length -gt 0) { $line = $line.Replace($value, '[已脱敏]') }

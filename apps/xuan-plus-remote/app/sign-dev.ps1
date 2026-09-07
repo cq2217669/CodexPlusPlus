@@ -1,8 +1,6 @@
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$DevEcoRoot,
-  [Parameter(Mandatory = $true)]
-  [string]$HarmonySdkRoot,
+  [string]$DevEcoRoot = '',
+  [string]$HarmonySdkRoot = '',
   [Parameter(Mandatory = $true)]
   [string]$SigningConfigSource
 )

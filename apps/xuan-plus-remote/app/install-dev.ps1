@@ -15,25 +15,24 @@ $ErrorActionPreference = 'Stop'
 function Test-HdcPath {
   param([string]$Candidate)
 
-  return -not [string]::IsNullOrWhiteSpace($Candidate) -and
-    (Test-Path -LiteralPath $Candidate -PathType Leaf)
+  return -not [string]::IsNullOrWhiteSpace($Candidate) -and [IO.File]::Exists($Candidate)
 }
 
 function Test-HdcInSdkRoot {
   param([string]$SdkRoot)
 
-  if ([string]::IsNullOrWhiteSpace($SdkRoot)) {
+  if ([string]::IsNullOrWhiteSpace($SdkRoot) -or -not [IO.Directory]::Exists($SdkRoot)) {
     return $false
   }
-  return (Test-HdcPath -Candidate (Join-Path $SdkRoot 'default\toolchains\hdc.exe')) -or
-    (Test-HdcPath -Candidate (Join-Path $SdkRoot 'default\openharmony\toolchains\hdc.exe'))
+  return (Test-HdcPath -Candidate ([IO.Path]::Combine($SdkRoot, 'default\toolchains\hdc.exe'))) -or
+    (Test-HdcPath -Candidate ([IO.Path]::Combine($SdkRoot, 'default\openharmony\toolchains\hdc.exe')))
 }
 
 function Resolve-HdcInSdkRoot {
   param([string]$SdkRoot)
 
-  $defaultToolchainsHdc = Join-Path $SdkRoot 'default\toolchains\hdc.exe'
-  $openHarmonyToolchainsHdc = Join-Path $SdkRoot 'default\openharmony\toolchains\hdc.exe'
+  $defaultToolchainsHdc = [IO.Path]::Combine($SdkRoot, 'default\toolchains\hdc.exe')
+  $openHarmonyToolchainsHdc = [IO.Path]::Combine($SdkRoot, 'default\openharmony\toolchains\hdc.exe')
   if (Test-HdcPath -Candidate $defaultToolchainsHdc) {
     return (Resolve-Path -LiteralPath $defaultToolchainsHdc).Path
   } elseif (Test-HdcPath -Candidate $openHarmonyToolchainsHdc) {
@@ -49,9 +48,15 @@ function Resolve-HdcPath {
   )
 
   $userProfileDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+  $alternateDevEcoSdkRoot = 'E:\Program Files\Huawei\DevEco Studio\sdk'
   $perUserDevEcoSdkRoot = Join-Path $userProfileDirectory 'DevEco Studio\sdk'
   $programFilesDevEcoSdkRoot = 'C:\Program Files\Huawei\DevEco Studio\sdk'
   $perUserHarmonySdkRoot = Join-Path $userProfileDirectory 'AppData\Local\Huawei\Sdk'
+  $environmentDevEcoSdkRoot = if ([string]::IsNullOrWhiteSpace($env:DEVECO_ROOT)) {
+    ''
+  } else {
+    [IO.Path]::Combine($env:DEVECO_ROOT, 'sdk')
+  }
 
   if (Test-HdcPath -Candidate $ExplicitHdcPath) {
     return (Resolve-Path -LiteralPath $ExplicitHdcPath).Path
@@ -61,6 +66,10 @@ function Resolve-HdcPath {
     return Resolve-HdcInSdkRoot -SdkRoot $env:DEVECO_SDK_HOME
   } elseif (Test-HdcInSdkRoot -SdkRoot $env:OHOS_BASE_SDK_HOME) {
     return Resolve-HdcInSdkRoot -SdkRoot $env:OHOS_BASE_SDK_HOME
+  } elseif (Test-HdcInSdkRoot -SdkRoot $environmentDevEcoSdkRoot) {
+    return Resolve-HdcInSdkRoot -SdkRoot $environmentDevEcoSdkRoot
+  } elseif (Test-HdcInSdkRoot -SdkRoot $alternateDevEcoSdkRoot) {
+    return Resolve-HdcInSdkRoot -SdkRoot $alternateDevEcoSdkRoot
   } elseif (Test-HdcInSdkRoot -SdkRoot $perUserDevEcoSdkRoot) {
     return Resolve-HdcInSdkRoot -SdkRoot $perUserDevEcoSdkRoot
   } elseif (Test-HdcInSdkRoot -SdkRoot $programFilesDevEcoSdkRoot) {

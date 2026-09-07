@@ -10,6 +10,10 @@ use tokio_tungstenite::tungstenite::Message;
 
 const OBSERVER: &str = include_str!("live_source.js");
 const BINDING: &str = "xuanMobileReplyDelta";
+const OBSERVER_KEY: &str = "__xuanMobileReplyObserver";
+const MAX_LIVE_REPLY_EVENT_BYTES: usize = 1024 * 1024;
+const OBSERVER_RENEW_INTERVAL: Duration = Duration::from_secs(15);
+const OBSERVER_LEASE_MILLIS: u64 = 45_000;
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -157,8 +161,9 @@ async fn session(
         "params": {"name": BINDING}}),
     )
     .await?;
-    let mut lease = tokio::time::interval(Duration::from_secs(5));
+    let mut lease = tokio::time::interval(OBSERVER_RENEW_INTERVAL);
     lease.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut observer_installed = false;
     let result = async {
         loop {
             tokio::select! {
@@ -169,8 +174,18 @@ async fn session(
                 _ = lease.tick() => {
                     let selected = serde_json::to_string(&*scope.borrow())?;
                     command_id += 1;
-                    let expression = format!("({OBSERVER})({selected}, {binding}, 15000)",
-                        binding = serde_json::to_string(BINDING)?);
+                    let expression = if observer_installed {
+                        format!(
+                            "window[{key}]?.renew({selected}, {OBSERVER_LEASE_MILLIS}) ?? false",
+                            key = serde_json::to_string(OBSERVER_KEY)?,
+                        )
+                    } else {
+                        observer_installed = true;
+                        format!(
+                            "({OBSERVER})({selected}, {binding}, {OBSERVER_LEASE_MILLIS})",
+                            binding = serde_json::to_string(BINDING)?,
+                        )
+                    };
                     super::send(&mut socket, &json!({"id": command_id, "method": "Runtime.evaluate",
                         "params": {"expression": expression, "returnByValue": true}})).await?;
                 }
@@ -187,6 +202,7 @@ async fn session(
                             )?;
                             if !scope.borrow().contains(&event.thread_id) || event.item_id.is_empty()
                                 || event.item_id.len() > 128 || event.sequence == 0
+                                || event.text.len() > MAX_LIVE_REPLY_EVENT_BYTES
                             {
                                 continue;
                             }

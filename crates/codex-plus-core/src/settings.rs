@@ -484,6 +484,8 @@ pub struct BackendSettings {
     pub codex_app_stepwise_timeout_ms: u64,
     #[serde(rename = "codexAppPromptOptimizeEnabled", default)]
     pub codex_app_prompt_optimize_enabled: bool,
+    #[serde(rename = "codexAppWorkspaceSearchEnabled", default)]
+    pub codex_app_workspace_search_enabled: bool,
     #[serde(rename = "codexAppPromptOptimizeRelayId", default)]
     pub codex_app_prompt_optimize_relay_id: String,
     #[serde(rename = "codexAppRelayBalanceEnabled", default)]
@@ -661,6 +663,7 @@ impl Default for BackendSettings {
             codex_app_stepwise_max_output_tokens: default_stepwise_max_output_tokens(),
             codex_app_stepwise_timeout_ms: default_stepwise_timeout_ms(),
             codex_app_prompt_optimize_enabled: false,
+            codex_app_workspace_search_enabled: false,
             codex_app_prompt_optimize_relay_id: String::new(),
             codex_app_relay_balance_enabled: false,
             codex_app_relay_balance_provider: String::new(),
@@ -1541,6 +1544,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         );
     }
     merge_bool_setting(target, source, "codexAppPromptOptimizeEnabled");
+    merge_bool_setting(target, source, "codexAppWorkspaceSearchEnabled");
     if let Some(value) = source
         .get("codexAppPromptOptimizeRelayId")
         .and_then(Value::as_str)
@@ -1551,7 +1555,10 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         );
     }
     merge_bool_setting(target, source, "codexAppRelayBalanceEnabled");
-    for key in ["codexAppRelayBalanceProvider", "codexAppRelayBalanceOwlToken"] {
+    for key in [
+        "codexAppRelayBalanceProvider",
+        "codexAppRelayBalanceOwlToken",
+    ] {
         if let Some(value) = source.get(key).and_then(Value::as_str) {
             target.insert(key.to_string(), Value::String(value.trim().to_string()));
         }
@@ -1982,8 +1989,10 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
     settings.codex_app_prompt_optimize_protocol =
         normalize_prompt_optimize_protocol(&settings.codex_app_prompt_optimize_protocol);
-    settings.codex_app_prompt_optimize_relay_id =
-        settings.codex_app_prompt_optimize_relay_id.trim().to_string();
+    settings.codex_app_prompt_optimize_relay_id = settings
+        .codex_app_prompt_optimize_relay_id
+        .trim()
+        .to_string();
     settings.codex_app_prompt_optimize_base_url = settings
         .codex_app_prompt_optimize_base_url
         .trim()
@@ -2190,6 +2199,7 @@ mod tests {
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
         assert!(!settings.codex_app_stepwise_enabled);
+        assert!(!settings.codex_app_workspace_search_enabled);
         assert_eq!(settings.codex_app_stepwise_generation_mode, "auto");
         assert!(!settings.codex_app_answer_outline_enabled);
         assert!(!settings.codex_app_stepwise_direct_send);
@@ -2267,6 +2277,20 @@ mod tests {
     }
 
     #[test]
+    fn workspace_search_setting_is_opt_in_and_persists_partial_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        assert!(!store.load().unwrap().codex_app_workspace_search_enabled);
+
+        let updated = store
+            .update(json!({"codexAppWorkspaceSearchEnabled": true}))
+            .unwrap();
+
+        assert!(updated.codex_app_workspace_search_enabled);
+        assert!(store.load().unwrap().codex_app_workspace_search_enabled);
+    }
+
+    #[test]
     fn relay_balance_settings_persist_and_allow_clearing_login_token() {
         let dir = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(dir.path().join("settings.json"));
@@ -2277,17 +2301,29 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(updated.codex_app_relay_balance_provider, "owlai");
-        assert_eq!(updated.codex_app_relay_balance_owl_token, "test-login-token");
+        assert_eq!(
+            updated.codex_app_relay_balance_owl_token,
+            "test-login-token"
+        );
         assert_eq!(store.load().unwrap(), updated);
         let preserved = store
             .update(json!({"codexAppRelayBalanceEnabled": true}))
             .unwrap();
-        assert_eq!(preserved.codex_app_relay_balance_owl_token, "test-login-token");
+        assert_eq!(
+            preserved.codex_app_relay_balance_owl_token,
+            "test-login-token"
+        );
         let cleared = store
             .update(json!({"codexAppRelayBalanceOwlToken": ""}))
             .unwrap();
         assert!(cleared.codex_app_relay_balance_owl_token.is_empty());
-        assert!(store.load().unwrap().codex_app_relay_balance_owl_token.is_empty());
+        assert!(
+            store
+                .load()
+                .unwrap()
+                .codex_app_relay_balance_owl_token
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3212,7 +3248,10 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.weixin_connect_token, "token");
         assert_eq!(updated.weixin_connect_account_id, "bot-1");
         assert_eq!(updated.weixin_connect_allow_from, "user@im.wechat");
-        assert_eq!(updated.weixin_connect_share_url, "https://example.test/clawbot");
+        assert_eq!(
+            updated.weixin_connect_share_url,
+            "https://example.test/clawbot"
+        );
         assert_eq!(updated.weixin_connect_route_tag, "route");
         assert_eq!(updated.weixin_connect_work_dir, "/workspace");
         assert_eq!(updated.weixin_connect_model, "gpt-test");

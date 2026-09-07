@@ -42,9 +42,9 @@ pub mod remote_control_recovery;
 pub mod remote_mobile;
 pub mod routes;
 pub mod script_market;
-pub mod share;
 pub mod session_share;
 pub mod settings;
+pub mod share;
 pub mod skills;
 pub mod status;
 pub mod stepwise;
@@ -57,6 +57,7 @@ pub mod vision;
 pub mod watcher;
 #[cfg(windows)]
 mod windows_integration;
+pub mod workspace_search;
 pub mod zed_remote;
 
 #[cfg(windows)]

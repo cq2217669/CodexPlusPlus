@@ -6965,7 +6965,10 @@
 
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
-    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
+    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
+      installCodexMobileRemoteCommandClient(client);
+      return true;
+    }
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
@@ -7006,6 +7009,69 @@
       return patchAppServerModelResult(requestMethod, result);
     };
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    installCodexMobileRemoteCommandClient(client);
+    return true;
+  }
+
+  function installCodexMobileRemoteCommandClient(client) {
+    if (!client || typeof client.sendRequest !== "function") return false;
+    window.__codexPlusMobileRemoteCommandClients = window.__codexPlusMobileRemoteCommandClients || [];
+    const clients = window.__codexPlusMobileRemoteCommandClients;
+    if (!clients.includes(client)) clients.push(client);
+    while (clients.length > 8) clients.shift();
+    window.__codexPlusMobileRemoteCommand = async (request) => {
+      const commandType = String(request?.commandType || "");
+      const threadId = String(request?.threadId || "");
+      const turnId = String(request?.turnId || "");
+      const clientRequestId = String(request?.clientRequestId || "");
+      const text = String(request?.text || "");
+      const candidate = clients[clients.length - 1];
+      if (!candidate) throw new Error("Codex app-server 命令客户端不可用");
+      if (commandType === "create_task") {
+        const started = await candidate.sendRequest("thread/start", {
+          cwd: String(request?.cwd || ""),
+          model: String(request?.model || ""),
+          modelProvider: String(request?.provider || ""),
+          approvalPolicy: "on-request",
+          sandbox: "workspace-write",
+          persistExtendedHistory: true,
+        });
+        const createdThreadId = String(started?.thread?.id || started?.threadId || started?.id || "");
+        if (!createdThreadId) throw new Error("新建任务未返回任务标识");
+        const turn = await candidate.sendRequest("turn/start", {
+          threadId: createdThreadId,
+          clientUserMessageId: `xuan-mobile-${clientRequestId}`,
+          input: [{ type: "text", text, text_elements: [] }],
+        });
+        const createdTurnId = String(turn?.turn?.id || turn?.turnId || turn?.id || "");
+        if (!createdTurnId) throw new Error("新建任务未接受第一条消息");
+        const name = String(request?.name || "").trim();
+        if (name) {
+          try {
+            await candidate.sendRequest("thread/name/set", { threadId: createdThreadId, name });
+          } catch {
+          }
+        }
+        return { status: "completed", threadId: createdThreadId, turnId: createdTurnId };
+      }
+      if (commandType === "start_task" || commandType === "send_input") {
+        await candidate.sendRequest("thread/resume", { threadId, persistExtendedHistory: true });
+        const turn = await candidate.sendRequest("turn/start", {
+          threadId,
+          clientUserMessageId: `xuan-mobile-${clientRequestId}`,
+          input: [{ type: "text", text, text_elements: [] }],
+        });
+        const acceptedTurnId = String(turn?.turn?.id || turn?.turnId || turn?.id || "");
+        if (!acceptedTurnId) throw new Error("任务未接受手机消息");
+        return { status: "completed", threadId, turnId: acceptedTurnId };
+      }
+      if (commandType === "stop_task") {
+        if (!turnId) throw new Error("当前任务缺少可停止的回合标识");
+        await candidate.sendRequest("turn/interrupt", { threadId, turnId });
+        return { status: "completed", threadId, turnId };
+      }
+      return { status: "rejected", errorCode: "unsupported_operation" };
+    };
     return true;
   }
 

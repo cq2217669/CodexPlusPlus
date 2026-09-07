@@ -86,7 +86,7 @@ try {
   await page.screenshot({ path: path.join(output, "desktop.png"), fullPage: true });
   await page.getByRole("button", { name: "确认绑定", exact: true }).click();
   await page.getByRole("status").filter({ hasText: "手机已绑定" }).waitFor();
-  await page.getByRole("checkbox", { name: "自动同步最近 50 个任务", exact: true }).uncheck();
+  await page.getByRole("checkbox", { name: "自动同步最近 20 个任务", exact: true }).uncheck();
   const firstTask = page.locator(".mobile-remote-task").first().getByRole("checkbox");
   await firstTask.uncheck();
   await page.getByText("已选择 1 项", { exact: true }).waitFor();

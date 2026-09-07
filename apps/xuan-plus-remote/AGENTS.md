@@ -11,18 +11,17 @@
 - `protocol/`：协议 1.5、夹具和参考模型。保留原协议签名域与 HTTP 字段，不能为了改名破坏协议。
 - `environment/`：本副本的服务地址与一致性检查；按用户授权沿用现有 WorkAgents 云服务，不另建环境，不自动修改云端部署。
 - `cloud-service/`：独立 Cargo 工作区，不参与轩++桌面默认构建；进程配置仅接受 `XUANPLUS_REMOTE_*`。
-- 桌面接入位于 `crates/codex-plus-core/src/remote_mobile/` 和管理器“手机连接”页，使用本机确认绑定、Windows DPAPI 设备身份保护及按需选择的官方任务记录只读同步；不开放手机远程执行。协议 1.5 的解绑通过每 30 秒复核绑定处理，不能把本地集成测试当作手机真机同步成功。
+- 桌面接入位于 `crates/codex-plus-core/src/remote_mobile/` 和管理器“手机连接”页，使用本机确认绑定、Windows DPAPI 设备身份保护及按需选择的官方任务同步。已绑定手机仅可对已同步任务发送文本、新建同工作区任务和停止当前任务；其他远程执行仍拒绝。协议 1.5 的解绑通过每 30 秒复核绑定处理，不能把本地集成测试当作手机真机同步成功。
 
 ## 修改与验证
 
 - 仅复用用户授权的应用签名和手机已有 HUKS 设备密钥别名、本机绑定选择；不得导出设备私钥、读取无关凭据和运行数据，不修改原项目及其部署环境。
-- 本机工具路径（2026-09-06 已验证）：
-  - DevEco Studio：`E:\Program Files\Huawei\DevEco Studio\bin\devecostudio64.exe`
-  - DevEco 根目录：`E:\Program Files\Huawei\DevEco Studio`
-  - HarmonyOS SDK：`E:\Program Files\Huawei\DevEco Studio\sdk`
-  - HDC：`E:\Program Files\Huawei\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe`
+- 两台开发机工具路径（2026-09-07 已验证）：
+  - E 盘机器：`E:\Program Files\Huawei\DevEco Studio`
+  - C 盘机器：`C:\Users\40448\DevEco Studio`
+  - DevEco Studio、构建 SDK 与 HDC 默认自动检测：显式参数和环境变量优先；否则先检测 E 盘机器，再回退当前用户目录及 `C:\Program Files`。
   - 签名 HAP：`app/entry/build/default/outputs/default/entry-default-signed.hap`
-- 构建：在 `app/build-dev.ps1` 显式传入本机 DevEco/SDK 路径；编译使用 DevEco 自带 SDK，最低兼容及目标版本保留 API 20；只用原装工具链，依赖缺失时不得擅自安装。
+- 构建：直接运行 `app/build-dev.ps1` 使用自动检测，也可显式传入 `-DevEcoRoot` / `-HarmonySdkRoot`；编译使用 DevEco 自带 SDK，最低兼容及目标版本保留 API 20；只用原装工具链，依赖缺失时不得擅自安装。
 - 签名构建使用 `app/build-dev.ps1 -SigningConfigSource <原项目的 build-profile.json5>`；仅引用外部证书与密钥文件。构建时的本地忽略配置必须在退出时原样恢复，并由 `clear-signing-cache.ps1` 移除 Hvigor 生成的单个 `task-cache.json`；签名内容不得进入版本控制、命令行和日志。
 - 开发 HAP 安装仅用 `app/install-dev.ps1`；只接受本目录的已签名 HAP，严格校验原开发 Bundle。仅通过 `install -r` 覆盖，不卸载、不清空手机数据。
 - 签名缺失或不匹配时停止；不得改用 SDK 公共开发签名绕过校验。`sign-dev.ps1` 只委托上述原装签名构建入口。

@@ -10,6 +10,8 @@ const require = createRequire(path.join(root, "apps/codex-plus-manager/package.j
 const ts = require("typescript");
 const ets = path.join(root, "apps/xuan-plus-remote/app/entry/src/main/ets");
 const source = await readFile(path.join(ets, "pages/Index.ets"), "utf8");
+const refreshInterval = Number(source.match(/const TASK_REFRESH_INTERVAL_MS = (\d+);/)?.[1]);
+assert.equal(refreshInterval, 3000, "详情页必须每 3 秒补拉一次任务快照");
 const start = source.indexOf("struct Index {");
 const end = source.indexOf("  @Builder", start);
 assert.ok(start >= 0 && end > start, "必须直接测试实际详情页面的方法");
@@ -59,14 +61,16 @@ function setup() {
   let timerId = 0;
   let detailCalls = 0;
   let listCalls = 0;
+  let bindingCalls = 0;
   let latest = snapshot();
+  let modelConfigs = [];
   let stream;
   const context = vm.createContext({
     ...modelContext.exports,
     exports: {},
     State() {},
     StorageLink: () => () => {},
-    DOMAIN: 0, TAG: "test", TASK_REFRESH_INTERVAL_MS: 30000,
+    DOMAIN: 0, TAG: "test", TASK_REFRESH_INTERVAL_MS: refreshInterval,
     KeyboardAvoidMode: { RESIZE: 1 },
     Edge: { Bottom: 1 },
     ScrollState: { Idle: 0, Scroll: 1, Fling: 2 },
@@ -104,6 +108,23 @@ function setup() {
         return { tasks: [latest], nextCursor: null, serverReceivedAt: latest.serverReceivedAt };
       },
     },
+    PairingApiCoordinator: {
+      async listPcDevices() {
+        bindingCalls++;
+        return {
+          pcDevices: [{
+            bindingId: "fixture_binding_0001",
+            pcDeviceId: latest.pcDeviceId,
+            installationId: latest.installationId,
+            bindingEpoch: 1,
+            displayName: "测试电脑",
+            pcConnectionState: "online",
+            pcObservedAt: latest.pcObservedAt,
+            modelConfigs,
+          }],
+        };
+      },
+    },
     RemoteApiClient: {
       describeFailure: () => ({ title: "请求暂不可用", reason: "测试失败", retryable: true }),
     },
@@ -123,9 +144,12 @@ function setup() {
   });
   page.deviceRegistration = { appDeviceId: "fixture_phone_0001", deviceKeyId: "fixture_key_000001" };
   page.activePcDevice = {
+    bindingId: "fixture_binding_0001",
     pcDeviceId: latest.pcDeviceId, installationId: latest.installationId,
-    bindingEpoch: 1, pcConnectionState: "online",
+    bindingEpoch: 1, displayName: "测试电脑", pcConnectionState: "online",
+    pcObservedAt: latest.pcObservedAt, modelConfigs: [],
   };
+  page.activePcDeviceKey = page.pcDeviceKey(page.activePcDevice);
   page.connectionState = "online";
   page.pairingState = "active";
   page.tasks = [latest];
@@ -134,8 +158,10 @@ function setup() {
   return {
     page, context, timers,
     setLatest(value) { latest = value; },
+    setModelConfigs(value) { modelConfigs = value; },
     get detailCalls() { return detailCalls; },
     get listCalls() { return listCalls; },
+    get bindingCalls() { return bindingCalls; },
     get stream() { return stream; },
   };
 }
@@ -145,7 +171,44 @@ async function test(name, run) {
   checks.push(name);
 }
 
-await test("详情低频补拉兜底，不产生高频列表轮询", async () => {
+await test("已绑定手机可进入新建页并刷新迟到的模型目录", async () => {
+  const buttonStart = source.indexOf("Button('新建')");
+  const buttonEnd = source.indexOf(".onClick", buttonStart);
+  const buttonContract = source.slice(buttonStart, buttonEnd);
+  assert.ok(buttonStart >= 0 && buttonEnd > buttonStart);
+  assert.doesNotMatch(buttonContract, /\.enabled\(/,
+    "新建入口必须始终可点击；绑定、在线、工作区和模型条件只在页面内提示及提交时校验");
+
+  const env = setup();
+  env.page.activePage = "home";
+  env.page.newTaskInstruction = "检查项目";
+  env.setModelConfigs([{ id: "a".repeat(64), model: "gpt-test", provider: "test-provider" }]);
+  await env.page.openCreateTask();
+
+  assert.equal(env.bindingCalls, 1);
+  assert.equal(env.page.activePage, "create");
+  assert.equal(env.page.selectedWorkspaceSourceTaskId, "fixture_task_0001");
+  assert.equal(env.page.selectedModelConfigId, "a".repeat(64));
+  assert.equal(env.page.canCreateTask(), true);
+});
+
+await test("进入新建页时会补拉尚未同步的工作区", async () => {
+  const env = setup();
+  env.page.activePage = "home";
+  env.page.tasks = [];
+  env.page.activePcDevice.modelConfigs = [
+    { id: "b".repeat(64), model: "gpt-test", provider: "test-provider" },
+  ];
+  env.page.newTaskInstruction = "创建测试任务";
+  await env.page.openCreateTask();
+
+  assert.equal(env.listCalls, 1);
+  assert.equal(env.page.selectedWorkspaceSourceTaskId, "fixture_task_0001");
+  assert.equal(env.page.selectedModelConfigId, "b".repeat(64));
+  assert.equal(env.page.canCreateTask(), true);
+});
+
+await test("详情每 3 秒补拉兜底，不产生列表轮询", async () => {
   const env = setup();
   env.setLatest(snapshot(2, "第一轮回复\n\n---\n\n第二轮回复"));
   await env.page.runTaskSync(env.page.taskSyncGeneration);
@@ -153,9 +216,50 @@ await test("详情低频补拉兜底，不产生高频列表轮询", async () =>
   assert.equal(env.listCalls, 0);
   assert.equal(env.page.selectedTask().stateVersion, 2);
   assert.equal(env.timers.size, 1);
-  assert.equal([...env.timers.values()][0].delay, 30000);
+  assert.equal([...env.timers.values()][0].delay, 3000);
   env.page.stopTaskSyncLoop();
   assert.equal(env.timers.size, 0);
+});
+
+await test("停留详情页时定时器持续获取新回复，不需返回列表", async () => {
+  const env = setup();
+  env.page.instruction = "保留输入";
+  env.page.replyFollowBottom = false;
+  env.page.startTaskSyncLoop();
+  for (const version of [2, 3, 4]) {
+    env.setLatest(snapshot(version, `第 ${version} 版回复`));
+    const [id, timer] = [...env.timers][0];
+    assert.equal(timer.delay, 3000);
+    env.timers.delete(id);
+    timer.callback();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(env.page.detailReplyText(env.page.selectedTask()), `第 ${version} 版回复`);
+    assert.equal(env.page.activePage, "detail");
+    assert.equal(env.timers.size, 1);
+  }
+  assert.equal(env.detailCalls, 3);
+  assert.equal(env.listCalls, 0);
+  assert.equal(env.page.instruction, "保留输入");
+  assert.equal(env.page.replyFollowBottom, false);
+  env.page.leaveTaskDetail();
+  assert.equal(env.timers.size, 0);
+});
+
+await test("慢请求完成后才安排下一次补拉，退出时不重启轮询", async () => {
+  const env = setup();
+  const pending = deferred();
+  env.context.TaskSyncCoordinator.getTask = () => pending.promise;
+  env.page.startTaskSyncLoop();
+  const [id, timer] = [...env.timers][0];
+  env.timers.delete(id);
+  timer.callback();
+  assert.equal(env.page.refreshingSelectedTask, true);
+  assert.equal(env.timers.size, 0);
+  env.page.leaveTaskDetail();
+  pending.resolve({ snapshot: snapshot(2), serverReceivedAt: snapshot().serverReceivedAt });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(env.timers.size, 0);
+  assert.equal(env.page.selectedTask().stateVersion, 1);
 });
 
 await test("打开详情立即同步且保留草稿", async () => {
@@ -380,6 +484,22 @@ await test("断线保留可见回复，退避重连补拉完整历史且不重�
   assert.equal(env.timers.size, 0);
 });
 
+await test("实时连接中断时立即获取新回复，不等待重连或下一次轮询", async () => {
+  const env = setup();
+  env.page.startLiveReplyStream();
+  await new Promise(resolve => setImmediate(resolve));
+  const callsBeforeDisconnect = env.detailCalls;
+  env.setLatest(snapshot(2, "断线期间完成的新回复"));
+  env.stream.status(false, "测试断线");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(env.detailCalls, callsBeforeDisconnect + 1);
+  assert.equal(env.page.detailReplyText(env.page.selectedTask()), "断线期间完成的新回复");
+  assert.equal(env.listCalls, 0);
+  assert.equal(env.page.activePage, "detail");
+  env.page.leaveTaskDetail();
+  assert.equal(env.timers.size, 0);
+});
+
 await test("离开再进入同一任务后旧订阅和旧请求不能影响新页面", async () => {
   const env = setup();
   env.page.startLiveReplyStream();
@@ -447,7 +567,12 @@ await test("发送失败后重试沿用任务标识和草稿，成功后才清�
 
 assert.match(source, /Scroll\(this\.replyScroller\)/);
 assert.match(source, /setKeyboardAvoidMode\(KeyboardAvoidMode\.RESIZE\)/);
-assert.match(source, /scrollable\(this\.activePage === 'detail' \? ScrollDirection\.None/);
+assert.match(source, /build\(\) \{\s*Column\(\) \{\s*if \(this\.activePage === 'detail'\) \{\s*this\.pageContent\(\)\s*\} else \{\s*Scroll\(\)/,
+  "详情页不能置于外层 Scroll 内，标题与输入栏必须留在固定高度的 Column 中");
+assert.match(source, /\.alignItems\(VerticalAlign\.Center\)\s*\.flexShrink\(0\)/,
+  "标题栏不能被回复内容挤压");
+assert.match(source, /\.padding\(\{ top: 8, bottom: 4 \}\)\s*\.flexShrink\(0\)/,
+  "输入栏不能随回复滚动或被挤压");
 
 const streamCode = compile(await readFile(path.join(ets, "remote/LiveReplyStreamCoordinator.ets"), "utf8"));
 function streamSetup(signing, open = true) {
@@ -577,7 +702,7 @@ await test("非法帧安全断开且不泄露内容", async () => {
   }
 });
 
-await test("桌面只读事件监听按任务过滤、合并增量并清理所有监听", async () => {
+await test("桌面只读事件监听按任务过滤、限制正文并清理所有监听", async () => {
   const listeners = new Map();
   const timers = new Map();
   const emitted = [];
@@ -617,7 +742,7 @@ await test("桌面只读事件监听按任务过滤、合并增量并清理所�
   dispatch("item/agentMessage/delta", { threadId: "fixture_task_0001", itemId: "item1", delta: "流式" });
   dispatch("item/agentMessage/delta", { threadId: "fixture_task_0001", itemId: "item1", delta: "回复" });
   assert.equal(emitted.length, 1);
-  const [id, timer] = [...timers].find(([, timer]) => timer.delay === 100);
+  const [id, timer] = [...timers].find(([, timer]) => timer.delay === 500);
   timers.delete(id);
   timer.callback();
   assert.equal(emitted.at(-1).text, "流式回复");
@@ -627,9 +752,19 @@ await test("桌面只读事件监听按任务过滤、合并增量并清理所�
   } });
   assert.equal(emitted.at(-1).text, "流式回复完成");
   assert.equal(emitted.at(-1).complete, true);
+  assert.equal(context.window.__xuanMobileReplyObserver.items.has("fixture_task_0001"), false,
+    "完成正文不能继续占用官方客户端内存");
+  dispatch("item/started", { threadId: "fixture_task_0001", item: {
+    id: "item2", type: "agentMessage", channel: "final", text: "",
+  } });
+  dispatch("item/agentMessage/delta", {
+    threadId: "fixture_task_0001", itemId: "item2", delta: "x".repeat(256 * 1024 + 1),
+  });
+  assert.equal(context.window.__xuanMobileReplyObserver.items.has("fixture_task_0001"), false,
+    "超限正文必须释放并等待只读日志补齐");
   observer([], "fixtureBinding", 15000);
-  dispatch("item/agentMessage/delta", { threadId: "fixture_task_0001", itemId: "item2", delta: "退出后不上传" });
-  assert.equal(emitted.length, 3);
+  dispatch("item/agentMessage/delta", { threadId: "fixture_task_0001", itemId: "item3", delta: "退出后不上传" });
+  assert.equal(emitted.length, 4);
   context.window.__xuanMobileReplyObserver.dispose();
   assert.equal(listeners.size, 0);
   assert.equal(timers.size, 0);

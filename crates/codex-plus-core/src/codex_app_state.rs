@@ -166,6 +166,68 @@ pub fn sync_app_state_after_provider_switch_nonfatal(home: &Path, source: &str) 
     }
 }
 
+pub fn workspace_roots(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let Some(state) = load_global_state(home)? else {
+        return Ok(Vec::new());
+    };
+    let mut candidates = Vec::new();
+    for key in WORKSPACE_PATH_ARRAY_KEYS {
+        if let Some(value) = state.get(*key) {
+            collect_workspace_path_strings(value, &mut candidates);
+        }
+    }
+    if let Some(value) = state.get(ACTIVE_WORKSPACE_ROOTS_KEY) {
+        collect_workspace_path_strings(value, &mut candidates);
+    }
+    for key in WORKSPACE_PATH_MAP_KEYS {
+        if let Some(value) = state.get(*key).and_then(Value::as_object) {
+            candidates.extend(value.keys().cloned());
+        }
+    }
+    for key in THREAD_STATE_MAP_KEYS {
+        if let Some(value) = state.get(*key) {
+            collect_workspace_path_strings(value, &mut candidates);
+        }
+    }
+
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        let path = PathBuf::from(candidate);
+        if !path.is_absolute() || !path.is_dir() {
+            continue;
+        }
+        let canonical = fs::canonicalize(&path).unwrap_or(path);
+        let key = if cfg!(windows) {
+            canonical.to_string_lossy().to_lowercase()
+        } else {
+            canonical.to_string_lossy().to_string()
+        };
+        if seen.insert(key) {
+            roots.push(canonical);
+        }
+    }
+    roots.sort_by(|left, right| {
+        left.to_string_lossy()
+            .to_lowercase()
+            .cmp(&right.to_string_lossy().to_lowercase())
+    });
+    Ok(roots)
+}
+
+fn collect_workspace_path_strings(value: &Value, paths: &mut Vec<String>) {
+    match value {
+        Value::String(value) => paths.push(value.clone()),
+        Value::Array(values) => values
+            .iter()
+            .for_each(|value| collect_workspace_path_strings(value, paths)),
+        Value::Object(values) => values
+            .values()
+            .for_each(|value| collect_workspace_path_strings(value, paths)),
+        _ => {}
+    }
+}
+
 fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
     let path = state_path(home);
     if !path.exists() {

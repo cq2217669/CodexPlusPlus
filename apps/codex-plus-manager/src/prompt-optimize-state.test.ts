@@ -18,6 +18,7 @@ type PromptOptimizeStateApi = {
   ): boolean;
   clearSnapshot(state: PromptOptimizeState): void;
   needsRestoreConfirmation(state: PromptOptimizeState, currentText: string): boolean;
+  shouldClearSentSnapshot(state: PromptOptimizeState, currentText: string): boolean;
 };
 
 type PromptOptimizeSaveApi = {
@@ -31,6 +32,12 @@ type PromptOptimizeContextApi = {
     maxChars: number,
   ): Array<{ userText?: string; assistantText?: string }>;
   shouldIncludeProjectMap(draft: string, style: string): boolean;
+};
+
+type PromptOptimizeWriteResult = {
+  ok: boolean;
+  clipboard?: boolean;
+  superseded?: boolean;
 };
 
 async function loadPromptOptimizeState(): Promise<PromptOptimizeStateApi> {
@@ -67,6 +74,62 @@ async function loadPromptOptimizeContext(): Promise<PromptOptimizeContextApi> {
   assert.ok(start >= 0 && end > start, "prompt optimize context factory should be present");
   const factory = source.slice(start, end).replace(/^  /m, "");
   return Function(`${factory}\nreturn promptOptimizeContext;`)() as PromptOptimizeContextApi;
+}
+
+async function loadPromptOptimizeWriteApi(options?: { replaceAfterWrite?: boolean }) {
+  const source = await readFile(
+    new URL("../../../assets/inject/prompt-optimize-inject.js", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("  function readComposerText(input) {");
+  const end = source.indexOf("\n\n  function showToast(", start);
+  assert.ok(start >= 0 && end > start, "prompt optimize write helpers should be present");
+
+  class MockElement {
+    isConnected = true;
+    innerText = "";
+    textContent = "";
+    focus() {}
+    dispatchEvent() { return true; }
+  }
+  class MockTextArea extends MockElement {
+    value = "润色前";
+  }
+  class MockInput extends MockTextArea {}
+  const original = new MockTextArea();
+  let active: MockTextArea = original;
+  const clipboardWrites: string[] = [];
+  const runtime = { writeToken: 0 };
+  const window = {
+    requestAnimationFrame(callback: () => void) { setTimeout(callback, 0); },
+    setTimeout,
+    getSelection() { return null; },
+  };
+  const findComposerInput = () => active;
+  const dispatchInputEvents = (_element: MockTextArea) => {
+    if (!options?.replaceAfterWrite) return;
+    const replacement = new MockTextArea();
+    replacement.value = original.value;
+    original.isConnected = false;
+    active = replacement;
+  };
+  const normalizeText = (value: unknown) => String(value || "").replace(/\r\n/g, "\n");
+  const navigator = { clipboard: { async writeText(value: string) { clipboardWrites.push(value); } } };
+  const helperSource = source
+    .slice(start, end)
+    .replace(/^  /gm, "")
+    .replace(/function dispatchInputEvents\(element\) \{[\s\S]*?\n\}/, "");
+  const write = Function(
+    "runtime", "window", "navigator", "findComposerInput", "normalizeText",
+    "HTMLElement", "HTMLTextAreaElement", "HTMLInputElement", "InputEvent", "Event", "document",
+    "dispatchInputEvents",
+    `${helperSource}\nreturn writeComposerTextWithFallback;`,
+  )(
+    runtime, window, navigator, findComposerInput, normalizeText,
+    MockElement, MockTextArea, MockInput, class {}, class {}, {}, dispatchInputEvents,
+  ) as (text: string, input: MockTextArea) => Promise<PromptOptimizeWriteResult>;
+
+  return { write, original, clipboardWrites };
 }
 
 describe("prompt optimize state", () => {
@@ -206,6 +269,16 @@ describe("prompt optimize state", () => {
     assert.equal(stateApi.needsRestoreConfirmation(state, "润色后，继续编辑"), true);
   });
 
+  it("clears the snapshot only after a sent draft leaves the composer", async () => {
+    const stateApi = await loadPromptOptimizeState();
+    const state = stateApi.create();
+    stateApi.saveSnapshotIfApplied(state, "润色前", "润色后", true);
+
+    assert.equal(stateApi.shouldClearSentSnapshot(state, "润色后"), false);
+    assert.equal(stateApi.shouldClearSentSnapshot(state, ""), true);
+    assert.equal(stateApi.shouldClearSentSnapshot(state, "下一条草稿"), true);
+  });
+
   it("accepts a successful settings payload that has no status field", async () => {
     const saveApi = await loadPromptOptimizeSaveApi();
 
@@ -213,6 +286,23 @@ describe("prompt optimize state", () => {
     assert.equal(saveApi.isSuccessfulSettingsSave({ status: "ok" }), true);
     assert.equal(saveApi.isSuccessfulSettingsSave({ status: "failed" }), false);
     assert.equal(saveApi.isSuccessfulSettingsSave({ error: "bridge timeout" }), false);
+  });
+
+  it("does not copy when the composer write is confirmed", async () => {
+    const { write, original, clipboardWrites } = await loadPromptOptimizeWriteApi();
+
+    assert.deepEqual(await write("润色后", original), { ok: true });
+    assert.equal(original.value, "润色后");
+    assert.deepEqual(clipboardWrites, []);
+  });
+
+  it("confirms a write through the replacement composer node", async () => {
+    const { write, original, clipboardWrites } = await loadPromptOptimizeWriteApi({
+      replaceAfterWrite: true,
+    });
+
+    assert.deepEqual(await write("润色后", original), { ok: true });
+    assert.deepEqual(clipboardWrites, []);
   });
 });
 

@@ -118,6 +118,21 @@ describe("润色按钮定位", () => {
     assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 1);
   });
 
+  it("追问长内容时固定在发送控件组内", async () => {
+    const fixture = await setup();
+    fixture.composer.setAttribute("data-composer-placement", "thread");
+    const sendGroup = new TestElement();
+    fixture.toolbar.insertBefore(sendGroup, fixture.send);
+    sendGroup.appendChild(fixture.send);
+
+    fixture.ensureButton();
+
+    assert.deepEqual(fixture.toolbar.children, [fixture.model, sendGroup]);
+    assert.deepEqual(sendGroup.children.map((child) => child.tagName), ["SPAN", "BUTTON"]);
+    assert.equal(sendGroup.firstChild?.nextSibling, fixture.send);
+    assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 1);
+  });
+
   it("支持输入框到操作栏之间超过六层包装", async () => {
     const fixture = await setup();
     for (let depth = 0; depth < 8; depth += 1) {

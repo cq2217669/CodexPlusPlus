@@ -14,8 +14,8 @@
  * self-destroys when the feature is disabled or the bridge is missing.
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.0";
-  const INSTANCE_REVISION = "official-2026-09-v8";
+  const SCRIPT_VERSION = "1.1.1";
+  const INSTANCE_REVISION = "official-2026-09-v12";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -91,7 +91,17 @@
       return state.mode === "optimized" && state.optimizedText !== currentText;
     }
 
-    return { create, saveSnapshotIfApplied, clearSnapshot, needsRestoreConfirmation };
+    function shouldClearSentSnapshot(state, currentText) {
+      return state.mode === "optimized" && state.optimizedText !== currentText;
+    }
+
+    return {
+      create,
+      saveSnapshotIfApplied,
+      clearSnapshot,
+      needsRestoreConfirmation,
+      shouldClearSentSnapshot,
+    };
   })();
 
   const promptOptimizeContext = (() => {
@@ -134,6 +144,10 @@
     toastTimer: 0,
     resizeHandler: null,
     shortcutHandler: null,
+    sendClickHandler: null,
+    sendKeyHandler: null,
+    sendSubmitHandler: null,
+    sendCleanupToken: 0,
     disposed: false,
     loading: false,
     epoch: 0,
@@ -183,6 +197,19 @@
 
   function clearThreadOptimized(state) {
     promptOptimizeState.clearSnapshot(state || getThreadState());
+  }
+
+  function clearSentThreadOptimized(threadKey, state, optimizedText) {
+    if (
+      !state ||
+      state.mode !== "optimized" ||
+      state.optimizedText !== optimizedText ||
+      threadState[threadKey] !== state
+    ) {
+      return;
+    }
+    clearThreadOptimized(state);
+    refreshButtonAppearance();
   }
 
   function bridgeCall(path, payload) {
@@ -299,6 +326,20 @@
     return /^(?:(?:send|submit|stop|run)(?:\s+(?:message|prompt|response|generating|generation))?|(?:提交|发送|停止|执行)(?:消息|提示|提示词|生成|回答)?)(?:\s*[（(].*[）)])?$/i.test(text.trim());
   }
 
+  function isMessageSendLikeLabel(text) {
+    return /^(?:(?:send|submit|run)(?:\s+(?:message|prompt|response|generation))?|(?:提交|发送|执行)(?:消息|提示|提示词|生成|回答)?)(?:\s*[（(].*[）)])?$/i.test(text.trim());
+  }
+
+  function isThreadComposer(input) {
+    let node = input;
+    for (let depth = 0; node && node !== document.body && depth < 20; depth += 1, node = node.parentNode) {
+      if (!(node instanceof Element)) continue;
+      if (node.getAttribute("data-composer-placement") === "thread") return true;
+      if (node.hasAttribute("data-thread-scroll-footer")) return true;
+    }
+    return false;
+  }
+
   function isModelLikeLabel(text) {
     const label = text.trim();
     if (!label) return false;
@@ -386,6 +427,86 @@
     window.addEventListener("keydown", runtime.shortcutHandler, true);
   }
 
+  function buttonBelongsToComposer(button, input) {
+    if (!(button instanceof HTMLElement) || !(input instanceof HTMLElement)) return false;
+    let node = button;
+    for (let depth = 0; node && node !== document.body && depth < 12; depth += 1, node = node.parentElement) {
+      if (node.contains(input)) return true;
+      if (node.tagName === "FORM" || node.tagName === "MAIN") break;
+    }
+    return false;
+  }
+
+  function scheduleSentDraftCleanup() {
+    const input = findComposerInput();
+    const threadKey = currentThreadKey();
+    const state = threadState[threadKey];
+    if (!input || !state || state.mode !== "optimized" || state.optimizedText == null) return;
+
+    const optimizedText = state.optimizedText;
+    const cleanupToken = ++runtime.sendCleanupToken;
+    const delays = [0, 40, 120, 260, 500];
+    const confirm = (attempt) => {
+      if (runtime.disposed || cleanupToken !== runtime.sendCleanupToken) return;
+      if (currentThreadKey() !== threadKey) return;
+      const activeInput = findComposerInput();
+      const currentText = normalizeText(readComposerText(activeInput));
+      if (promptOptimizeState.shouldClearSentSnapshot(state, currentText)) {
+        clearSentThreadOptimized(threadKey, state, optimizedText);
+        return;
+      }
+      if (attempt + 1 < delays.length) {
+        window.setTimeout(() => confirm(attempt + 1), delays[attempt + 1]);
+      }
+    };
+    window.setTimeout(() => confirm(0), delays[0]);
+  }
+
+  function onComposerSendClick(event) {
+    if (runtime.disposed || event.defaultPrevented || !(event.target instanceof Element)) return;
+    const button = event.target.closest("button");
+    const label = button && [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
+      .some((text) => isMessageSendLikeLabel(normalizeText(text)));
+    if (label && buttonBelongsToComposer(button, findComposerInput())) scheduleSentDraftCleanup();
+  }
+
+  function onComposerSendKeydown(event) {
+    if (
+      runtime.disposed ||
+      event.defaultPrevented ||
+      event.key !== "Enter" ||
+      event.repeat ||
+      event.isComposing ||
+      event.keyCode === 229 ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      !eventTargetsComposer(event)
+    ) {
+      return;
+    }
+    scheduleSentDraftCleanup();
+  }
+
+  function onComposerSubmit(event) {
+    if (runtime.disposed || event.defaultPrevented) return;
+    const input = findComposerInput();
+    if (input instanceof HTMLElement && event.target instanceof Element && event.target.contains(input)) {
+      scheduleSentDraftCleanup();
+    }
+  }
+
+  function installComposerSendCleanup() {
+    if (runtime.sendClickHandler) return;
+    runtime.sendClickHandler = onComposerSendClick;
+    runtime.sendKeyHandler = onComposerSendKeydown;
+    runtime.sendSubmitHandler = onComposerSubmit;
+    window.addEventListener("click", runtime.sendClickHandler, true);
+    window.addEventListener("keydown", runtime.sendKeyHandler, true);
+    window.addEventListener("submit", runtime.sendSubmitHandler, true);
+  }
+
   function readComposerText(input) {
     if (!(input instanceof HTMLElement)) return "";
     if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
@@ -456,23 +577,51 @@
     return { ok: true, token, input, next };
   }
 
-  async function writeComposerTextWithFallback(text, input) {
-    const writeToken = (runtime.writeToken = (runtime.writeToken || 0) + 1);
-    const result = writeComposerText(text, input);
-    if (result.ok) {
-      await new Promise((resolve) => {
-        if (typeof window.requestAnimationFrame !== "function") {
-          window.setTimeout(resolve, 0);
-          return;
-        }
-        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
-      });
-      if (writeToken === runtime.writeToken && result.input.isConnected) {
-        const verified = normalizeText(readComposerText(result.input));
-        if (verified === result.next || verified.trimEnd() === result.next.trimEnd()) {
-          return { ok: true };
-        }
+  function composerTextMatches(input, expected) {
+    if (!(input instanceof HTMLElement)) return false;
+    const actual = normalizeText(readComposerText(input));
+    return actual === expected || actual.trimEnd() === expected.trimEnd();
+  }
+
+  function waitForComposerPaint() {
+    return new Promise((resolve) => {
+      if (typeof window.requestAnimationFrame !== "function") {
+        window.setTimeout(resolve, 16);
+        return;
       }
+      window.requestAnimationFrame(resolve);
+    });
+  }
+
+  async function confirmComposerWrite(result) {
+    const delays = [0, 0, 24, 48, 80];
+    for (const delay of delays) {
+      if (result.token !== runtime.writeToken) return false;
+      if (delay > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+      } else {
+        await waitForComposerPaint();
+      }
+      if (result.token !== runtime.writeToken) return false;
+
+      const activeInput = findComposerInput();
+      if (composerTextMatches(activeInput, result.next)) return true;
+      if (
+        activeInput !== result.input &&
+        result.input.isConnected &&
+        composerTextMatches(result.input, result.next)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function writeComposerTextWithFallback(text, input) {
+    const result = writeComposerText(text, input);
+    if (result.ok && (await confirmComposerWrite(result))) return { ok: true };
+    if (result.ok && result.token !== runtime.writeToken) {
+      return { ok: false, superseded: true };
     }
     try {
       await navigator.clipboard.writeText(normalizeText(text));
@@ -621,6 +770,11 @@
           .some((text) => isSendLikeLabel(normalizeText(text)));
       });
       if (send) {
+        // 追问输入区会随长文本切换自适应布局。把按钮放进固定的发送控件组，
+        // 避免它作为模型栏最左项被推出可视区域；新建任务仍保留原位置。
+        if (isThreadComposer(input)) {
+          return { node: send.parentElement || send.parentNode, before: send };
+        }
         const modelSelector = modelSelectorBeforeSend(clickables, send);
         const modelAnchor = modelControlAnchor(modelSelector, send);
         if (modelAnchor) {
@@ -681,7 +835,13 @@
     if (runtime.toastTimer) window.clearTimeout(runtime.toastTimer);
     if (runtime.resizeHandler) window.removeEventListener("resize", runtime.resizeHandler);
     if (runtime.shortcutHandler) window.removeEventListener("keydown", runtime.shortcutHandler, true);
+    if (runtime.sendClickHandler) window.removeEventListener("click", runtime.sendClickHandler, true);
+    if (runtime.sendKeyHandler) window.removeEventListener("keydown", runtime.sendKeyHandler, true);
+    if (runtime.sendSubmitHandler) window.removeEventListener("submit", runtime.sendSubmitHandler, true);
     runtime.shortcutHandler = null;
+    runtime.sendClickHandler = null;
+    runtime.sendKeyHandler = null;
+    runtime.sendSubmitHandler = null;
     runtime.disposed = true;
     if (window[API_KEY] === api) window[API_KEY] = undefined;
   }
@@ -1012,6 +1172,7 @@
       return;
     }
     installPromptOptimizeShortcut();
+    installComposerSendCleanup();
     installStyle();
     ensureButton();
   }

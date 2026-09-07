@@ -44,6 +44,12 @@ pub(super) struct Store {
     pub state: SavedState,
 }
 
+pub(super) struct CommandReceipt {
+    pub payload_digest: String,
+    pub status: String,
+    pub error_code: Option<String>,
+}
+
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
@@ -56,6 +62,13 @@ impl Store {
              CREATE TABLE IF NOT EXISTS mobile_identity (
                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                protected_key BLOB NOT NULL, state TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS mobile_command_receipts (
+               command_id TEXT PRIMARY KEY,
+               payload_digest TEXT NOT NULL,
+               status TEXT NOT NULL,
+               error_code TEXT,
+               created_at INTEGER NOT NULL
              );",
         )?;
         let saved: Option<(Vec<u8>, String)> = db
@@ -147,6 +160,49 @@ impl Store {
             ),
         ]
     }
+
+    pub fn command_receipt(&self, command_id: &str) -> anyhow::Result<Option<CommandReceipt>> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT payload_digest, status, error_code FROM mobile_command_receipts
+                 WHERE command_id=?1",
+                [command_id],
+                |row| {
+                    Ok(CommandReceipt {
+                        payload_digest: row.get(0)?,
+                        status: row.get(1)?,
+                        error_code: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn save_command_receipt(
+        &mut self,
+        command_id: &str,
+        payload_digest: &str,
+        status: &str,
+        error_code: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let tx = self.db.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO mobile_command_receipts
+             (command_id, payload_digest, status, error_code, created_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            rusqlite::params![command_id, payload_digest, status, error_code],
+        )?;
+        tx.execute(
+            "DELETE FROM mobile_command_receipts WHERE command_id IN (
+               SELECT command_id FROM mobile_command_receipts
+               ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 256
+             )",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -235,5 +291,34 @@ mod tests {
             serde_json::from_str(r#"{"enabled":true,"selected":["test_task_00000001"]}"#).unwrap();
         assert!(state.auto_sync);
         assert!(state.selected.contains("test_task_00000001"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn command_receipts_survive_restart_without_storing_payload_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("remote.sqlite");
+        let mut store = Store::open(&path).unwrap();
+        store
+            .save_command_receipt("command_receipt_0001", &"a".repeat(64), "completed", None)
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let receipt = store
+            .command_receipt("command_receipt_0001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.payload_digest, "a".repeat(64));
+        assert_eq!(receipt.status, "completed");
+        assert!(receipt.error_code.is_none());
+        let schema: String = store
+            .db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='mobile_command_receipts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!schema.contains("payload_text"));
     }
 }

@@ -264,6 +264,7 @@ type BackendSettings = {
   codexAppStepwiseMaxOutputTokens: number;
   codexAppStepwiseTimeoutMs: number;
   codexAppPromptOptimizeEnabled: boolean;
+  codexAppWorkspaceSearchEnabled: boolean;
   codexAppPromptOptimizeRelayId: string;
   codexAppRelayBalanceEnabled: boolean;
   codexAppRelayBalanceProvider: string;
@@ -934,6 +935,7 @@ const defaultSettings: BackendSettings = {
   codexAppStepwiseMaxOutputTokens: 500,
   codexAppStepwiseTimeoutMs: 8000,
   codexAppPromptOptimizeEnabled: false,
+  codexAppWorkspaceSearchEnabled: false,
   codexAppPromptOptimizeRelayId: "",
   codexAppRelayBalanceEnabled: false,
   codexAppRelayBalanceProvider: "",
@@ -4430,6 +4432,7 @@ function EnhanceScreen({
               <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
               <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
               <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
+              <FeatureToggle title={t("工作区全文搜索")} detail={t("使用 Ctrl+Shift+F 搜索当前工作区文件内容。启停后需重启轩++生效。")} checked={form.codexAppWorkspaceSearchEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppWorkspaceSearchEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("悬浮球")} detail={t("控制下一步建议与回答大纲。")}>
               <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppStepwiseEnabled", value)} />
