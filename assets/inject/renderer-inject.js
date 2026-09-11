@@ -6966,7 +6966,6 @@
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
-      installCodexMobileRemoteCommandClient(client);
       return true;
     }
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
@@ -7009,26 +7008,74 @@
       return patchAppServerModelResult(requestMethod, result);
     };
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
-    installCodexMobileRemoteCommandClient(client);
     return true;
   }
 
-  function installCodexMobileRemoteCommandClient(client) {
-    if (!client || typeof client.sendRequest !== "function") return false;
-    window.__codexPlusMobileRemoteCommandClients = window.__codexPlusMobileRemoteCommandClients || [];
-    const clients = window.__codexPlusMobileRemoteCommandClients;
-    if (!clients.includes(client)) clients.push(client);
-    while (clients.length > 8) clients.shift();
+  const codexMobileRemoteRequestTimeoutMs = 30000;
+  const codexMobileRemoteNameTimeoutMs = 8000;
+
+  function codexMobileRemoteRequestError(method, error) {
+    const message = String(error?.message || error || `Codex ${method} failed`);
+    return new Error(`${method}: ${message}`);
+  }
+
+  function callCodexElectronRequest(method, params, timeoutMs = codexMobileRemoteRequestTimeoutMs) {
+    const bridge = window.electronBridge;
+    if (!bridge || typeof bridge.sendMessageFromView !== "function") {
+      return Promise.reject(new Error("Codex renderer 命令桥不可用"));
+    }
+    const requestId = typeof crypto?.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `xuan-mobile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return new Promise((resolve, reject) => {
+      let timeout = 0;
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        window.removeEventListener("message", onMessage);
+      };
+      const onMessage = (event) => {
+        const message = event?.data;
+        if (!message || message.type !== "mcp-response" || message.hostId !== "local"
+            || message.message?.id !== requestId) return;
+        cleanup();
+        if (message.message?.error) {
+          reject(codexMobileRemoteRequestError(method, message.message.error));
+          return;
+        }
+        resolve(message.message?.result ?? null);
+      };
+      window.addEventListener("message", onMessage);
+      timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error(`Codex ${method} timed out`));
+      }, timeoutMs);
+      const message = {
+        type: "mcp-request",
+        request: { id: requestId, method, params },
+        hostId: "local",
+        priority: "critical",
+        source: "remote_control",
+        timeoutMs,
+        expiresAtMs: Date.now() + timeoutMs,
+      };
+      Promise.resolve(bridge.sendMessageFromView(message)).catch((error) => {
+        cleanup();
+        reject(codexMobileRemoteRequestError(method, error));
+      });
+    });
+  }
+
+  function installCodexMobileRemoteCommandElectronBridge() {
+    const bridge = window.electronBridge;
+    if (!bridge || typeof bridge.sendMessageFromView !== "function") return false;
     window.__codexPlusMobileRemoteCommand = async (request) => {
       const commandType = String(request?.commandType || "");
       const threadId = String(request?.threadId || "");
       const turnId = String(request?.turnId || "");
       const clientRequestId = String(request?.clientRequestId || "");
       const text = String(request?.text || "");
-      const candidate = clients[clients.length - 1];
-      if (!candidate) throw new Error("Codex app-server 命令客户端不可用");
       if (commandType === "create_task") {
-        const started = await candidate.sendRequest("thread/start", {
+        const started = await callCodexElectronRequest("thread/start", {
           cwd: String(request?.cwd || ""),
           model: String(request?.model || ""),
           modelProvider: String(request?.provider || ""),
@@ -7038,7 +7085,7 @@
         });
         const createdThreadId = String(started?.thread?.id || started?.threadId || started?.id || "");
         if (!createdThreadId) throw new Error("新建任务未返回任务标识");
-        const turn = await candidate.sendRequest("turn/start", {
+        const turn = await callCodexElectronRequest("turn/start", {
           threadId: createdThreadId,
           clientUserMessageId: `xuan-mobile-${clientRequestId}`,
           input: [{ type: "text", text, text_elements: [] }],
@@ -7048,15 +7095,19 @@
         const name = String(request?.name || "").trim();
         if (name) {
           try {
-            await candidate.sendRequest("thread/name/set", { threadId: createdThreadId, name });
+            await callCodexElectronRequest(
+              "thread/name/set",
+              { threadId: createdThreadId, name },
+              codexMobileRemoteNameTimeoutMs
+            );
           } catch {
           }
         }
         return { status: "completed", threadId: createdThreadId, turnId: createdTurnId };
       }
       if (commandType === "start_task" || commandType === "send_input") {
-        await candidate.sendRequest("thread/resume", { threadId, persistExtendedHistory: true });
-        const turn = await candidate.sendRequest("turn/start", {
+        await callCodexElectronRequest("thread/resume", { threadId, persistExtendedHistory: true });
+        const turn = await callCodexElectronRequest("turn/start", {
           threadId,
           clientUserMessageId: `xuan-mobile-${clientRequestId}`,
           input: [{ type: "text", text, text_elements: [] }],
@@ -7067,13 +7118,15 @@
       }
       if (commandType === "stop_task") {
         if (!turnId) throw new Error("当前任务缺少可停止的回合标识");
-        await candidate.sendRequest("turn/interrupt", { threadId, turnId });
+        await callCodexElectronRequest("turn/interrupt", { threadId, turnId });
         return { status: "completed", threadId, turnId };
       }
       return { status: "rejected", errorCode: "unsupported_operation" };
     };
     return true;
   }
+
+  installCodexMobileRemoteCommandElectronBridge();
 
   const appServerModelRequestPatchMaxMisses = 8;
   let appServerModelRequestPatchMissCount = 0;

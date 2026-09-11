@@ -68,6 +68,8 @@ async function setup() {
   composer.setAttribute("aria-label", "composer-surface");
   const input = new TestElement("textarea");
   const toolbar = new TestElement();
+  const access = new TestElement("button", "完全访问");
+  access.rect = { left: 20, right: 90, top: 100, bottom: 130 };
   const model = new TestElement("button", "6 Astra 高");
   model.rect = { left: 100, right: 200, top: 100, bottom: 130 };
   const send = new TestElement("button");
@@ -76,6 +78,7 @@ async function setup() {
   body.appendChild(composer);
   composer.appendChild(input);
   composer.appendChild(toolbar);
+  toolbar.appendChild(access);
   toolbar.appendChild(model);
   toolbar.appendChild(send);
   const document = {
@@ -98,27 +101,29 @@ async function setup() {
       return button;
     };
     ${extract("  function isSendLikeLabel(", "  function findComposerInput(")}
+    ${extract("  function buttonBelongsToComposer(", "  function scheduleSentDraftCleanup(")}
     ${extract("  function composerInsertAnchor(", "  function destroyAll(")}
-    return { composerInsertAnchor, ensureButton, isSendLikeLabel };
+    return { composerInsertAnchor, ensureButton, isAccessPermissionLikeLabel, isSendLikeLabel };
   `)(TestElement, TestElement, document, input) as {
-    composerInsertAnchor(input: TestElement): { node: TestElement; before: TestElement } | null;
+    composerInsertAnchor(input: TestElement): { node: TestElement; before: TestElement | null } | null;
     ensureButton(): void;
+    isAccessPermissionLikeLabel(text: string): boolean;
     isSendLikeLabel(text: string): boolean;
   };
-  return { ...api, body, composer, input, toolbar, model, send };
+  return { ...api, body, composer, input, toolbar, access, model, send };
 }
 
 describe("润色按钮定位", () => {
-  it("带 composer 标签的容器仍优先定位到底栏模型左侧", async () => {
+  it("固定在访问权限控件右侧", async () => {
     const fixture = await setup();
     fixture.ensureButton();
     assert.equal(fixture.composer.firstChild, fixture.input);
-    assert.deepEqual(fixture.toolbar.children.map((child) => child.tagName), ["SPAN", "BUTTON", "BUTTON"]);
-    assert.equal(fixture.toolbar.firstChild?.nextSibling, fixture.model);
+    assert.deepEqual(fixture.toolbar.children.map((child) => child.tagName), ["BUTTON", "SPAN", "BUTTON", "BUTTON"]);
+    assert.equal(fixture.access.nextSibling?.nextSibling, fixture.model);
     assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 1);
   });
 
-  it("追问长内容时固定在发送控件组内", async () => {
+  it("追问长内容时仍固定在访问权限控件右侧", async () => {
     const fixture = await setup();
     fixture.composer.setAttribute("data-composer-placement", "thread");
     const sendGroup = new TestElement();
@@ -127,9 +132,9 @@ describe("润色按钮定位", () => {
 
     fixture.ensureButton();
 
-    assert.deepEqual(fixture.toolbar.children, [fixture.model, sendGroup]);
-    assert.deepEqual(sendGroup.children.map((child) => child.tagName), ["SPAN", "BUTTON"]);
-    assert.equal(sendGroup.firstChild?.nextSibling, fixture.send);
+    assert.equal(fixture.toolbar.children[0], fixture.access);
+    assert.equal(fixture.access.nextSibling?.nextSibling, fixture.model);
+    assert.deepEqual(sendGroup.children, [fixture.send]);
     assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 1);
   });
 
@@ -145,29 +150,36 @@ describe("润色按钮定位", () => {
     });
   });
 
-  it("模型名称无法识别时仍留在底栏发送按钮之前", async () => {
+  it("模型名称变化不会影响访问权限旁的固定位置", async () => {
     const fixture = await setup();
     fixture.model.textContent = "custom-text";
     fixture.ensureButton();
-    assert.equal(fixture.toolbar.children[0], fixture.model);
-    assert.equal(fixture.toolbar.children[1].nextSibling, fixture.send);
+    assert.equal(fixture.toolbar.children[0], fixture.access);
+    assert.equal(fixture.access.nextSibling?.nextSibling, fixture.model);
   });
 
-  it("输入为空时不把按钮插进纵向模型控件", async () => {
+  it("访问权限被额外包装时仍插在其右侧", async () => {
     const fixture = await setup();
-    const modelControl = new TestElement();
-    fixture.toolbar.insertBefore(modelControl, fixture.model);
-    modelControl.appendChild(fixture.model);
+    const accessControl = new TestElement();
+    fixture.toolbar.insertBefore(accessControl, fixture.access);
+    accessControl.appendChild(fixture.access);
     fixture.ensureButton();
-    assert.deepEqual(fixture.toolbar.children.map((child) => child.tagName), ["SPAN", "DIV", "BUTTON"]);
-    assert.equal(fixture.toolbar.firstChild?.nextSibling, modelControl);
-    assert.equal(modelControl.firstChild, fixture.model);
+    assert.deepEqual(fixture.toolbar.children.map((child) => child.tagName), ["DIV", "SPAN", "BUTTON", "BUTTON"]);
+    assert.equal(fixture.toolbar.children[1].nextSibling, fixture.model);
+    assert.equal(accessControl.firstChild, fixture.access);
   });
 
-  it("不把其他行的模型按钮当作底栏锚点", async () => {
+  it("不把其他行的访问权限控件当作底栏锚点", async () => {
     const fixture = await setup();
-    fixture.model.rect = { left: 100, right: 200, top: 40, bottom: 70 };
-    assert.equal(fixture.composerInsertAnchor(fixture.input)?.before, fixture.send);
+    fixture.access.rect = { left: 20, right: 90, top: 40, bottom: 70 };
+    assert.equal(fixture.composerInsertAnchor(fixture.input), null);
+  });
+
+  it("访问权限控件不可用时不回退到模型或发送按钮", async () => {
+    const fixture = await setup();
+    fixture.access.textContent = "custom-control";
+    fixture.ensureButton();
+    assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 0);
   });
 
   it("操作栏延迟挂载时等待，不在输入区顶部插入悬浮按钮", async () => {
@@ -177,33 +189,43 @@ describe("润色按钮定位", () => {
     assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 0);
     fixture.composer.appendChild(fixture.toolbar);
     fixture.ensureButton();
-    assert.equal(fixture.toolbar.firstChild?.nextSibling, fixture.model);
+    assert.equal(fixture.access.nextSibling?.nextSibling, fixture.model);
   });
 
   it("重新归位仍可见的错位按钮，后续检查不重复创建", async () => {
     const fixture = await setup();
     fixture.ensureButton();
-    const misplaced = fixture.toolbar.firstChild!;
+    const misplaced = fixture.access.nextSibling!;
     fixture.composer.insertBefore(misplaced, fixture.input);
     fixture.ensureButton();
-    const placed = fixture.toolbar.firstChild;
+    const placed = fixture.access.nextSibling;
     assert.notEqual(placed, misplaced);
     assert.equal(placed?.nextSibling, fixture.model);
     fixture.ensureButton();
-    assert.equal(fixture.toolbar.firstChild, placed);
+    assert.equal(fixture.access.nextSibling, placed);
     assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 1);
     assert.equal(fixture.body.querySelectorAll(`[${hostAttr}]`).length, 1);
   });
 
-  it("发送控件暂时消失时移除旧按钮，恢复后再挂载", async () => {
+  it("发送控件暂时消失时保留当前输入栏的按钮，恢复后再对齐", async () => {
     const fixture = await setup();
     fixture.ensureButton();
+    const placed = fixture.access.nextSibling;
     fixture.send.remove();
     fixture.ensureButton();
-    assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 0);
+    assert.equal(fixture.body.querySelectorAll(`[${buttonAttr}]`).length, 1);
+    assert.equal(fixture.access.nextSibling, placed);
     fixture.toolbar.appendChild(fixture.send);
     fixture.ensureButton();
-    assert.equal(fixture.toolbar.firstChild?.nextSibling, fixture.model);
+    assert.equal(fixture.access.nextSibling?.nextSibling, fixture.model);
+  });
+
+  it("识别访问权限的中文状态与英文可访问名称", async () => {
+    const fixture = await setup();
+    for (const label of ["完全访问", "访问权限", "需要批准", "只读", "Full access", "Ask for approval", "Read-only", "Access mode"]) {
+      assert.equal(fixture.isAccessPermissionLikeLabel(label), true, label);
+    }
+    assert.equal(fixture.isAccessPermissionLikeLabel("访问设置"), false);
   });
 
   it("识别发送和停止的完整标签，并支持 title 标签", async () => {

@@ -277,17 +277,28 @@ fn stepwise_runtime_bumps_version_when_reinjection_contract_changes() {
 }
 
 #[test]
-fn prompt_optimize_button_is_anchored_before_the_model_selector_with_spacing() {
+fn prompt_optimize_button_is_anchored_after_access_permission_with_spacing() {
     let script = assets::prompt_optimize_script();
 
-    assert!(script.contains("function modelSelectorBeforeSend(clickables, send)"));
+    assert!(script.contains("function isAccessPermissionLikeLabel(text)"));
+    assert!(script.contains("function accessPermissionBeforeSend(clickables, send)"));
+    assert!(script.contains("function controlAfterAnchor(control, send)"));
     assert!(
-        script.contains("return { node: modelSelector.parentElement, before: modelSelector };")
+        script.contains("return { node: commonParent, before: controlBranch.nextSibling };")
     );
-    assert!(
-        script.contains("return { node: send.parentElement || send.parentNode, before: send };")
-    );
+    assert!(script.contains("const accessControl = accessPermissionBeforeSend(clickables, send);"));
+    assert!(script.contains("if (accessAnchor) return accessAnchor;"));
     assert!(script.contains("margin-right:8px"));
+}
+
+#[test]
+fn prompt_optimize_keeps_its_button_during_a_transient_toolbar_rerender() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains(
+        "if (existing && existing.isConnected && buttonBelongsToComposer(existing, input)) {"
+    ));
+    assert!(script.contains("refreshButtonAppearance(existing);"));
 }
 
 #[test]
@@ -297,12 +308,37 @@ fn prompt_optimize_shortcut_is_scoped_to_the_composer_and_cleaned_up() {
     assert!(script.contains("function isPromptOptimizeShortcut(event)"));
     assert!(script.contains("event.isComposing || event.keyCode === 229"));
     assert!(script.contains("return input === target || input.contains(target);"));
+    assert!(script.contains("if (!runtime.loading && !eventTargetsComposer(event)) return;"));
     assert!(
         script.contains("window.addEventListener(\"keydown\", runtime.shortcutHandler, true);")
     );
     assert!(
         script.contains("window.removeEventListener(\"keydown\", runtime.shortcutHandler, true);")
     );
+}
+
+#[test]
+fn prompt_optimize_can_cancel_an_in_flight_run_from_button_or_shortcut() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("loading: \"停止\""));
+    assert!(script.contains("current.disabled = false;"));
+    assert!(script.contains("function cancelOptimize()"));
+    assert!(script.contains("runtime.optimizeToken += 1;"));
+    assert!(script.contains("if (token !== runtime.optimizeToken) return;"));
+    assert!(script.contains("if (runtime.loading) {\n      cancelOptimize();\n      return;\n    }"));
+    assert!(script.contains("cancel: cancelOptimize,"));
+}
+
+#[test]
+fn prompt_optimize_status_is_rendered_inline_with_the_composer() {
+    let script = assets::prompt_optimize_script();
+
+    assert!(script.contains("const composerHost = document.querySelector"));
+    assert!(script.contains("toast.setAttribute(\"role\", \"status\");"));
+    assert!(script.contains("composerHost.appendChild(toast);"));
+    assert!(script.contains(".cpo-toast{box-sizing:border-box;display:inline-block"));
+    assert!(!script.contains(".cpo-toast{all:initial;position:fixed"));
 }
 
 #[test]
@@ -320,7 +356,7 @@ fn prompt_optimize_settings_panel_tracks_client_theme_and_accepts_settings_paylo
 fn prompt_optimize_sends_bounded_conversation_and_conditional_project_context() {
     let script = assets::prompt_optimize_script();
 
-    assert!(script.contains("const SCRIPT_VERSION = \"1.1.0\";"));
+    assert!(script.contains("const SCRIPT_VERSION = \"1.1.5\";"));
     assert!(script.contains("function collectRecentConversationTurns()"));
     assert!(script.contains("const recentTurns = collectRecentConversationTurns();"));
     assert!(script.contains("sessionId: currentSessionId()"));
@@ -381,6 +417,12 @@ fn workspace_search_runtime_is_opt_in() {
     let enabled = assets::injection_script_with_settings(57321, &settings);
     assert!(enabled.contains("__codexPlusWorkspaceSearch"));
     assert!(enabled.contains("/workspace-search/start"));
+    assert!(enabled.contains("/workspace-search/current-root"));
+    assert!(enabled.contains("/workspace-search/projects"));
+    assert!(enabled.contains("data-ws-project"));
+    assert!(enabled.contains("setSelectedProject"));
+    assert!(enabled.contains("workspacePathFromReactAncestors"));
+    assert!(enabled.contains("fiber = fiber.return;"));
     assert!(enabled.contains("Ctrl+Shift+F"));
 
     let disabled_by_master = BackendSettings {

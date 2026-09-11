@@ -3,10 +3,14 @@ import { CommandStatus, CommandType, utf8ByteLength } from './RemoteModels';
 import { RemoteApiClient, RemoteFailureNotice } from './RemoteApiClient';
 import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
 import { RemoteTaskSnapshot } from './TaskSyncCoordinator';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const CONTRACT_VERSION = '1.5';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
+const COMMAND_TTL_MS = 9 * 60 * 1000;
+const LOG_DOMAIN = 0xD002021;
+const LOG_TAG = 'RemoteCommand';
 
 interface CommandPayload {
   text?: string;
@@ -73,9 +77,13 @@ export class RemoteCommandCoordinator {
     if (initialTextLength < 1 || initialTextLength > 8192) {
       throw new Error('第一条指令必须为 1–8192 个 UTF-8 字节');
     }
+    const normalizedModelConfigId: string = modelConfigId.trim();
+    if (!DIGEST_PATTERN.test(normalizedModelConfigId)) {
+      throw new Error('当前模型配置标识无效，请刷新电脑配置后重试');
+    }
     return RemoteCommandCoordinator.submit(
       registration, workspaceSource, CommandType.CREATE_TASK,
-      { text: trimmed, initialText: trimmedInitialText, modelConfigId: modelConfigId });
+      { text: trimmed, initialText: trimmedInitialText, modelConfigId: normalizedModelConfigId });
   }
 
   static async submitText(registration: DeviceRegistrationResult, task: RemoteTaskSnapshot,
@@ -182,10 +190,20 @@ export class RemoteCommandCoordinator {
       remoteTaskId: task.remoteTaskId,
       clientRequestId: clientRequestId,
       expectedStateVersion: task.stateVersion,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      expiresAt: new Date(Date.now() + COMMAND_TTL_MS).toISOString(),
       commandType: commandType,
       payload: payload
     };
+    const modelConfigId: string = payload.modelConfigId ?? '';
+    hilog.info(LOG_DOMAIN, LOG_TAG, '%{public}s', JSON.stringify({
+      event: 'command_submit',
+      commandType: commandType,
+      hasText: payload.text !== undefined,
+      hasInitialText: payload.initialText !== undefined,
+      modelConfigIdLength: modelConfigId.length,
+      modelConfigIdValid: modelConfigId.length === 0 || DIGEST_PATTERN.test(modelConfigId),
+      ttlSeconds: COMMAND_TTL_MS / 1000
+    }));
     const response = await RemoteApiClient.signedPost(
       `/v1/tasks/${task.remoteTaskId}/commands`, request, registration.deviceKeyId) as CommandAcceptedResponse;
     RemoteCommandCoordinator.validateResponse(

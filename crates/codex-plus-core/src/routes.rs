@@ -262,6 +262,14 @@ pub async fn handle_bridge_request(
             ensure_workspace_search_enabled(ctx.settings.get_settings().await)
                 .and_then(|_| crate::workspace_search::roots_response())
         }
+        "/workspace-search/projects" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::projects_response(payload.clone()))
+        }
+        "/workspace-search/current-root" => {
+            ensure_workspace_search_enabled(ctx.settings.get_settings().await)
+                .and_then(|_| crate::workspace_search::current_root_response(payload.clone()))
+        }
         "/workspace-search/start" => {
             ensure_workspace_search_enabled(ctx.settings.get_settings().await)
                 .and_then(|_| crate::workspace_search::start_response(payload.clone()))

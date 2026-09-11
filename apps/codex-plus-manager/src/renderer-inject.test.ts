@@ -1047,31 +1047,55 @@ describe("Stepwise generation mode contracts", () => {
 });
 
 describe("mobile remote command bridge", () => {
-  it("executes only create, text, and stop commands through the app-server client", async () => {
+  it("uses the official Electron request bridge for create, text, and stop commands", async () => {
     const renderer = await readFile(
       new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
       "utf8",
     );
-    const start = renderer.indexOf("  function installCodexMobileRemoteCommandClient(");
+    const start = renderer.indexOf("  const codexMobileRemoteRequestTimeoutMs");
     const end = renderer.indexOf("\n  const appServerModelRequestPatchMaxMisses", start);
     assert.ok(start >= 0 && end > start);
-    const window: Record<string, any> = {};
-    const runtime = new Function(
-      "window",
-      `${renderer.slice(start, end)}; return { installCodexMobileRemoteCommandClient };`,
-    )(window);
+    const listeners = new Set<(event: { data: Record<string, unknown> }) => void>();
     const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    const client = {
-      async sendRequest(method: string, params: Record<string, unknown>) {
-        calls.push({ method, params });
-        if (method === "thread/start") return { thread: { id: "created-thread-0001" } };
-        if (method === "turn/start") return { turn: { id: "accepted-turn-0001" } };
-        return {};
+    const bridgeMessages: Array<Record<string, unknown>> = [];
+    const window: Record<string, any> = {
+      addEventListener(type: string, listener: (event: { data: Record<string, unknown> }) => void) {
+        if (type === "message") listeners.add(listener);
+      },
+      removeEventListener(type: string, listener: (event: { data: Record<string, unknown> }) => void) {
+        if (type === "message") listeners.delete(listener);
+      },
+      setTimeout,
+      clearTimeout,
+      electronBridge: {
+        sendMessageFromView(message: Record<string, unknown>) {
+          bridgeMessages.push(message);
+          const request = message.request as Record<string, unknown>;
+          const method = String(request.method || "");
+          const params = request.params as Record<string, unknown>;
+          calls.push({ method, params });
+          const result = method === "thread/start"
+            ? { thread: { id: "created-thread-0001" } }
+            : method === "turn/start"
+              ? { turn: { id: "accepted-turn-0001" } }
+              : {};
+          queueMicrotask(() => listeners.forEach((listener) => listener({
+            data: {
+              type: "mcp-response",
+              hostId: "local",
+              message: { id: request.id, result },
+            },
+          })));
+        },
       },
     };
-    assert.equal(runtime.installCodexMobileRemoteCommandClient(client), true);
+    const runtime = new Function(
+      "window",
+      `${renderer.slice(start, end)}; return { installCodexMobileRemoteCommandElectronBridge };`,
+    )(window);
+    assert.equal(runtime.installCodexMobileRemoteCommandElectronBridge(), true);
 
-    const create = await window.__codexPlusMobileRemoteCommand({
+    const result = await window.__codexPlusMobileRemoteCommand({
       commandType: "create_task",
       clientRequestId: "create-request-0001",
       cwd: "D:/workspace",
@@ -1080,15 +1104,23 @@ describe("mobile remote command bridge", () => {
       name: "手机新任务",
       text: "检查项目",
     });
-    assert.deepEqual(create, {
+    assert.deepEqual(result, {
       status: "completed",
       threadId: "created-thread-0001",
       turnId: "accepted-turn-0001",
     });
-    assert.deepEqual(calls.slice(0, 3).map((call) => call.method), [
+    assert.deepEqual(calls.map((call) => call.method), [
       "thread/start",
       "turn/start",
       "thread/name/set",
+    ]);
+    assert.ok(bridgeMessages.every((message) => message.type === "mcp-request"));
+    assert.ok(bridgeMessages.every((message) => message.hostId === "local"));
+    assert.ok(bridgeMessages.every((message) => message.source === "remote_control"));
+    assert.deepEqual(bridgeMessages.map((message) => message.timeoutMs), [
+      30000,
+      30000,
+      8000,
     ]);
 
     calls.length = 0;

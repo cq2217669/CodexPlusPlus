@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import "./mobile-remote.css";
 
 type Task = { id: string; name: string; workspaceName: string };
+type SyncIssue = { taskId: string; taskName: string; workspaceName: string; reason: string };
 type RemoteStatus = {
   enabled: boolean;
   connected: boolean;
@@ -18,6 +19,7 @@ type RemoteStatus = {
   selected: string[];
   lastSyncedAt: string | null;
   syncError: string | null;
+  syncIssues: SyncIssue[];
 };
 
 export function MobileRemoteScreen() {
@@ -110,6 +112,17 @@ export function MobileRemoteScreen() {
           {status?.lastSyncedAt && <span>最近同步 {new Date(status.lastSyncedAt).toLocaleTimeString("zh-CN")}</span>}
         </div>
         {(error || status?.syncError) && <p role="alert" className="mobile-remote-error">{error || status?.syncError}</p>}
+        {!!status?.syncIssues.length && (
+          <ul className="mobile-remote-sync-issues" aria-label="暂不可读的任务记录">
+            {status.syncIssues.map(issue => (
+              <li key={issue.taskId}>
+                <strong>{issue.taskName || "未命名任务"}</strong>
+                {issue.workspaceName && <span>（{issue.workspaceName}）</span>}
+                <span>：{issue.reason}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {qrValid && (
           <div className="mobile-remote-pairing">
             <img src={status.qrImage!} width={256} height={256} alt="手机绑定二维码" />

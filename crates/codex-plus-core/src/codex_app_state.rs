@@ -16,6 +16,11 @@ const WORKSPACE_PATH_ARRAY_KEYS: &[&str] = &["electron-saved-workspace-roots", "
 
 const ACTIVE_WORKSPACE_ROOTS_KEY: &str = "active-workspace-roots";
 
+const LOCAL_PROJECTS_KEY: &str = "local-projects";
+const PROJECT_ORDER_KEY: &str = "project-order";
+const SELECTED_PROJECT_KEY: &str = "selected-project";
+const THREAD_PROJECT_ASSIGNMENTS_KEY: &str = "thread-project-assignments";
+
 const WORKSPACE_PATH_MAP_KEYS: &[&str] = &["electron-workspace-root-labels"];
 
 const THREAD_STATE_MAP_KEYS: &[&str] = &[
@@ -166,6 +171,42 @@ pub fn sync_app_state_after_provider_switch_nonfatal(home: &Path, source: &str) 
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalProject {
+    pub id: String,
+    pub name: String,
+    pub root_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalProjectContext {
+    pub projects: Vec<LocalProject>,
+    pub selected_project_id: Option<String>,
+    pub current_project_id: Option<String>,
+}
+
+pub fn local_project_context(
+    home: &Path,
+    thread_id: Option<&str>,
+) -> anyhow::Result<LocalProjectContext> {
+    let Some(state) = load_global_state(home)? else {
+        return Ok(LocalProjectContext {
+            projects: Vec::new(),
+            selected_project_id: None,
+            current_project_id: None,
+        });
+    };
+    let selected_project_id = selected_project_id_from_state(&state);
+    let current_project_id = thread_id
+        .and_then(|thread_id| project_id_for_thread(&state, thread_id))
+        .or_else(|| selected_project_id.clone());
+    Ok(LocalProjectContext {
+        projects: local_projects_from_state(&state),
+        selected_project_id,
+        current_project_id,
+    })
+}
+
 pub fn workspace_roots(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let Some(state) = load_global_state(home)? else {
         return Ok(Vec::new());
@@ -213,6 +254,155 @@ pub fn workspace_roots(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
             .cmp(&right.to_string_lossy().to_lowercase())
     });
     Ok(roots)
+}
+
+pub fn workspace_root_for_thread(
+    home: &Path,
+    thread_id: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let Some(state) = load_global_state(home)? else {
+        return Ok(None);
+    };
+    let thread_ids = thread_id_variants(thread_id);
+    if thread_ids.is_empty() {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for key in THREAD_STATE_MAP_KEYS {
+        let Some(entries) = state.get(*key).and_then(Value::as_object) else {
+            continue;
+        };
+        for thread_id in &thread_ids {
+            if let Some(value) = entries.get(thread_id) {
+                collect_workspace_path_strings(value, &mut candidates);
+            }
+        }
+    }
+    for candidate in candidates {
+        let path = PathBuf::from(candidate);
+        if !path.is_absolute() || !path.is_dir() {
+            continue;
+        }
+        return Ok(Some(fs::canonicalize(&path).unwrap_or(path)));
+    }
+    Ok(None)
+}
+
+fn thread_id_variants(thread_id: &str) -> Vec<String> {
+    let thread_id = thread_id.trim();
+    if thread_id.is_empty() {
+        return Vec::new();
+    }
+    let bare = thread_id.strip_prefix("local:").unwrap_or(thread_id);
+    let mut values = vec![thread_id.to_string()];
+    if bare != thread_id {
+        values.push(bare.to_string());
+    } else {
+        values.push(format!("local:{bare}"));
+    }
+    values
+}
+
+fn local_projects_from_state(state: &Map<String, Value>) -> Vec<LocalProject> {
+    let Some(entries) = state.get(LOCAL_PROJECTS_KEY).and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let order = state
+        .get(PROJECT_ORDER_KEY)
+        .map(string_array)
+        .unwrap_or_default();
+    let order_by_id = order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut projects = entries
+        .iter()
+        .filter_map(|(entry_id, value)| {
+            let id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or(entry_id)
+                .trim();
+            let name = value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if id.is_empty() || name.is_empty() {
+                return None;
+            }
+            Some(LocalProject {
+                id: id.to_string(),
+                name: name.to_string(),
+                root_paths: existing_project_roots(value.get("rootPaths")),
+            })
+        })
+        .collect::<Vec<_>>();
+    projects.sort_by(|left, right| {
+        order_by_id
+            .get(left.id.as_str())
+            .unwrap_or(&usize::MAX)
+            .cmp(order_by_id.get(right.id.as_str()).unwrap_or(&usize::MAX))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    projects
+}
+
+fn existing_project_roots(value: Option<&Value>) -> Vec<PathBuf> {
+    let paths = value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_dir())
+        .map(|path| fs::canonicalize(&path).unwrap_or(path))
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| {
+            let key = if cfg!(windows) {
+                path.to_string_lossy().to_lowercase()
+            } else {
+                path.to_string_lossy().to_string()
+            };
+            seen.insert(key)
+        })
+        .collect()
+}
+
+fn selected_project_id_from_state(state: &Map<String, Value>) -> Option<String> {
+    state
+        .get(SELECTED_PROJECT_KEY)
+        .and_then(Value::as_object)
+        .and_then(|project| project.get("projectId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+}
+
+fn project_id_for_thread(state: &Map<String, Value>, thread_id: &str) -> Option<String> {
+    let assignments = state
+        .get(THREAD_PROJECT_ASSIGNMENTS_KEY)
+        .and_then(Value::as_object)?;
+    for thread_id in thread_id_variants(thread_id) {
+        let project_id = assignments
+            .get(&thread_id)
+            .and_then(Value::as_object)
+            .and_then(|assignment| assignment.get("projectId"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        if let Some(project_id) = project_id {
+            return Some(project_id.to_string());
+        }
+    }
+    None
 }
 
 fn collect_workspace_path_strings(value: &Value, paths: &mut Vec<String>) {

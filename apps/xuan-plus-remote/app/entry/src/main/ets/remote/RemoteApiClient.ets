@@ -1,5 +1,6 @@
 import { http } from '@kit.NetworkKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { DeviceIdentityCoordinator } from './DeviceIdentityCoordinator';
 import { RemoteEnvironmentConfig } from './RemoteEnvironmentConfig';
@@ -20,6 +21,8 @@ export interface SignedRequestHeaders {
 
 const EMPTY_SHA256_HEX = 'e3b0c44298fc1c149afbf4c8996fb924' +
   '27ae41e4649b934ca495991b7852b855';
+const LOG_DOMAIN = 0xD002021;
+const LOG_TAG = 'RemoteApi';
 
 export class RemoteFailureNotice {
   title: string;
@@ -74,7 +77,7 @@ export class RemoteApiClient {
       } catch (_error) {
         throw RemoteApiClient.networkFailure();
       }
-      return RemoteApiClient.parseResponse(response);
+      return RemoteApiClient.parseResponse(response, path);
     } finally {
       request.destroy();
     }
@@ -127,7 +130,7 @@ export class RemoteApiClient {
       } catch (_error) {
         throw RemoteApiClient.networkFailure();
       }
-      return RemoteApiClient.parseResponse(response);
+      return RemoteApiClient.parseResponse(response, path);
     } finally {
       request.destroy();
     }
@@ -157,7 +160,7 @@ export class RemoteApiClient {
       } catch (_error) {
         throw RemoteApiClient.networkFailure();
       }
-      return RemoteApiClient.parseResponse(response);
+      return RemoteApiClient.parseResponse(response, pathAndQuery);
     } finally {
       request.destroy();
     }
@@ -210,9 +213,9 @@ export class RemoteApiClient {
       '操作未完成', reason, '手机端未收到可确认的完成状态', fallbackAction, false);
   }
 
-  private static parseResponse(response: http.HttpResponse): Object {
+  private static parseResponse(response: http.HttpResponse, path: string): Object {
     if (response.responseCode < 200 || response.responseCode >= 300) {
-      throw RemoteApiClient.httpFailure(response.responseCode, response.result);
+      throw RemoteApiClient.httpFailure(response.responseCode, response.result, path);
     }
     if (typeof response.result !== 'string') {
       throw RemoteApiClient.protocolFailure(response.responseCode, '云端响应格式无法验证');
@@ -224,7 +227,7 @@ export class RemoteApiClient {
     }
   }
 
-  private static httpFailure(statusCode: number, result: Object | string): RemoteRequestError {
+  private static httpFailure(statusCode: number, result: Object | string, path: string): RemoteRequestError {
     let errorCode: string = '';
     let serverRetryable: boolean | undefined = undefined;
     if (typeof result === 'string') {
@@ -240,8 +243,30 @@ export class RemoteApiClient {
         errorCode = '';
       }
     }
+    hilog.warn(LOG_DOMAIN, LOG_TAG, '%{public}s', JSON.stringify({
+      event: 'http_failure',
+      route: RemoteApiClient.safeRouteName(path),
+      statusCode: statusCode,
+      errorCode: RemoteApiClient.publicErrorCode(errorCode)
+    }));
     return new RemoteRequestError(
       RemoteApiClient.failureForStatus(errorCode, statusCode, serverRetryable));
+  }
+
+  private static safeRouteName(path: string): string {
+    if (/^\/v1\/tasks\/[A-Za-z0-9_-]+\/commands$/.test(path)) {
+      return 'task-command';
+    }
+    if (/^\/v1\/commands\/[A-Za-z0-9_-]+\?/.test(path)) {
+      return 'command-query';
+    }
+    if (path.includes('/tasks')) {
+      return 'task-sync';
+    }
+    if (path.includes('/bindings') || path.includes('/pairing')) {
+      return 'binding';
+    }
+    return 'other';
   }
 
   private static failureForStatus(errorCode: string, statusCode: number,

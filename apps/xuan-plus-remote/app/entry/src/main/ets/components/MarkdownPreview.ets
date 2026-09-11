@@ -166,12 +166,12 @@ export struct MarkdownPreview {
 
   private headingSize(level: number): number {
     if (level === 1) {
-      return 22;
+      return 24;
     }
     if (level === 2) {
-      return 19;
+      return 20;
     }
-    return 17;
+    return 18;
   }
 
   @Builder
@@ -180,7 +180,7 @@ export struct MarkdownPreview {
       ForEach(inlineMarkdownSpans(value), (span: MarkdownSpan, index: number) => {
         Span(span.text)
           .fontFamily(span.code ? 'monospace' : FONT_SYSTEM_SANS)
-          .fontSize(span.code ? fontSize - 1 : fontSize)
+          .fontSize(span.code ? Math.max(14, fontSize - 1) : fontSize)
           // Remote Markdown never opens URLs. Keep link labels visually identical to text so the
           // preview does not promise an action that this isolated reader intentionally cannot perform.
           .fontColor(color)
@@ -199,12 +199,12 @@ export struct MarkdownPreview {
     } else if (block.kind === 'code') {
       Text(block.text)
         .fontFamily('monospace')
-        .fontSize(13)
+        .fontSize(14)
         .fontColor(COLOR_INK_BODY)
         .width('100%')
         .padding(12)
         .backgroundColor(COLOR_SURFACE_CODE)
-        .borderRadius(8)
+        .borderRadius(2)
     } else if (block.kind === 'rule') {
       Divider()
         .color(COLOR_RULE)
@@ -212,29 +212,29 @@ export struct MarkdownPreview {
         .margin({ top: 4, bottom: 4 })
     } else if (block.kind === 'quote') {
       Row() {
-        Divider().vertical(true).color(COLOR_ACCENT).strokeWidth(3).height('100%')
-        this.inlineText(block.text, 15, COLOR_MUTED)
+        Divider().vertical(true).color(COLOR_ACCENT).strokeWidth(4).height('100%')
+        this.inlineText(block.text, 16, COLOR_MUTED)
       }
       .alignItems(VerticalAlign.Top)
       .width('100%')
       .padding({ left: 10, right: 4, top: 4, bottom: 4 })
       .backgroundColor(COLOR_ACCENT_SOFT)
-      .borderRadius(8)
+      .borderRadius(0)
     } else if (block.kind === 'unordered-list' || block.kind === 'ordered-list') {
       Row({ space: 8 }) {
         Text(block.marker)
           .fontFamily(FONT_SYSTEM_SANS)
-          .fontSize(15)
+          .fontSize(16)
           .fontColor(COLOR_ACCENT)
           .fontWeight(FontWeight.Medium)
           .width(24)
           .textAlign(TextAlign.End)
-        this.inlineText(block.text, 15, COLOR_INK_BODY)
+        this.inlineText(block.text, 16, COLOR_INK_BODY)
       }
       .alignItems(VerticalAlign.Top)
       .width('100%')
     } else {
-      this.inlineText(block.text, 15, COLOR_INK_BODY)
+      this.inlineText(block.text, 16, COLOR_INK_BODY)
     }
   }
 

@@ -211,13 +211,13 @@ impl TaskReader {
         if !allowed || path.extension().and_then(|v| v.to_str()) != Some("jsonl") {
             bail!("任务记录不在官方会话目录内");
         }
-        let file = std::fs::File::open(&path)?;
+        let file = std::fs::File::open(&path).context("任务记录暂不可用")?;
         Ok((path, file))
     }
 
     pub fn read(&mut self, home: &Path, task: &OfficialTask) -> anyhow::Result<Value> {
         let (path, mut file) = Self::open(home, task)?;
-        let metadata = file.metadata()?;
+        let metadata = file.metadata().context("任务记录暂不可用")?;
         let created = metadata.created().ok();
         if self.path != path || metadata.len() < self.offset || self.created != created {
             *self = Self {
@@ -226,7 +226,8 @@ impl TaskReader {
                 ..Self::default()
             };
         }
-        file.seek(SeekFrom::Start(self.offset))?;
+        file.seek(SeekFrom::Start(self.offset))
+            .context("任务记录暂不可用")?;
         let initial_offset = self.offset;
         // 只消费本次打开时已有的内容；长历史分轮续读，不发布尚未追平的旧状态。
         let mut reader = BufReader::new(file.take(metadata.len() - self.offset));

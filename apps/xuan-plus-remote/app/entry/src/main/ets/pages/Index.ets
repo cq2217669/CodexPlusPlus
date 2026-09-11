@@ -1,5 +1,3 @@
-// Hallmark · genre: modern-minimal · macrostructure: Workbench · theme: Cobalt · designed-as-app
-// Pre-emit critique: P5 H5 E5 S5 R5 V5 · code-reviewed · device visual verification 2026-08-31
 import { PairingQrPayload, QrPairingCoordinator } from '../remote/QrPairingCoordinator';
 import { DeviceRegistrationCoordinator, DeviceRegistrationResult } from '../remote/DeviceRegistrationCoordinator';
 import { BindingSummary, ModelConfigSummary, PairingApiCoordinator, PairingPendingResponse,
@@ -51,6 +49,7 @@ const PC_DEVICE_REVOKE_REVEAL_THRESHOLD: number = PC_DEVICE_REVOKE_ACTION_WIDTH 
 PersistentStorage.persistProp('workagents.remote.activePcDeviceKey', '');
 
 type TaskFilter = 'all' | 'running' | 'attention' | 'ended';
+type HomeSection = 'overview' | 'tasks';
 type TaskPresentationStatus = 'created' | 'queued' | 'running' | 'paused' | 'stopped' | 'completed' | 'failed' |
   'archived';
 
@@ -140,6 +139,8 @@ struct Index {
   private previousKeyboardAvoidMode?: KeyboardAvoidMode = undefined;
   @State private selectedTaskId: string = '';
   @State private activePage: string = 'home';
+  @State private homeSection: HomeSection = 'overview';
+  @State private viewportWidth: number = 375;
   @State private selectedWorkspaceSourceTaskId: string = '';
   @State private selectedModelConfigId: string = '';
   @State private newTaskInstruction: string = '';
@@ -232,6 +233,10 @@ struct Index {
   onBackPress(): boolean {
     if (this.activePage === 'detail' || this.activePage === 'create') {
       this.leaveTaskPage();
+      return true;
+    }
+    if (this.activePage === 'home' && this.homeSection === 'tasks') {
+      this.showOverview();
       return true;
     }
     return false;
@@ -823,6 +828,14 @@ struct Index {
         retained.push(selected);
       }
       this.tasks = this.mergeTaskPage(retained, response.tasks);
+      if (this.expandedTaskWorkspaces.length === 0 && this.tasks.length > 0) {
+        const initialGroups: TaskWorkspaceGroup[] = this.taskWorkspaceGroups();
+        const initialExpanded: string[] = [];
+        for (let index: number = 0; index < initialGroups.length && index < 2; index++) {
+          initialExpanded.push(initialGroups[index].name);
+        }
+        this.expandedTaskWorkspaces = initialExpanded;
+      }
       this.calibrateLiveReply();
       this.nextTaskCursor = response.nextCursor;
       this.taskCursorsSeen = [];
@@ -1328,6 +1341,7 @@ struct Index {
     this.restoreKeyboardAvoidMode();
     this.stopLiveReplyStream(false);
     this.activePage = 'home';
+    this.homeSection = 'tasks';
   }
 
   private leaveTaskPage(): void {
@@ -1337,6 +1351,7 @@ struct Index {
     }
     if (this.activePage === 'create') {
       this.activePage = 'home';
+      this.homeSection = 'tasks';
     }
   }
 
@@ -1729,6 +1744,7 @@ struct Index {
         this.newTaskInstruction = '';
         await this.refreshTasks(false);
         this.activePage = 'home';
+        this.homeSection = 'tasks';
       }
     } catch (error) {
       const failure: RemoteFailureNotice = RemoteApiClient.describeFailure(
@@ -1821,6 +1837,54 @@ struct Index {
     }
   }
 
+  private runningTaskCount(): number {
+    let count: number = 0;
+    for (let index: number = 0; index < this.tasks.length; index++) {
+      if (this.taskIsRunning(this.tasks[index])) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private attentionTaskCount(): number {
+    let count: number = 0;
+    for (let index: number = 0; index < this.tasks.length; index++) {
+      if (this.taskNeedsAttention(this.tasks[index])) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private pageGutter(): number {
+    if (this.viewportWidth >= 1024) {
+      return 40;
+    }
+    if (this.viewportWidth >= 768) {
+      return 24;
+    }
+    return 16;
+  }
+
+  private updateViewportWidth(width: Length): void {
+    const measuredWidth: number = typeof width === 'number' ? width : Number.parseFloat(width.toString());
+    if (Number.isFinite(measuredWidth) && measuredWidth > 0 && Math.abs(this.viewportWidth - measuredWidth) >= 1) {
+      this.viewportWidth = measuredWidth;
+    }
+  }
+
+  private showOverview(): void {
+    this.homeSection = 'overview';
+  }
+
+  private showTasks(): void {
+    this.homeSection = 'tasks';
+    if (this.pcIsOnline() && !this.refreshingTasks) {
+      void this.refreshTasks(false);
+    }
+  }
+
   private homeFailure(): RemoteFailureNotice | undefined {
     if (this.pairingFailure !== undefined) {
       return this.pairingFailure;
@@ -1873,27 +1937,92 @@ struct Index {
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')
-    .padding(14)
+    .padding({ left: 14, right: 14, top: 12, bottom: 12 })
     .backgroundColor(COLOR_DANGER_SOFT)
-    .border({ width: 1, color: COLOR_DANGER })
-    .borderRadius(12)
+    .border({ width: { left: 4 }, color: COLOR_DANGER })
+    .borderRadius(0)
+  }
+
+  @Builder
+  private bottomNavigation() {
+    Column() {
+      Divider()
+        .color(COLOR_RULE)
+        .strokeWidth(1)
+      Row({ space: 8 }) {
+        Button('概览')
+          .fontFamily(FONT_SYSTEM_SANS)
+          .type(ButtonType.Normal)
+          .layoutWeight(1)
+          .height(52)
+          .fontSize(14)
+          .fontWeight(this.homeSection === 'overview' ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.homeSection === 'overview' ? COLOR_ACCENT : COLOR_INK_SECONDARY)
+          .backgroundColor(this.homeSection === 'overview' ? COLOR_ACCENT_SOFT : Color.Transparent)
+          .borderRadius(6)
+          .stateEffect(true)
+          .accessibilityText(this.homeSection === 'overview' ? '概览，当前页面' : '打开概览')
+          .onClick(() => {
+            this.showOverview();
+          })
+        Button('任务列表')
+          .fontFamily(FONT_SYSTEM_SANS)
+          .type(ButtonType.Normal)
+          .layoutWeight(1)
+          .height(52)
+          .fontSize(14)
+          .fontWeight(this.homeSection === 'tasks' ? FontWeight.Bold : FontWeight.Medium)
+          .fontColor(this.homeSection === 'tasks' ? COLOR_ACCENT : COLOR_INK_SECONDARY)
+          .backgroundColor(this.homeSection === 'tasks' ? COLOR_ACCENT_SOFT : Color.Transparent)
+          .borderRadius(6)
+          .stateEffect(true)
+          .accessibilityText(this.homeSection === 'tasks' ? `任务列表，当前页面，共 ${this.tasks.length} 个任务` :
+            `打开任务列表，共 ${this.tasks.length} 个任务`)
+          .onClick(() => {
+            this.showTasks();
+          })
+        Button('新建')
+          .fontFamily(FONT_SYSTEM_SANS)
+          .type(ButtonType.Normal)
+          .layoutWeight(1)
+          .height(52)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(COLOR_SURFACE)
+          .backgroundColor(COLOR_ACCENT)
+          .borderRadius(6)
+          .stateEffect(true)
+          .enabled(!this.commandSubmitting)
+          .accessibilityText('新建任务')
+          .onClick(() => {
+            this.openCreateTask();
+          })
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: 840 })
+      .padding({ left: this.pageGutter(), right: this.pageGutter(), top: 8, bottom: 8 })
+    }
+    .alignItems(HorizontalAlign.Center)
+    .width('100%')
+    .backgroundColor(COLOR_SURFACE)
   }
 
   @Builder
   private pageContent() {
-      Column({ space: 16 }) {
+      Column({ space: 20 }) {
         Row() {
           Column({ space: 4 }) {
-            Text(this.activePage === 'home' ? '轩++远程' :
+            Text(this.activePage === 'home' ? (this.homeSection === 'overview' ? '轩++远程' : '任务') :
               (this.activePage === 'detail' ? (this.selectedTask()?.name || '未命名任务') : '新建任务'))
               .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(this.activePage === 'detail' ? 18 : 24)
+              .fontSize(this.activePage === 'detail' ? 20 : 30)
               .fontWeight(FontWeight.Bold)
               .fontColor(COLOR_INK)
               .maxLines(2)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-            if (this.activePage !== 'detail') {
-            Text('开发环境 · API 20+ · 0.1.9-dev')
+            if (this.activePage === 'home') {
+            Text(this.homeSection === 'overview' ? '开发环境 · API 20+ · 0.1.9-dev' :
+              `${this.runningTaskCount()} 个运行中 · ${this.attentionTaskCount()} 个需要关注`)
               .fontFamily(FONT_SYSTEM_SANS)
               .fontSize(13)
               .fontColor(COLOR_MUTED)
@@ -1905,9 +2034,14 @@ struct Index {
           if (this.activePage !== 'home') {
             Button('返回')
               .fontFamily(FONT_SYSTEM_SANS)
-              .type(ButtonType.Capsule)
-              .fontSize(13)
+              .type(ButtonType.Normal)
+              .fontSize(14)
               .height(48)
+              .fontColor(COLOR_ACCENT)
+              .backgroundColor(COLOR_ACCENT_SOFT)
+              .borderRadius(6)
+              .stateEffect(true)
+              .accessibilityText(this.activePage === 'detail' ? '返回任务列表' : '返回任务列表')
               .margin({ right: 8 })
               .enabled(!this.commandSubmitting)
               .onClick(() => {
@@ -1915,14 +2049,14 @@ struct Index {
               })
           }
 
-          if (this.activePage !== 'detail') {
+          if (this.activePage === 'home' && this.homeSection === 'overview') {
           Text(this.environment === RemoteEnvironment.DEV ? 'DEV' : 'PROD')
             .fontFamily(FONT_SYSTEM_SANS)
             .fontSize(12)
             .fontWeight(FontWeight.Bold)
             .fontColor(COLOR_SURFACE)
             .backgroundColor(COLOR_ACCENT)
-            .borderRadius(12)
+            .borderRadius(2)
             .padding({ left: 10, right: 10, top: 5, bottom: 5 })
           }
         }
@@ -1931,7 +2065,128 @@ struct Index {
         .flexShrink(0)
 
         if (this.activePage === 'home') {
+        if (this.homeSection === 'overview') {
         Column({ space: 12 }) {
+          Column() {
+            Row({ space: 12 }) {
+              Text('01')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_ACCENT)
+                .width(32)
+              Column({ space: 3 }) {
+                Text('手机身份')
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .fontSize(13)
+                  .fontColor(COLOR_MUTED)
+                Text(this.deviceRegistered ? '已连接开发云端' :
+                  (this.registeringDevice ? '正在登记设备' : '尚未连接'))
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(this.deviceRegistered ? COLOR_INK : COLOR_WARNING_TEXT)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+            }
+            .width('100%')
+            .constraintSize({ minHeight: 64 })
+            .padding({ top: 12, bottom: 12 })
+            .border({ width: { bottom: 1 }, color: COLOR_RULE })
+
+            Row({ space: 12 }) {
+              Text('02')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_ACCENT)
+                .width(32)
+              Column({ space: 3 }) {
+                Text('当前电脑')
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .fontSize(13)
+                  .fontColor(COLOR_MUTED)
+                Text(this.activePcDevice === undefined ? '尚未绑定' :
+                  `${this.activePcDevice.displayName} · ${this.connectionStateText(this.connectionState)}`)
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(this.activePcDevice === undefined ? COLOR_WARNING_TEXT :
+                    this.connectionStateColor(this.connectionState))
+                  .maxLines(2)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              Text(this.activePcDevice === undefined ? '绑定' : '查看')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(13)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(COLOR_ACCENT)
+            }
+            .width('100%')
+            .constraintSize({ minHeight: 72 })
+            .padding({ top: 12, bottom: 12 })
+            .border({ width: { bottom: 1 }, color: COLOR_RULE })
+            .accessibilityText(this.activePcDevice === undefined ? '尚未绑定电脑，点击开始绑定' :
+              `当前电脑 ${this.activePcDevice.displayName}，${this.connectionStateText(this.connectionState)}，点击查看状态`)
+            .onClick(() => {
+              if (this.activePcDevice === undefined) {
+                void this.scanPairingQr();
+              } else {
+                this.connectionDetailsExpanded = !this.connectionDetailsExpanded;
+              }
+            })
+
+            Row({ space: 12 }) {
+              Text('03')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(12)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_ACCENT)
+                .width(32)
+              Column({ space: 3 }) {
+                Text('任务同步')
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .fontSize(13)
+                  .fontColor(COLOR_MUTED)
+                Text(`${this.tasks.length} 个任务 · ${this.runningTaskCount()} 个运行中`)
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .fontSize(16)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(COLOR_INK)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              Text('打开')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(13)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(COLOR_ACCENT)
+            }
+            .width('100%')
+            .constraintSize({ minHeight: 72 })
+            .padding({ top: 12, bottom: 12 })
+            .accessibilityText(`打开任务，共 ${this.tasks.length} 个，${this.runningTaskCount()} 个运行中`)
+            .onClick(() => {
+              this.showTasks();
+            })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .width('100%')
+          .padding({ left: 14, right: 14 })
+          .backgroundColor(COLOR_SURFACE)
+          .border({ width: 1, color: COLOR_RULE })
+          .borderRadius(2)
+
+          Text('电脑与通知')
+            .fontFamily(FONT_SYSTEM_SANS)
+            .fontSize(14)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(COLOR_INK)
+            .width('100%')
+            .margin({ top: 8 })
+
           Row({ space: 10 }) {
             Column({ space: 3 }) {
               Text(this.activePcDevice === undefined ? '当前电脑' : `当前电脑 · ${this.activePcDevice.displayName}`)
@@ -1943,10 +2198,10 @@ struct Index {
                 .accessibilityText(this.activePcDevice === undefined ? '当前电脑，尚未绑定' :
                   `当前电脑，${this.activePcDevice.displayName}`)
               Row({ space: 6 }) {
-                Text('●')
-                  .fontFamily(FONT_SYSTEM_SANS)
-                  .fontSize(12)
-                  .fontColor(this.activePcDevice === undefined ? COLOR_DISABLED :
+                Blank()
+                  .width(4)
+                  .height(18)
+                  .backgroundColor(this.activePcDevice === undefined ? COLOR_DISABLED :
                     this.connectionStateColor(this.connectionState))
                 Text(this.activePcDevice === undefined ? '尚未绑定电脑' :
                   (this.bindingRefreshError.length > 0 ? '状态刷新失败' :
@@ -1959,35 +2214,44 @@ struct Index {
             }
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
-
-            if (this.activePcDevice !== undefined) {
-              Button(this.connectionDetailsExpanded ? '收起状态' : '连接状态')
-                .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
-                .fontSize(12)
-                .height(48)
-                .accessibilityText(this.connectionDetailsExpanded ? '收起电脑连接状态' : '查看电脑连接状态')
-                .fontColor(COLOR_INK_SECONDARY)
-                .backgroundColor(COLOR_SURFACE_CONTROL)
-                .onClick(() => {
-                  this.connectionDetailsExpanded = !this.connectionDetailsExpanded;
-                })
-            }
-            if (this.pcDevices.length > 1) {
-              Button(this.deviceListExpanded ? '完成' : '切换设备')
-                .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
-                .fontSize(12)
-                .height(48)
-                .accessibilityText(this.deviceListExpanded ? '完成设备切换' : '打开电脑切换列表')
-                .enabled(!this.commandSubmitting)
-                .onClick(() => {
-                  this.deviceListExpanded = !this.deviceListExpanded;
-                })
-            }
           }
           .width('100%')
           .alignItems(VerticalAlign.Center)
+
+          if (this.activePcDevice !== undefined || this.pcDevices.length > 1) {
+            Row({ space: 8 }) {
+              if (this.activePcDevice !== undefined) {
+                Button(this.connectionDetailsExpanded ? '收起状态' : '连接状态')
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
+                  .fontSize(13)
+                  .height(48)
+                  .layoutWeight(1)
+                  .accessibilityText(this.connectionDetailsExpanded ? '收起电脑连接状态' : '查看电脑连接状态')
+                  .fontColor(COLOR_INK_SECONDARY)
+                  .backgroundColor(COLOR_SURFACE_CONTROL)
+                  .onClick(() => {
+                    this.connectionDetailsExpanded = !this.connectionDetailsExpanded;
+                  })
+              }
+              if (this.pcDevices.length > 1) {
+                Button(this.deviceListExpanded ? '完成' : '切换设备')
+                  .fontFamily(FONT_SYSTEM_SANS)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
+                  .fontSize(13)
+                  .height(48)
+                  .layoutWeight(1)
+                  .accessibilityText(this.deviceListExpanded ? '完成设备切换' : '打开电脑切换列表')
+                  .enabled(!this.commandSubmitting)
+                  .onClick(() => {
+                    this.deviceListExpanded = !this.deviceListExpanded;
+                  })
+              }
+            }
+            .width('100%')
+          }
 
           if (this.activePcDevice !== undefined &&
             (this.connectionDetailsExpanded || !this.isConnected() || this.bindingRefreshError.length > 0)) {
@@ -2004,7 +2268,8 @@ struct Index {
                 .width('100%')
               Button(this.refreshingBinding ? '刷新中…' : '重新检测连接')
                 .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
+                .type(ButtonType.Normal)
+                .borderRadius(6)
                 .fontSize(12)
                 .height(48)
                 .enabled(!this.refreshingBinding)
@@ -2015,7 +2280,9 @@ struct Index {
             .width('100%')
             .padding(12)
             .backgroundColor(this.isConnected() && this.bindingRefreshError.length === 0 ? COLOR_SURFACE_INPUT : COLOR_WARNING_SOFT)
-            .borderRadius(12)
+            .border({ width: { left: 4 }, color: this.isConnected() && this.bindingRefreshError.length === 0 ?
+              COLOR_ACCENT : COLOR_WARNING })
+            .borderRadius(0)
           }
 
           if (this.activePcDevice !== undefined && (!this.notificationPermissionKnown || !this.notificationEnabled)) {
@@ -2034,7 +2301,8 @@ struct Index {
                 .width('100%')
               Button(this.notificationPermissionChecking ? '正在检查通知设置…' : '前往系统通知设置')
                 .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
+                .type(ButtonType.Normal)
+                .borderRadius(6)
                 .fontSize(13)
                 .height(48)
                 .width('100%')
@@ -2047,7 +2315,8 @@ struct Index {
                 })
               Button('重新检测通知设置')
                 .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
+                .type(ButtonType.Normal)
+                .borderRadius(6)
                 .fontSize(13)
                 .height(48)
                 .width('100%')
@@ -2063,7 +2332,8 @@ struct Index {
             .width('100%')
             .padding(12)
             .backgroundColor(COLOR_WARNING_SOFT)
-            .borderRadius(12)
+            .border({ width: { left: 4 }, color: COLOR_WARNING })
+            .borderRadius(0)
           }
 
           if (this.deviceListExpanded) {
@@ -2092,7 +2362,7 @@ struct Index {
                         .backgroundColor(COLOR_DANGER)
                         .height(this.pcDeviceCardHeight(device))
                         .width(PC_DEVICE_REVOKE_ACTION_WIDTH)
-                        .borderRadius(12)
+                        .borderRadius(6)
                         .enabled(!this.commandSubmitting && this.revokingPcDeviceKey.length === 0 &&
                           this.revokeConfirmationPcDeviceKey.length === 0)
                         .accessibilityText(`撤销此手机与电脑 ${device.displayName} 的绑定`)
@@ -2102,10 +2372,10 @@ struct Index {
                     }
                     Column({ space: 10 }) {
                       Row({ space: 9 }) {
-                        Text('●')
-                          .fontFamily(FONT_SYSTEM_SANS)
-                          .fontSize(12)
-                          .fontColor(this.connectionStateColor(device.pcConnectionState))
+                        Blank()
+                          .width(4)
+                          .height(28)
+                          .backgroundColor(this.connectionStateColor(device.pcConnectionState))
                         Column({ space: 2 }) {
                         Text(device.displayName)
                           .fontFamily(FONT_SYSTEM_SANS)
@@ -2134,7 +2404,8 @@ struct Index {
                       if (this.pcDeviceKey(device) !== this.activePcDeviceKey) {
                         Button('切换到此电脑')
                           .fontFamily(FONT_SYSTEM_SANS)
-                          .type(ButtonType.Capsule)
+                          .type(ButtonType.Normal)
+                          .borderRadius(6)
                           .fontSize(14)
                           .height(48)
                           .width('100%')
@@ -2147,16 +2418,32 @@ struct Index {
                             this.deviceListExpanded = false;
                           })
                       }
+                      Button(this.revokingPcDeviceKey === this.pcDeviceKey(device) ? '正在撤销…' : '撤销绑定')
+                        .fontFamily(FONT_SYSTEM_SANS)
+                        .type(ButtonType.Normal)
+                        .borderRadius(6)
+                        .fontSize(14)
+                        .height(48)
+                        .width('100%')
+                        .fontColor(COLOR_DANGER)
+                        .backgroundColor(COLOR_DANGER_SOFT)
+                        .enabled(!this.commandSubmitting && this.revokingPcDeviceKey.length === 0 &&
+                          this.revokeConfirmationPcDeviceKey.length === 0)
+                        .accessibilityText(`撤销此手机与电脑 ${device.displayName} 的绑定`)
+                        .onClick(() => {
+                          void this.confirmRevokePcDevice(device);
+                        })
                     }
                     .width('100%')
                     .padding(12)
                     .backgroundColor(this.pcDeviceKey(device) === this.activePcDeviceKey ? COLOR_ACCENT_SOFT : COLOR_SURFACE_SUBDUED)
-                    .borderRadius(12)
+                    .border({ width: 1, color: this.pcDeviceKey(device) === this.activePcDeviceKey ? COLOR_ACCENT : COLOR_RULE })
+                    .borderRadius(2)
                     .translate({ x: this.pcDeviceRevokeOffset(device) })
                     .onAreaChange((_oldValue: Area, newValue: Area) => {
                       this.updatePcDeviceCardHeight(device, newValue.height);
                     })
-                    .accessibilityText(`电脑：${device.displayName}，向左滑动可显示撤销绑定按钮`)
+                    .accessibilityText(`电脑：${device.displayName}，可切换或撤销绑定；向左滑动也可显示撤销按钮`)
                     .onTouch((event: TouchEvent) => {
                       this.handlePcDeviceRevokeSwipe(device, event);
                     })
@@ -2187,7 +2474,8 @@ struct Index {
             Button(this.registeringDevice ? '正在登记设备…' :
               (this.deviceRegistered ? '重新连接云端' : '连接开发云端'))
               .fontFamily(FONT_SYSTEM_SANS)
-              .type(ButtonType.Capsule)
+              .type(ButtonType.Normal)
+              .borderRadius(6)
               .fontSize(14)
               .fontColor(COLOR_ACCENT)
               .backgroundColor(COLOR_ACCENT_SOFT)
@@ -2203,7 +2491,8 @@ struct Index {
             Button(this.scanning ? '正在绑定新电脑…' :
               (this.deviceRegistered ? '扫描二维码绑定新电脑' : '请先连接开发云端'))
               .fontFamily(FONT_SYSTEM_SANS)
-              .type(ButtonType.Capsule)
+              .type(ButtonType.Normal)
+              .borderRadius(6)
               .fontSize(15)
               .fontWeight(FontWeight.Medium)
               .backgroundColor(COLOR_ACCENT)
@@ -2220,9 +2509,10 @@ struct Index {
                 .fontSize(12)
                 .fontColor(COLOR_MUTED_LIGHT)
                 .layoutWeight(1)
-              Button(this.scanning ? '正在绑定…' : '+ 绑定新电脑')
+              Button(this.scanning ? '正在绑定…' : '绑定新电脑')
                 .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
+                .type(ButtonType.Normal)
+                .borderRadius(6)
                 .fontSize(13)
                 .fontColor(COLOR_ACCENT)
                 .backgroundColor(COLOR_ACCENT_SOFT)
@@ -2273,39 +2563,51 @@ struct Index {
             .width('100%')
             .padding(14)
             .backgroundColor(COLOR_WARNING_SOFT)
-            .borderRadius(14)
+            .border({ width: { left: 4 }, color: COLOR_WARNING })
+            .borderRadius(0)
           }
         }
         .width('100%')
-        .padding(16)
-        .backgroundColor(COLOR_SURFACE)
-        .borderRadius(16)
+        .padding(0)
+        .backgroundColor(COLOR_PAGE)
+        .borderRadius(0)
+
+        }
+
+        if (this.homeSection === 'tasks') {
 
         Column({ space: 12 }) {
           Row() {
-            Text('任务')
-              .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(20)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(COLOR_INK)
-              .layoutWeight(1)
-            Text(`${this.tasks.length} 个`)
-              .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(13)
-              .fontColor(COLOR_MUTED)
-              .margin({ right: 8 })
+            Column({ space: 0 }) {
+              Text(`${this.tasks.length}`)
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(44)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_INK)
+              Text('全部任务')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(13)
+                .fontColor(COLOR_MUTED)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
             Button('新建')
               .fontFamily(FONT_SYSTEM_SANS)
-              .type(ButtonType.Capsule)
+              .type(ButtonType.Normal)
+              .borderRadius(6)
               .fontSize(13)
               .fontColor(COLOR_SURFACE)
               .backgroundColor(COLOR_ACCENT)
               .height(48)
+              .width(88)
+              .stateEffect(true)
+              .accessibilityText('新建任务')
               .onClick(() => {
                 this.openCreateTask();
               })
           }
           .width('100%')
+          .alignItems(VerticalAlign.Bottom)
 
           Row() {
             Text(this.taskNotice)
@@ -2315,7 +2617,8 @@ struct Index {
               .layoutWeight(1)
             Button(this.refreshingTasks ? '刷新中…' : '刷新任务')
               .fontFamily(FONT_SYSTEM_SANS)
-              .type(ButtonType.Capsule)
+              .type(ButtonType.Normal)
+              .borderRadius(6)
               .fontSize(12)
               .height(48)
               .enabled(!this.refreshingTasks && this.pairingState === PairingState.ACTIVE &&
@@ -2348,7 +2651,7 @@ struct Index {
                 .height(48)
                 .backgroundColor(COLOR_SURFACE_INPUT)
                 .border({ width: 1, color: COLOR_RULE_INPUT })
-                .borderRadius(12)
+                .borderRadius(2)
                 .accessibilityText('搜索任务、工作区或模型')
                 .onChange((value: string) => {
                   this.taskSearchQuery = value;
@@ -2356,6 +2659,8 @@ struct Index {
               Row({ space: 8 }) {
                 Button('全部')
                   .fontFamily(FONT_SYSTEM_SANS)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
                   .layoutWeight(1)
                   .height(48)
                   .fontColor(this.taskFilter === 'all' ? COLOR_SURFACE : COLOR_INK_SECONDARY)
@@ -2366,6 +2671,8 @@ struct Index {
                   })
                 Button('运行中')
                   .fontFamily(FONT_SYSTEM_SANS)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
                   .layoutWeight(1)
                   .height(48)
                   .fontColor(this.taskFilter === 'running' ? COLOR_SURFACE : COLOR_INK_SECONDARY)
@@ -2379,6 +2686,8 @@ struct Index {
               Row({ space: 8 }) {
                 Button('需要关注')
                   .fontFamily(FONT_SYSTEM_SANS)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
                   .layoutWeight(1)
                   .height(48)
                   .fontColor(this.taskFilter === 'attention' ? COLOR_SURFACE : COLOR_INK_SECONDARY)
@@ -2389,6 +2698,8 @@ struct Index {
                   })
                 Button('已结束')
                   .fontFamily(FONT_SYSTEM_SANS)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
                   .layoutWeight(1)
                   .height(48)
                   .fontColor(this.taskFilter === 'ended' ? COLOR_SURFACE : COLOR_INK_SECONDARY)
@@ -2402,7 +2713,8 @@ struct Index {
               if (this.taskSearchQuery.length > 0 || this.taskFilter !== 'all') {
                 Button('清除搜索与筛选')
                   .fontFamily(FONT_SYSTEM_SANS)
-                  .type(ButtonType.Capsule)
+                  .type(ButtonType.Normal)
+                  .borderRadius(6)
                   .height(48)
                   .fontSize(13)
                   .fontColor(COLOR_INK_SECONDARY)
@@ -2418,7 +2730,8 @@ struct Index {
             .width('100%')
             .padding(12)
             .backgroundColor(COLOR_SURFACE_SUBDUED)
-            .borderRadius(14)
+            .border({ width: { top: 1, bottom: 1 }, color: COLOR_RULE })
+            .borderRadius(0)
           }
 
           if (this.connectionState === PcConnectionState.ONLINE && this.taskFailure !== undefined) {
@@ -2441,7 +2754,8 @@ struct Index {
             .width('100%')
             .padding({ top: 22, right: 16, bottom: 22, left: 16 })
             .backgroundColor(COLOR_SURFACE_SUBDUED)
-            .borderRadius(14)
+            .border({ width: { left: 4 }, color: COLOR_ACCENT })
+            .borderRadius(0)
           } else if (this.connectionState !== PcConnectionState.ONLINE) {
             Column({ space: 8 }) {
               Text('电脑未连接')
@@ -2458,7 +2772,8 @@ struct Index {
             .width('100%')
             .padding({ top: 22, right: 16, bottom: 22, left: 16 })
             .backgroundColor(COLOR_SURFACE_SUBDUED)
-            .borderRadius(14)
+            .border({ width: { left: 4 }, color: COLOR_WARNING })
+            .borderRadius(0)
           } else if (this.tasks.length === 0) {
             Column({ space: 8 }) {
               Text('暂时没有同步任务')
@@ -2475,7 +2790,8 @@ struct Index {
             .width('100%')
             .padding({ top: 22, right: 16, bottom: 22, left: 16 })
             .backgroundColor(COLOR_SURFACE_SUBDUED)
-            .borderRadius(14)
+            .border({ width: { left: 4 }, color: COLOR_ACCENT })
+            .borderRadius(0)
           } else {
             if (this.filteredTasks().length === 0) {
               Column({ space: 8 }) {
@@ -2493,7 +2809,8 @@ struct Index {
               .width('100%')
               .padding({ top: 22, right: 16, bottom: 22, left: 16 })
               .backgroundColor(COLOR_SURFACE_SUBDUED)
-              .borderRadius(14)
+              .border({ width: { left: 4 }, color: COLOR_RULE_INPUT })
+              .borderRadius(0)
             } else {
               ForEach(this.taskWorkspaceGroups(), (workspaceGroup: TaskWorkspaceGroup) => {
               Column({ space: 8 }) {
@@ -2524,14 +2841,13 @@ struct Index {
                     .fontFamily(FONT_SYSTEM_SANS)
                     .fontSize(12)
                     .fontColor(COLOR_MUTED)
-                  Text('›')
+                  Text(this.taskWorkspaceIsExpanded(workspaceGroup.name) ? '收起' : '展开')
                     .fontFamily(FONT_SYSTEM_SANS)
-                    .fontSize(22)
-                    .fontColor(COLOR_MUTED)
-                    .width(20)
-                    .height(24)
+                    .fontSize(13)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(COLOR_ACCENT)
+                    .constraintSize({ minWidth: 48, minHeight: 48 })
                     .textAlign(TextAlign.Center)
-                    .rotate({ angle: this.taskWorkspaceIsExpanded(workspaceGroup.name) ? 90 : 0 })
                 }
                 .width('100%')
                 .accessibilityText(this.taskWorkspaceIsExpanded(workspaceGroup.name) ?
@@ -2556,7 +2872,7 @@ struct Index {
                           .fontWeight(FontWeight.Medium)
                           .fontColor(this.taskStatusColor(task))
                           .backgroundColor(this.taskStatusBackground(task))
-                          .borderRadius(10)
+                          .borderRadius(2)
                           .padding({ left: 8, right: 8, top: 3, bottom: 3 })
                       }
                       .width('100%')
@@ -2583,10 +2899,10 @@ struct Index {
                     .padding(14)
                     .backgroundColor(COLOR_SURFACE)
                     .border({
-                      width: 1,
+                      width: { bottom: 1 },
                       color: COLOR_RULE
                     })
-                    .borderRadius(14)
+                    .borderRadius(0)
                     .onClick(() => {
                       this.openTaskDetail(task);
                     })
@@ -2594,15 +2910,17 @@ struct Index {
                 }
               }
               .width('100%')
-              .padding(14)
-              .backgroundColor(COLOR_SURFACE_SUBDUED)
-              .borderRadius(14)
+              .padding({ top: 12, bottom: 12 })
+              .backgroundColor(COLOR_PAGE)
+              .border({ width: { top: 1 }, color: COLOR_RULE })
+              .borderRadius(0)
               }, (workspaceGroup: TaskWorkspaceGroup) => workspaceGroup.name)
             }
             if (this.nextTaskCursor !== null) {
               Button(this.loadingMoreTasks ? '正在加载更多…' : '加载更多任务')
                 .fontFamily(FONT_SYSTEM_SANS)
-                .type(ButtonType.Capsule)
+                .type(ButtonType.Normal)
+                .borderRadius(6)
                 .fontSize(14)
                 .height(48)
                 .width('100%')
@@ -2628,6 +2946,7 @@ struct Index {
         .backgroundColor(COLOR_PAGE)
         .borderRadius(0)
 
+        }
         }
 
         if (this.activePage === 'detail') {
@@ -2662,7 +2981,8 @@ struct Index {
             .width('100%')
             .padding(14)
             .backgroundColor(this.selectedTaskHasActiveTurn() ? COLOR_WARNING_SOFT : COLOR_SURFACE_INPUT)
-            .borderRadius(12)
+            .border({ width: { left: 4 }, color: this.selectedTaskHasActiveTurn() ? COLOR_WARNING : COLOR_ACCENT })
+            .borderRadius(0)
             .accessibilityText(`当前执行状态：${this.detailExecutionText(this.selectedTask()!)}`)
           }
 
@@ -2687,7 +3007,8 @@ struct Index {
                 .width('100%')
                 .padding(14)
                 .backgroundColor(COLOR_ACCENT_SOFT)
-                .borderRadius(12)
+                .border({ width: { left: 4 }, color: COLOR_ACCENT })
+                .borderRadius(0)
             }
           }
 
@@ -2707,14 +3028,15 @@ struct Index {
                 .width('100%')
                 .padding(12)
                 .backgroundColor(COLOR_WARNING_SOFT)
-                .borderRadius(10)
+                .borderRadius(0)
                 .accessibilityText(`答复状态：${this.replyStateDescription(this.selectedTask()!)}`)
             }
             MarkdownPreview({ content: this.detailReplyText(this.selectedTask()!) })
               .width('100%')
               .padding(14)
               .backgroundColor(COLOR_SURFACE_INPUT)
-              .borderRadius(12)
+              .border({ width: { left: 1 }, color: COLOR_RULE })
+              .borderRadius(0)
             if (this.selectedTask()!.lastReplyState === ReplyState.TRUNCATED) {
               Text('当前内容尚不完整，正在等待电脑端同步完整回复记录。')
                 .fontFamily(FONT_SYSTEM_SANS)
@@ -2723,7 +3045,7 @@ struct Index {
                 .width('100%')
                 .padding(12)
                 .backgroundColor(COLOR_WARNING_SOFT)
-                .borderRadius(10)
+                .borderRadius(0)
             }
           } else if (this.liveReplyAwaitingFinalSnapshot && this.liveReplyText.length > 0) {
             Column({ space: 5 }) {
@@ -2741,7 +3063,8 @@ struct Index {
             .width('100%')
             .padding(14)
             .backgroundColor(COLOR_SURFACE_INPUT)
-            .borderRadius(12)
+            .border({ width: { left: 4 }, color: COLOR_ACCENT })
+            .borderRadius(0)
             .accessibilityText('完整最终答复仍在同步，当前已显示本轮实时内容')
           } else {
             Column({ space: 5 }) {
@@ -2762,7 +3085,8 @@ struct Index {
             .width('100%')
             .padding(14)
             .backgroundColor(COLOR_SURFACE_INPUT)
-            .borderRadius(12)
+            .border({ width: { left: 4 }, color: COLOR_RULE_INPUT })
+            .borderRadius(0)
             .accessibilityText(this.selectedTask() === undefined ? '任务不可用' :
               `答复状态：${this.replyStateTitle(this.selectedTask()!)}，${this.replyStateDescription(this.selectedTask()!)}`)
           }
@@ -2790,6 +3114,12 @@ struct Index {
           })
 
           Column({ space: 8 }) {
+            Text('输入消息')
+              .fontFamily(FONT_SYSTEM_SANS)
+              .fontSize(14)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(COLOR_INK)
+              .width('100%')
             Text(this.commandNotice)
               .fontFamily(FONT_SYSTEM_SANS)
               .fontSize(13)
@@ -2806,8 +3136,10 @@ struct Index {
             .height(80)
             .fontSize(15)
             .backgroundColor(COLOR_SURFACE_INPUT)
-            .borderRadius(8)
+            .border({ width: 1, color: COLOR_RULE_INPUT })
+            .borderRadius(2)
             .enabled(this.canSendSelected())
+            .accessibilityText('输入发送给当前任务的消息')
             .onChange((value: string) => {
               this.instruction = value;
             })
@@ -2815,8 +3147,10 @@ struct Index {
           Row({ space: 10 }) {
             Button(this.commandSubmitting ? '处理中…' : '发送消息')
               .fontFamily(FONT_SYSTEM_SANS)
+              .type(ButtonType.Normal)
+              .borderRadius(6)
               .layoutWeight(1)
-              .height(44)
+              .height(48)
               .fontWeight(FontWeight.Medium)
               .backgroundColor(COLOR_ACCENT)
               .enabled(this.canSendSelected() && this.instruction.trim().length > 0)
@@ -2825,8 +3159,10 @@ struct Index {
               })
             Button('停止')
               .fontFamily(FONT_SYSTEM_SANS)
+              .type(ButtonType.Normal)
+              .borderRadius(6)
               .width(88)
-              .height(44)
+              .height(48)
               .fontColor(COLOR_DANGER)
               .backgroundColor(COLOR_DANGER_SOFT)
               .enabled(this.canStopSelected())
@@ -2868,12 +3204,22 @@ struct Index {
           .width('100%')
 
           Column({ space: 10 }) {
-            Text('1  选择工作区')
-              .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(COLOR_INK)
-              .width('100%')
+            Row({ space: 12 }) {
+              Text('01')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(24)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_ACCENT)
+                .width(40)
+              Text('选择工作区')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(16)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_INK)
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
             if (this.workspaceChoices().length === 0) {
               Text('当前没有已同步的工作区。请先在电脑端为目标工作区创建一个任务。')
                 .fontFamily(FONT_SYSTEM_SANS)
@@ -2882,7 +3228,8 @@ struct Index {
                 .width('100%')
                 .padding(14)
                 .backgroundColor(COLOR_WARNING_SOFT)
-                .borderRadius(12)
+                .border({ width: { left: 4 }, color: COLOR_WARNING })
+                .borderRadius(0)
             } else {
               ForEach(this.workspaceChoices(), (workspace: WorkspaceChoice) => {
                 Row({ space: 12 }) {
@@ -2912,8 +3259,10 @@ struct Index {
                 .padding(12)
                 .backgroundColor(this.selectedWorkspaceSourceTaskId === workspace.sourceTaskId ? COLOR_ACCENT_SOFT : COLOR_SURFACE_SUBDUED)
                 .border({ width: 1, color: this.selectedWorkspaceSourceTaskId === workspace.sourceTaskId ? COLOR_ACCENT : COLOR_RULE })
-                .borderRadius(12)
+                .borderRadius(2)
                 .enabled(!this.commandSubmitting)
+                .accessibilityText(this.selectedWorkspaceSourceTaskId === workspace.sourceTaskId ?
+                  `工作区 ${workspace.name}，已选择` : `选择工作区 ${workspace.name}`)
                 .onClick(() => {
                   this.selectedWorkspaceSourceTaskId = workspace.sourceTaskId;
                 })
@@ -2924,12 +3273,22 @@ struct Index {
           .width('100%')
 
           Column({ space: 10 }) {
-            Text('2  选择模型')
-              .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(COLOR_INK)
-              .width('100%')
+            Row({ space: 12 }) {
+              Text('02')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(24)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_ACCENT)
+                .width(40)
+              Text('选择模型')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(16)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_INK)
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
             if ((this.activePcDevice?.modelConfigs ?? []).length === 0) {
               Text('当前电脑没有可用模型配置，请先在电脑端完成配置。')
                 .fontFamily(FONT_SYSTEM_SANS)
@@ -2938,7 +3297,8 @@ struct Index {
                 .width('100%')
                 .padding(14)
                 .backgroundColor(COLOR_WARNING_SOFT)
-                .borderRadius(12)
+                .border({ width: { left: 4 }, color: COLOR_WARNING })
+                .borderRadius(0)
             } else {
               ForEach(this.activePcDevice?.modelConfigs ?? [], (config: ModelConfigSummary) => {
                 Row({ space: 12 }) {
@@ -2969,8 +3329,11 @@ struct Index {
                 .padding(12)
                 .backgroundColor(this.selectedModelConfigId === config.id ? COLOR_ACCENT_SOFT : COLOR_SURFACE_SUBDUED)
                 .border({ width: 1, color: this.selectedModelConfigId === config.id ? COLOR_ACCENT : COLOR_RULE })
-                .borderRadius(12)
+                .borderRadius(2)
                 .enabled(!this.commandSubmitting)
+                .accessibilityText(this.selectedModelConfigId === config.id ?
+                  `模型 ${config.model}，提供方 ${config.provider}，已选择` :
+                  `选择模型 ${config.model}，提供方 ${config.provider}`)
                 .onClick(() => {
                   this.selectedModelConfigId = config.id;
                 })
@@ -2981,20 +3344,31 @@ struct Index {
           .width('100%')
 
           Column({ space: 8 }) {
-            Text('3  编写第一条指令')
-              .fontFamily(FONT_SYSTEM_SANS)
-              .fontSize(16)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(COLOR_INK)
-              .width('100%')
+            Row({ space: 12 }) {
+              Text('03')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(24)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_ACCENT)
+                .width(40)
+              Text('编写第一条指令')
+                .fontFamily(FONT_SYSTEM_SANS)
+                .fontSize(16)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(COLOR_INK)
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
             TextArea({ placeholder: '描述需要在所选工作区完成的工作', text: this.newTaskInstruction })
               .fontFamily(FONT_SYSTEM_SANS)
               .height(132)
               .fontSize(15)
               .backgroundColor(COLOR_SURFACE_INPUT)
               .border({ width: 1, color: COLOR_RULE_INPUT })
-              .borderRadius(12)
+              .borderRadius(2)
               .enabled(!this.commandSubmitting)
+              .accessibilityText('编写新任务的第一条指令')
               .onChange((value: string) => {
                 this.newTaskInstruction = value;
               })
@@ -3026,6 +3400,8 @@ struct Index {
 
           Button(this.commandSubmitting ? '正在创建并发送…' : '创建并发送')
             .fontFamily(FONT_SYSTEM_SANS)
+            .type(ButtonType.Normal)
+            .borderRadius(6)
             .width('100%')
             .height(50)
             .fontSize(15)
@@ -3039,11 +3415,12 @@ struct Index {
         .width('100%')
         .padding(16)
         .backgroundColor(COLOR_SURFACE)
-        .borderRadius(16)
+        .border({ width: 1, color: COLOR_RULE })
+        .borderRadius(2)
         }
 
         if (this.activePage !== 'detail') {
-        Text('手机只提交受限命令；模型与工具始终由电脑端 Codex App Server 执行。')
+          Text('手机只提交受限命令；模型与工具始终由电脑端 Codex 官方客户端执行。')
           .fontFamily(FONT_SYSTEM_SANS)
           .fontSize(12)
           .fontColor(COLOR_MUTED_LIGHT)
@@ -3054,21 +3431,32 @@ struct Index {
       }
       .width('100%')
       .height(this.activePage === 'detail' ? '100%' : undefined)
-      .constraintSize({ minHeight: '100%' })
-      .padding({ left: 16, right: 16, top: 12, bottom: this.activePage === 'detail' ? 8 : 24 })
+      .constraintSize({ minHeight: '100%', maxWidth: 840 })
+      .padding({ left: this.pageGutter(), right: this.pageGutter(), top: 16,
+        bottom: this.activePage === 'detail' ? 8 : 24 })
   }
 
   build() {
     Column() {
       if (this.activePage === 'detail') {
         this.pageContent()
-      } else {
+      } else if (this.activePage === 'create') {
         Scroll() {
           this.pageContent()
         }
         .width('100%')
         .height('100%')
+        .align(Alignment.Top)
         .edgeEffect(EdgeEffect.Spring)
+      } else {
+        Scroll() {
+          this.pageContent()
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .align(Alignment.Top)
+        .edgeEffect(EdgeEffect.Spring)
+        this.bottomNavigation()
       }
     }
     .onTouch((event: TouchEvent) => {
@@ -3077,5 +3465,8 @@ struct Index {
     .width('100%')
     .height('100%')
     .backgroundColor(COLOR_PAGE)
+    .onAreaChange((_oldValue: Area, newValue: Area) => {
+      this.updateViewportWidth(newValue.width);
+    })
   }
 }

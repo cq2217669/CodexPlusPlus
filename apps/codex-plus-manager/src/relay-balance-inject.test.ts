@@ -38,6 +38,14 @@ test("用量按钮在常规和窄窗口均避开三个窗口控制按钮", () =>
   }
 });
 
+test("用量入口保持标题栏状态文本的低视觉权重", () => {
+  const rootRule = /#\$\{ROOT_ID\}\{([^}]+)\}/.exec(script)?.[1] ?? "";
+  assert.match(rootRule, /top:6px/);
+  assert.doesNotMatch(rootRule, /box-shadow/);
+  assert.match(script, /nativeMenuClass/);
+  assert.match(script, /data-native-menu="false"[^}]+font:400 14px\/14px/s);
+});
+
 function loadMonitor(result: unknown = {}, stored: Record<string, unknown> = {}) {
   const end = script.indexOf("  window[API_KEY] = { revision:");
   assert.ok(end > 0);

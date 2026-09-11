@@ -14,8 +14,8 @@
  * self-destroys when the feature is disabled or the bridge is missing.
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.1";
-  const INSTANCE_REVISION = "official-2026-09-v12";
+  const SCRIPT_VERSION = "1.1.5";
+  const INSTANCE_REVISION = "official-2026-09-v16";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__codexSessionDeleteBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -24,7 +24,7 @@
   const TOAST_ATTR = `data-cpo-toast-${INSTANCE_REVISION}`;
   const BUTTON_LABELS = {
     idle: "润色",
-    loading: "润色中...",
+    loading: "停止",
     restore: "恢复",
   };
   const POLL_MS = 1800;
@@ -150,7 +150,7 @@
     sendCleanupToken: 0,
     disposed: false,
     loading: false,
-    epoch: 0,
+    optimizeToken: 0,
     settings: null,
     bridgeBroken: false,
     writeToken: 0,
@@ -330,30 +330,21 @@
     return /^(?:(?:send|submit|run)(?:\s+(?:message|prompt|response|generation))?|(?:提交|发送|执行)(?:消息|提示|提示词|生成|回答)?)(?:\s*[（(].*[）)])?$/i.test(text.trim());
   }
 
-  function isThreadComposer(input) {
-    let node = input;
-    for (let depth = 0; node && node !== document.body && depth < 20; depth += 1, node = node.parentNode) {
-      if (!(node instanceof Element)) continue;
-      if (node.getAttribute("data-composer-placement") === "thread") return true;
-      if (node.hasAttribute("data-thread-scroll-footer")) return true;
-    }
-    return false;
-  }
-
-  function isModelLikeLabel(text) {
+  function isAccessPermissionLikeLabel(text) {
     const label = text.trim();
     if (!label) return false;
-    if (/(model|模型)/i.test(label)) return true;
-    if (/^\d+(?:\.\d+)*\s+(?:astra|sol|terra)\b/i.test(label)) return true;
-    return /^(gpt|o[1-9]|claude|gemini|deepseek|qwen|kimi|moonshot|mistral|llama|sonnet|opus|haiku)[a-z0-9._-]*/i.test(label);
+    return /(?:access(?:\s+(?:mode|permissions?))?|permission(?:\s+mode)?|full\s+access|ask(?:ing)?\s+for\s+approval|read[-\s]?only|workspace[-\s]?write|restricted|sandbox|访问(?:权限|模式)|完全访问|需要(?:批准|确认)|请求(?:批准|确认)|只读|工作区(?:写入|访问)|受限(?:制)?|沙盒)/i.test(label);
   }
 
-  function modelSelectorBeforeSend(clickables, send) {
+  function accessPermissionBeforeSend(clickables, send) {
     if (!(send instanceof HTMLElement)) return null;
     const sendRect = send.getBoundingClientRect();
     return clickables
       .filter((button) => button !== send)
-      .filter((button) => isModelLikeLabel(normalizeText(button.getAttribute("aria-label") || button.textContent || "")))
+      .filter((button) =>
+        [button.getAttribute("aria-label"), button.getAttribute("title"), button.textContent]
+          .some((text) => isAccessPermissionLikeLabel(normalizeText(text))),
+      )
       .filter((button) => {
         const rect = button.getBoundingClientRect();
         return rect.right <= sendRect.left + 2 && rect.top < sendRect.bottom && rect.bottom > sendRect.top;
@@ -361,20 +352,20 @@
       .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] || null;
   }
 
-  function modelControlAnchor(modelSelector, send) {
-    if (!(modelSelector instanceof HTMLElement) || !(send instanceof HTMLElement)) return null;
-    let commonParent = modelSelector.parentElement;
+  function controlAfterAnchor(control, send) {
+    if (!(control instanceof HTMLElement) || !(send instanceof HTMLElement)) return null;
+    let commonParent = control.parentElement;
     while (commonParent && !commonParent.contains(send)) {
       commonParent = commonParent.parentElement;
     }
     if (!commonParent) return null;
 
-    let modelBranch = modelSelector;
-    while (modelBranch.parentElement && modelBranch.parentElement !== commonParent) {
-      modelBranch = modelBranch.parentElement;
+    let controlBranch = control;
+    while (controlBranch.parentElement && controlBranch.parentElement !== commonParent) {
+      controlBranch = controlBranch.parentElement;
     }
-    if (modelBranch.parentElement !== commonParent) return null;
-    return { node: commonParent, before: modelBranch };
+    if (controlBranch.parentElement !== commonParent) return null;
+    return { node: commonParent, before: controlBranch.nextSibling };
   }
 
   function findComposerInput() {
@@ -415,7 +406,8 @@
 
   function onPromptOptimizeShortcut(event) {
     if (runtime.disposed || event.defaultPrevented) return;
-    if (!isPromptOptimizeShortcut(event) || !eventTargetsComposer(event)) return;
+    if (!isPromptOptimizeShortcut(event)) return;
+    if (!runtime.loading && !eventTargetsComposer(event)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     onButtonClick(event);
@@ -634,11 +626,16 @@
   function showToast(message, kind) {
     const host = document.querySelector(`[${TOAST_ATTR}]`);
     if (host) host.remove();
+    const composerHost = document.querySelector(`[data-cpo-composer-${INSTANCE_REVISION}]`);
+    if (!(composerHost instanceof HTMLElement)) return;
     const toast = document.createElement("div");
     toast.setAttribute(TOAST_ATTR, "true");
     toast.className = `cpo-toast ${kind === "error" ? "cpo-toast-error" : ""}`;
+    toast.dataset.cpoTheme = detectAppearance();
+    toast.setAttribute("role", "status");
+    toast.setAttribute("aria-live", "polite");
     toast.textContent = message;
-    document.documentElement.appendChild(toast);
+    composerHost.appendChild(toast);
     if (runtime.toastTimer) window.clearTimeout(runtime.toastTimer);
     runtime.toastTimer = window.setTimeout(() => {
       const current = document.querySelector(`[${TOAST_ATTR}]`);
@@ -695,7 +692,7 @@
     style.textContent = `
       [${BUTTON_ATTR}]{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;min-width:42px;height:30px;padding:0 7px;border-radius:8px;cursor:pointer;font-size:12px;line-height:1;flex:none;user-select:none}
       [${BUTTON_ATTR}]:hover{background:rgba(128,128,128,.14)}
-      [${BUTTON_ATTR}].cpo-loading{opacity:.55;cursor:progress}
+      [${BUTTON_ATTR}].cpo-loading{opacity:.72;cursor:pointer}
       [${PANEL_ATTR}]{all:initial;--cpo-overlay:rgba(0,0,0,.28);--cpo-surface:#fff;--cpo-input:#fff;--cpo-text:#111;--cpo-muted:#666;--cpo-label:#333;--cpo-border:#ccc;--cpo-key:#1a7f37;--cpo-primary:#111;position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:var(--cpo-overlay);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--cpo-text);color-scheme:light}
       [${PANEL_ATTR}][data-cpo-theme="dark"]{--cpo-overlay:rgba(0,0,0,.56);--cpo-surface:#1d1f23;--cpo-input:#282b30;--cpo-text:#f4f5f7;--cpo-muted:#b2b8c2;--cpo-label:#e5e7eb;--cpo-border:#464c56;--cpo-key:#74d69b;--cpo-primary:#e9edf3;color-scheme:dark}
       [${PANEL_ATTR}] .cpo-card{width:min(520px,calc(100vw - 40px));max-height:min(620px,calc(100vh - 40px));overflow:auto;background:var(--cpo-surface);border:1px solid var(--cpo-border);border-radius:12px;padding:18px 20px;box-shadow:0 18px 50px rgba(0,0,0,.24)}
@@ -712,9 +709,10 @@
       [${PANEL_ATTR}] button{all:unset;box-sizing:border-box;padding:8px 16px;border-radius:8px;cursor:pointer;font:inherit;border:1px solid var(--cpo-border);background:var(--cpo-input);color:var(--cpo-text)}
       [${PANEL_ATTR}] button.cpo-primary{background:var(--cpo-primary);border-color:var(--cpo-primary);color:var(--cpo-surface)}
       [${PANEL_ATTR}] button:disabled{opacity:.5;cursor:not-allowed}
-      .cpo-toast{all:initial;position:fixed;left:50%;bottom:56px;transform:translateX(-50%);z-index:2147483001;background:#111;color:#fff;padding:9px 16px;border-radius:999px;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.24);max-width:min(560px,calc(100vw - 40px))}
-      .cpo-toast.cpo-toast-error{background:#b42318}
-      [data-cpo-composer-${INSTANCE_REVISION}]{display:inline-flex;align-items:center;margin-right:8px}
+      .cpo-toast{box-sizing:border-box;display:inline-block;max-width:min(360px,calc(100vw - 120px));overflow-wrap:anywhere;color:inherit;font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;opacity:.82}
+      .cpo-toast.cpo-toast-error{color:#b42318;opacity:1}
+      .cpo-toast.cpo-toast-error[data-cpo-theme="dark"]{color:#ff8a80}
+      [data-cpo-composer-${INSTANCE_REVISION}]{display:inline-flex;align-items:center;gap:6px;min-width:0;margin-right:8px}
     `;
     document.documentElement.appendChild(style);
   }
@@ -734,13 +732,13 @@
     if (!(current instanceof HTMLElement)) return;
     const state = currentButtonState();
     current.classList.toggle("cpo-loading", state === "loading");
-    current.disabled = state === "loading";
+    current.disabled = false;
     current.setAttribute("aria-busy", state === "loading" ? "true" : "false");
     current.setAttribute("aria-label", BUTTON_LABELS[state]);
     current.textContent = BUTTON_LABELS[state];
     current.title =
       state === "loading"
-        ? "正在润色"
+        ? "停止当前润色"
         : state === "restore"
           ? "恢复润色前的文本"
           : "润色（右键设置）";
@@ -770,17 +768,11 @@
           .some((text) => isSendLikeLabel(normalizeText(text)));
       });
       if (send) {
-        // 追问输入区会随长文本切换自适应布局。把按钮放进固定的发送控件组，
-        // 避免它作为模型栏最左项被推出可视区域；新建任务仍保留原位置。
-        if (isThreadComposer(input)) {
-          return { node: send.parentElement || send.parentNode, before: send };
-        }
-        const modelSelector = modelSelectorBeforeSend(clickables, send);
-        const modelAnchor = modelControlAnchor(modelSelector, send);
-        if (modelAnchor) {
-          return modelAnchor;
-        }
-        return { node: send.parentElement || send.parentNode, before: send };
+        const accessControl = accessPermissionBeforeSend(clickables, send);
+        const accessAnchor = controlAfterAnchor(accessControl, send);
+        if (accessAnchor) return accessAnchor;
+        // 始终以访问权限为锚点，避免模型控件或发送控件的重绘造成位置漂移。
+        return null;
       }
       if (node.tagName === "FORM" || node.tagName === "MAIN") break;
     }
@@ -796,8 +788,13 @@
     }
     const existing = document.querySelector(`[${BUTTON_ATTR}]`);
     const anchor = composerInsertAnchor(input);
-    // 操作栏尚未挂载时等待下一轮，避免悬浮到文字输入区或插入容器顶部。
+    // React 重绘时，输入框通常比发送控件更早恢复。若当前按钮仍在同一输入区，
+    // 保留它等待下一轮定位，避免 UI 消失而全局快捷键仍在。
     if (!anchor || !(anchor.node instanceof Element)) {
+      if (existing && existing.isConnected && buttonBelongsToComposer(existing, input)) {
+        refreshButtonAppearance(existing);
+        return;
+      }
       if (existing) destroyButton();
       return;
     }
@@ -806,7 +803,7 @@
       existing?.isConnected &&
       host?.hasAttribute(`data-cpo-composer-${INSTANCE_REVISION}`) &&
       host.parentElement === anchor.node &&
-      host.nextSibling === anchor.before
+      (anchor.before === host || (anchor.before === null && host.nextSibling === null))
     ) {
       return;
     }
@@ -825,6 +822,8 @@
   }
 
   function destroyAll() {
+    runtime.optimizeToken += 1;
+    runtime.loading = false;
     destroyButton();
     document.querySelectorAll(`[${PANEL_ATTR}]`).forEach((node) => node.remove());
     document.querySelectorAll(`[${TOAST_ATTR}]`).forEach((node) => node.remove());
@@ -847,14 +846,16 @@
   }
 
   async function runOptimize() {
-    const epoch = runtime.epoch;
+    const token = ++runtime.optimizeToken;
     runtime.loading = true;
     refreshButtonAppearance();
     try {
       if (!(await refreshSettings())) {
+        if (token !== runtime.optimizeToken) return;
         if (!runtime.bridgeBroken) showToast("无法读取润色配置", "error");
         return;
       }
+      if (token !== runtime.optimizeToken) return;
       if (!runtime.settings.enabled) {
         destroyAll();
         return;
@@ -888,7 +889,7 @@
           ),
         },
       });
-      if (epoch !== runtime.epoch) return;
+      if (token !== runtime.optimizeToken) return;
       if (!result || result.status !== "ok") {
         const message = result && result.error ? result.error : "优化失败";
         showToast(String(message).slice(0, 200), "error");
@@ -913,11 +914,20 @@
         showToast("写入输入框失败", "error");
       }
     } finally {
-      if (epoch === runtime.epoch) {
+      if (token === runtime.optimizeToken) {
         runtime.loading = false;
         refreshButtonAppearance();
       }
     }
+  }
+
+  function cancelOptimize() {
+    if (!runtime.loading) return false;
+    runtime.optimizeToken += 1;
+    runtime.loading = false;
+    refreshButtonAppearance();
+    showToast("已终止润色", "");
+    return true;
   }
 
   async function runRestore() {
@@ -950,7 +960,10 @@
     event.preventDefault();
     event.stopPropagation();
     if (runtime.disposed) return;
-    if (runtime.loading) return;
+    if (runtime.loading) {
+      cancelOptimize();
+      return;
+    }
     const state = getThreadState();
     if (state.mode === "optimized") {
       void runRestore();
@@ -1189,6 +1202,7 @@
     version: SCRIPT_VERSION,
     ensure,
     isOptimizing: () => runtime.loading,
+    cancel: cancelOptimize,
     destroy: destroyAll,
   };
   window[API_KEY] = api;

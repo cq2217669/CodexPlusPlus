@@ -12,6 +12,7 @@ set "ROOT_DIR=%CD%"
 set "MANAGER_DIR=%ROOT_DIR%\apps\codex-plus-manager"
 set "WINDOWS_DIST=%ROOT_DIR%\dist\windows"
 set "APP_DIST=%WINDOWS_DIST%\app"
+set "PACKAGE_TARGET_DIR=%ROOT_DIR%\target\package"
 set "NSIS_DIR=%ROOT_DIR%\scripts\installer\windows"
 set "CHECK_ONLY=0"
 
@@ -74,18 +75,18 @@ if "%CHECK_ONLY%"=="1" (
   exit /b 0
 )
 
-echo [2/6] 安装前端依赖...
+echo [2/6] 检查前端依赖...
 pushd "%MANAGER_DIR%"
 if errorlevel 1 (
   echo [错误] 无法进入前端目录。
   exit /b 1
 )
-call npm.cmd install --package-lock=false
-if errorlevel 1 (
+if not exist "node_modules\." (
   popd
-  echo [错误] 前端依赖安装失败。
+  echo [错误] 未找到前端依赖。请先在 apps\codex-plus-manager 中执行 npm ci。
   exit /b 1
 )
+echo   [通过] 使用现有前端依赖。
 
 echo [3/6] 构建前端...
 call npm.cmd run vite:build
@@ -97,17 +98,19 @@ if errorlevel 1 (
 popd
 
 echo [4/6] 构建 Release 程序...
+echo   使用独立输出目录，避免运行中的程序锁定构建产物。
+set "CARGO_TARGET_DIR=%PACKAGE_TARGET_DIR%"
 cargo.exe build --release
 if errorlevel 1 (
   echo [错误] Rust Release 构建失败。
   exit /b 1
 )
 
-if not exist "%ROOT_DIR%\target\release\codex-plus-plus.exe" (
+if not exist "%PACKAGE_TARGET_DIR%\release\codex-plus-plus.exe" (
   echo [错误] 未找到 codex-plus-plus.exe 构建产物。
   exit /b 1
 )
-if not exist "%ROOT_DIR%\target\release\codex-plus-plus-manager.exe" (
+if not exist "%PACKAGE_TARGET_DIR%\release\codex-plus-plus-manager.exe" (
   echo [错误] 未找到 codex-plus-plus-manager.exe 构建产物。
   exit /b 1
 )
@@ -120,12 +123,12 @@ if not exist "%APP_DIST%" (
     exit /b 1
   )
 )
-copy /Y "%ROOT_DIR%\target\release\codex-plus-plus.exe" "%APP_DIST%\" >nul
+copy /Y "%PACKAGE_TARGET_DIR%\release\codex-plus-plus.exe" "%APP_DIST%\" >nul
 if errorlevel 1 (
   echo [错误] 复制 codex-plus-plus.exe 失败。
   exit /b 1
 )
-copy /Y "%ROOT_DIR%\target\release\codex-plus-plus-manager.exe" "%APP_DIST%\" >nul
+copy /Y "%PACKAGE_TARGET_DIR%\release\codex-plus-plus-manager.exe" "%APP_DIST%\" >nul
 if errorlevel 1 (
   echo [错误] 复制 codex-plus-plus-manager.exe 失败。
   exit /b 1

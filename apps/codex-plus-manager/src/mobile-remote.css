@@ -13,6 +13,9 @@
 .mobile-remote-confirmation h3 { font-size: 17px; overflow-wrap: anywhere; }
 .mobile-remote-confirmation strong { display: block; font-size: 22px; margin: 8px 0 16px; overflow-wrap: anywhere; }
 .mobile-remote-error { color: #c34444; margin-top: 12px; overflow-wrap: anywhere; }
+.mobile-remote-sync-issues { margin: 8px 0 0; padding-left: 20px; color: hsl(var(--muted-foreground)); }
+.mobile-remote-sync-issues li { margin: 4px 0; overflow-wrap: anywhere; }
+.mobile-remote-sync-issues strong { color: hsl(var(--foreground)); }
 .mobile-remote-task-list { margin-top: 12px; }
 .mobile-remote-task { display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(80px, 180px); align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid hsl(var(--border)); cursor: pointer; }
 .mobile-remote-task span, .mobile-remote-task small { overflow-wrap: anywhere; }

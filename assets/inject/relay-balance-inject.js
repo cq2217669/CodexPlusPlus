@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-05-v4";
+  const REVISION = "builtin-2026-09-08-v6";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -205,8 +205,10 @@
     style.id = STYLE_ID;
     // 为右上角三个窗口控制按钮保留空间，窄窗口也不能缩小这段留白。
     style.textContent = `
-      #${ROOT_ID}{position:fixed;z-index:2147482400;top:12px;right:152px;height:30px;padding:0 10px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:6px;background:color-mix(in srgb,Canvas 92%,transparent);color:CanvasText;font:600 12px/28px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.12);cursor:pointer;white-space:nowrap;-webkit-app-region:no-drag}
-      #${ROOT_ID}:hover,#${ROOT_ID}[data-open="true"]{background:color-mix(in srgb,CanvasText 9%,Canvas)}
+      #${ROOT_ID}{position:fixed;z-index:2147482400;top:6px;right:152px;white-space:nowrap;-webkit-app-region:no-drag}
+      #${ROOT_ID}[data-native-menu="false"]{height:24px;padding:4px 10px;border:1px solid transparent;border-radius:10px;background:transparent;color:color-mix(in srgb,CanvasText 50%,transparent);font:400 14px/14px -apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",sans-serif;cursor:pointer}
+      #${ROOT_ID}[data-native-menu="false"]:hover,#${ROOT_ID}[data-open="true"]{background:color-mix(in srgb,CanvasText 5%,transparent);color:color-mix(in srgb,CanvasText 72%,transparent)}
+      #${ROOT_ID}[data-native-menu="false"]:focus-visible{outline:2px solid color-mix(in srgb,CanvasText 65%,transparent);outline-offset:-2px}
       #${ROOT_ID}[data-state="failed"]{color:#dc2626}#${ROOT_ID}[data-state="loading"]{opacity:.72}
       #${PANEL_ID}{position:fixed;z-index:2147482401;top:50px;right:16px;width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 64px);overflow:auto;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;background:Canvas;color:CanvasText;box-shadow:0 18px 54px rgba(0,0,0,.24);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
       #${PANEL_ID}[hidden]{display:none}#${PANEL_ID} *{box-sizing:border-box}
@@ -247,6 +249,12 @@
       panel.addEventListener("change", onPanelChange);
       document.body.appendChild(panel);
     }
+    const header = document.querySelector('[class*="ApplicationMenuTopBar"], .app-header-tint, header');
+    const nativeMenuClass = header && [...header.querySelectorAll("button")]
+      .find((candidate) => /^(文件|编辑|视图|帮助|file|edit|view|help)$/i.test(candidate.textContent?.trim() || ""))
+      ?.className;
+    root.className = nativeMenuClass || "";
+    root.dataset.nativeMenu = String(Boolean(nativeMenuClass));
   }
 
   function badgeText() {

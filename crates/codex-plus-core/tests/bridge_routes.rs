@@ -79,6 +79,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/stepwise/test", json!({})),
         ("/relay-balance/query", json!({})),
         ("/workspace-search/roots", json!({})),
+        ("/workspace-search/projects", json!({})),
         (
             "/workspace-search/start",
             json!({"root": "C:/workspace", "query": "needle"}),

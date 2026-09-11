@@ -1,5 +1,6 @@
 use codex_plus_core::codex_app_state::{
-    capture_app_state_snapshot, sync_app_state_after_provider_switch, workspace_roots,
+    capture_app_state_snapshot, local_project_context, sync_app_state_after_provider_switch,
+    workspace_root_for_thread, workspace_roots,
 };
 use serde_json::{Value, json};
 
@@ -259,4 +260,71 @@ fn workspace_roots_collects_existing_paths_from_saved_and_thread_state() {
     assert_eq!(roots.len(), 2);
     assert!(roots.contains(&std::fs::canonicalize(first).unwrap()));
     assert!(roots.contains(&std::fs::canonicalize(second).unwrap()));
+}
+
+#[test]
+fn workspace_root_for_thread_uses_only_the_current_thread_hint() {
+    let temp = tempfile::tempdir().unwrap();
+    let current = temp.path().join("current");
+    let other = temp.path().join("other");
+    std::fs::create_dir_all(&current).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        temp.path().join(".codex-global-state.json"),
+        json!({
+            "thread-workspace-root-hints": {
+                "local:thread-current": { "workspaceRoot": current },
+                "thread-other": other
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let root = workspace_root_for_thread(temp.path(), "thread-current").unwrap();
+
+    assert_eq!(root, Some(std::fs::canonicalize(current).unwrap()));
+    assert_eq!(workspace_root_for_thread(temp.path(), "thread-missing").unwrap(), None);
+}
+
+#[test]
+fn local_project_context_uses_codex_project_names_and_thread_assignment() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(
+        temp.path().join(".codex-global-state.json"),
+        json!({
+            "local-projects": {
+                "project-first": {
+                    "id": "project-first",
+                    "name": "第一个项目",
+                    "rootPaths": [first]
+                },
+                "project-second": {
+                    "id": "project-second",
+                    "name": "第二个项目",
+                    "rootPaths": [second]
+                }
+            },
+            "project-order": ["project-second", "project-first"],
+            "selected-project": { "type": "local", "projectId": "project-first" },
+            "thread-project-assignments": {
+                "local:thread-current": { "projectId": "project-second" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let context = local_project_context(temp.path(), Some("thread-current")).unwrap();
+
+    assert_eq!(context.selected_project_id.as_deref(), Some("project-first"));
+    assert_eq!(context.current_project_id.as_deref(), Some("project-second"));
+    assert_eq!(context.projects.len(), 2);
+    assert_eq!(context.projects[0].name, "第二个项目");
+    assert_eq!(context.projects[0].root_paths, vec![std::fs::canonicalize(second).unwrap()]);
+    assert_eq!(context.projects[1].name, "第一个项目");
 }

@@ -183,6 +183,48 @@ pub struct MobileStatus {
     pub selected: BTreeSet<String>,
     pub last_synced_at: Option<String>,
     pub sync_error: Option<String>,
+    pub sync_issues: Vec<SyncIssue>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncIssue {
+    pub task_id: String,
+    pub task_name: String,
+    pub workspace_name: String,
+    pub reason: String,
+}
+
+impl SyncIssue {
+    fn from_task_error(task: &official_tasks::OfficialTask, error: &anyhow::Error) -> Self {
+        Self {
+            task_id: task.id.clone(),
+            task_name: task.name.clone(),
+            workspace_name: task.workspace_name.clone(),
+            reason: task_sync_issue_reason(error).into(),
+        }
+    }
+}
+
+fn task_sync_issue_reason(error: &anyhow::Error) -> &'static str {
+    let detail = format!("{error:#}");
+    if detail.contains("任务历史正在分批读取") {
+        "任务历史较长，正在分批读取"
+    } else if detail.contains("任务记录单条内容过大") {
+        "单条记录过大，已暂停同步"
+    } else if detail.contains("任务记录格式暂不支持") {
+        "任务记录格式不兼容"
+    } else if detail.contains("任务记录尚未就绪") {
+        "任务记录正在写入，等待完整写入"
+    } else if detail.contains("任务记录暂不可用") {
+        "任务记录文件不可访问"
+    } else if detail.contains("任务记录不在官方会话目录内") {
+        "任务记录不是可同步的官方会话文件"
+    } else if detail.contains("任务身份不匹配或属于子任务") {
+        "任务身份不匹配或属于子任务"
+    } else {
+        "读取任务记录失败"
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -521,6 +563,7 @@ impl Worker {
                     s.auto_sync = false;
                     s.selected = selected;
                     s.sync_error = None;
+                    s.sync_issues.clear();
                 });
             }
         }
@@ -766,7 +809,7 @@ impl Worker {
                         bail!("同步确认超时");
                     }
                     if !bound { continue; }
-                    let mut error = false;
+                    let mut sync_issues = Vec::new();
                     let tasks = if self.store.state.auto_sync {
                         official_tasks::list_tasks(&self.home)
                     } else {
@@ -778,6 +821,7 @@ impl Worker {
                         Err(_) => {
                             self.update(|s| {
                                 s.sync_error = Some("任务索引暂忙，已延后同步，不影响本机使用".into());
+                                s.sync_issues.clear();
                             });
                             continue;
                         }
@@ -812,7 +856,10 @@ impl Worker {
                         };
                         let snapshot = match readers.entry(task_id.clone()).or_default().read(&self.home, task) {
                             Ok(snapshot) => snapshot,
-                            Err(_) => { error = true; continue; }
+                            Err(error) => {
+                                sync_issues.push(SyncIssue::from_task_error(task, &error));
+                                continue;
+                            }
                         };
                         if overlays.get(&task_id).is_some_and(|overlay|
                             overlay.persisted(&readers[&task_id].last_item_id))
@@ -849,7 +896,9 @@ impl Worker {
                         sent.insert(task_id, snapshot);
                     }
                     self.update(|s| {
-                        s.sync_error = error.then(|| "部分任务记录暂不可读，正在等待恢复".into());
+                        s.sync_error = (!sync_issues.is_empty())
+                            .then(|| "部分任务记录暂不可读，正在等待恢复".into());
+                        s.sync_issues = sync_issues;
                     });
                 }
                 incoming = socket.next() => {
@@ -1053,19 +1102,28 @@ impl Worker {
             .into_iter()
             .next()
             .ok_or("not_found")?;
-        let current = readers
-            .entry(task_id.to_owned())
-            .or_default()
-            .read(&self.home, &task)
-            .map_err(|_| "internal")?;
-        if command_type != "create_task"
-            && sent
-                .get(task_id)
-                .is_some_and(|snapshot| snapshot != &current)
-        {
+        // 新建任务只借用来源任务的工作区，不需要解析其可能很大的历史文件。
+        let current = if command_type == "create_task" {
+            None
+        } else {
+            Some(
+                readers
+                    .entry(task_id.to_owned())
+                    .or_default()
+                    .read(&self.home, &task)
+                    .map_err(|_| "internal")?,
+            )
+        };
+        if current.as_ref().is_some_and(|current| {
+            sent.get(task_id)
+                .is_some_and(|snapshot| snapshot != current)
+        }) {
             return Err("state_conflict");
         }
-        let status = current["taskStatus"].as_str().unwrap_or("");
+        let status = current
+            .as_ref()
+            .and_then(|current| current["taskStatus"].as_str())
+            .unwrap_or("");
         let allowed = match command_type {
             "create_task" => true,
             "start_task" => matches!(status, "created" | "stopped" | "failed"),
@@ -1279,6 +1337,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn task_sync_issue_reason_is_actionable_and_does_not_expose_raw_errors() {
+        for (error, expected) in [
+            (
+                "任务历史正在分批读取，稍后继续同步",
+                "任务历史较长，正在分批读取",
+            ),
+            (
+                "任务记录单条内容过大，已暂停同步",
+                "单条记录过大，已暂停同步",
+            ),
+            ("任务记录格式暂不支持", "任务记录格式不兼容"),
+            ("任务记录尚未就绪", "任务记录正在写入，等待完整写入"),
+            ("任务记录暂不可用: access denied", "任务记录文件不可访问"),
+            (
+                "未知 I/O 错误: C:/private/session.jsonl",
+                "读取任务记录失败",
+            ),
+        ] {
+            assert_eq!(task_sync_issue_reason(&anyhow::anyhow!(error)), expected);
+        }
+    }
+
+    #[test]
     fn command_digest_requires_lowercase_sha256_hex() {
         assert!(lowercase_sha256(&"0123456789abcdef".repeat(4)));
         assert!(!lowercase_sha256(&"A".repeat(64)));
@@ -1396,6 +1477,7 @@ mod tests {
         ] {
             writeln!(file, "{value}").unwrap();
         }
+        drop(file);
         let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
         db.execute_batch(
             "CREATE TABLE threads(id TEXT, title TEXT, cwd TEXT, rollout_path TEXT,
@@ -1453,6 +1535,8 @@ mod tests {
         assert_eq!(send["threadId"], task_id);
         assert_eq!(send["text"], "继续");
 
+        std::fs::write(&path, "not valid json\n").unwrap();
+        let mut create_readers = HashMap::new();
         let create = worker
             .command_request_with_configs(
                 &envelope(
@@ -1460,7 +1544,7 @@ mod tests {
                     json!({"text":"手机新任务","initialText":"检查项目","modelConfigId":"a".repeat(64)}),
                 ),
                 &sent,
-                &mut HashMap::new(),
+                &mut create_readers,
                 &configs,
             )
             .unwrap();
@@ -1468,6 +1552,16 @@ mod tests {
         assert_eq!(create["model"], "gpt-test");
         assert_eq!(create["name"], "手机新任务");
         assert_eq!(create["cwd"], workspace.to_string_lossy().as_ref());
+        assert!(create_readers.is_empty());
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        for value in [
+            json!({"type":"session_meta","payload":{"id":task_id,"source":"vscode"}}),
+            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn_id}}),
+        ] {
+            writeln!(file, "{value}").unwrap();
+        }
+        drop(file);
 
         let stop = worker
             .command_request_with_configs(

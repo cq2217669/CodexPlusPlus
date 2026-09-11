@@ -67,6 +67,49 @@ pub fn roots_response() -> anyhow::Result<Value> {
     Ok(json!({ "status": "ok", "roots": roots }))
 }
 
+pub fn projects_response(payload: Value) -> anyhow::Result<Value> {
+    let thread_id = payload
+        .get("threadId")
+        .or_else(|| payload.get("thread_id"))
+        .and_then(Value::as_str);
+    let home = crate::codex_home::default_codex_home_dir();
+    let context = crate::codex_app_state::local_project_context(&home, thread_id)?;
+    let projects = context
+        .projects
+        .into_iter()
+        .map(|project| {
+            json!({
+                "id": project.id,
+                "name": project.name,
+                "roots": project.root_paths.into_iter().map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "status": "ok",
+        "projects": projects,
+        "selectedProjectId": context.selected_project_id,
+        "currentProjectId": context.current_project_id,
+    }))
+}
+
+pub fn current_root_response(payload: Value) -> anyhow::Result<Value> {
+    let thread_id = payload
+        .get("threadId")
+        .or_else(|| payload.get("thread_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if thread_id.trim().is_empty() {
+        bail!("缺少当前会话标识");
+    }
+    let home = crate::codex_home::default_codex_home_dir();
+    let root = crate::codex_app_state::workspace_root_for_thread(&home, thread_id)?;
+    Ok(match root {
+        Some(root) => json!({ "status": "ok", "root": root.to_string_lossy() }),
+        None => json!({ "status": "missing", "root": "" }),
+    })
+}
+
 pub fn start_response(payload: Value) -> anyhow::Result<Value> {
     let mut request: SearchRequest = serde_json::from_value(payload)?;
     request.root = canonical_workspace_root(&request.root)?

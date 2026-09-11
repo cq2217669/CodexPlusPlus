@@ -121,6 +121,23 @@ fn windows_installer_launches_manager_after_installation() {
 }
 
 #[test]
+fn windows_package_uses_dedicated_release_directory() {
+    let script = std::fs::read_to_string("../../package.bat").expect("read Windows package script");
+
+    assert!(script.contains("set \"PACKAGE_TARGET_DIR=%ROOT_DIR%\\target\\package\""));
+    assert!(script.contains("set \"CARGO_TARGET_DIR=%PACKAGE_TARGET_DIR%\""));
+    assert!(script.contains("cargo.exe build --release"));
+    assert!(script.contains("%PACKAGE_TARGET_DIR%\\release\\codex-plus-plus.exe"));
+    assert!(script.contains("%PACKAGE_TARGET_DIR%\\release\\codex-plus-plus-manager.exe"));
+    assert!(!script.contains("taskkill.exe"));
+
+    let installer = std::fs::read_to_string("../../scripts/installer/windows/XuanPlusPlus.nsi")
+        .expect("read Windows installer script");
+    assert!(installer.contains("taskkill /IM codex-plus-plus.exe /F"));
+    assert!(installer.contains("taskkill /IM codex-plus-plus-manager.exe /F"));
+}
+
+#[test]
 fn macos_dmg_includes_applications_shortcut_for_drag_install() {
     let script = std::fs::read_to_string("../../scripts/installer/macos/package-dmg.sh")
         .expect("read macOS DMG packaging script");
