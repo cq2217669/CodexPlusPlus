@@ -1896,7 +1896,12 @@ fn apply_model_catalog_to_config(
         || entries
             .iter()
             .any(|entry| entry.suffix_window.is_some() || entry.auto_compact_percent.is_some());
-    let custom_responses = custom_responses_provider(&config_text);
+    // custom_responses_provider(&config_text) 读取的是生成后 config 里的 wire_api；
+    // 自对 Codex 恒写 "responses" 起，该信号已失真（chat 上游也会读到 responses）。
+    // catalog 是否按 Responses 语义生成取决于真实上游协议，只能由 profile.protocol 判定。
+    let custom_responses = profile.protocol == RelayProtocol::Responses
+        && active_provider_id(&parse_toml_document(&config_text)?)
+            .is_some_and(|provider_id| is_custom_provider_id(&provider_id));
     // Catalog capabilities must follow the effective config, not stale profile URLs.
     let official_deepseek_responses =
         uses_official_deepseek_responses_for_config(profile, &config_text);
@@ -1910,6 +1915,11 @@ fn apply_model_catalog_to_config(
             if is_codex_plus_managed_model_catalog(home, &existing)
                 || is_cc_switch_model_catalog(&existing)
             {
+                config_text = remove_root_key(&config_text, "model_catalog_json");
+            } else if model_catalog_pointer_has_unexpanded_variable(&existing) {
+                // `%userprofile%\.codex\codex-models.json` 这类指针 codex 不展开变量，
+                // 在任何机器上都读不到，留着会让 codex 拒绝加载整份 config.toml
+                // （#2123）。去掉它不会比现在更差——这份 catalog 反正从未生效过。
                 config_text = remove_root_key(&config_text, "model_catalog_json");
             } else {
                 if has_per_model_overrides {
@@ -2193,25 +2203,6 @@ fn uses_official_deepseek_responses_for_config(profile: &RelayProfile, config_te
     uses_official_deepseek_responses(profile)
 }
 
-fn custom_responses_provider(config_text: &str) -> bool {
-    let Ok(doc) = parse_toml_document(config_text) else {
-        return false;
-    };
-    let Some(provider_id) = active_provider_id(&doc) else {
-        return false;
-    };
-    if !is_custom_provider_id(&provider_id) {
-        return false;
-    }
-    doc.get("model_providers")
-        .and_then(Item::as_table)
-        .and_then(|providers| providers.get(&provider_id))
-        .and_then(Item::as_table_like)
-        .and_then(|provider| provider.get("wire_api"))
-        .and_then(Item::as_str)
-        .is_some_and(|wire_api| wire_api.trim().eq_ignore_ascii_case("responses"))
-}
-
 fn copy_standard_responses_catalog(
     home: &Path,
     source: &str,
@@ -2328,6 +2319,22 @@ fn sanitize_catalog_filename(id: &str) -> String {
             }
         })
         .collect()
+}
+
+/// 这条 `model_catalog_json` 指针是否**在任何平台、任何机器上都打不开**。
+///
+/// codex 核心对读不到的 catalog 不是降级处理，而是直接拒绝加载**整份** config.toml
+/// （`os error 3`），用户侧表现为"无法加载 config.toml，因此此对话串无法继续"，
+/// 报错信息和真正的故障点毫无关系，极难自诊。所以这种指针绝不能落盘。
+///
+/// 这里只认定**未展开的 shell 变量**这一种形态：codex 自己不做变量展开，所以
+/// `%userprofile%\.codex\...` 在任何机器上都不存在，判定是确定的、不会误伤。
+/// 其余"文件恰好不存在"的路径不做处理——那可能是挂载盘未就绪、或用户自己
+/// 删掉了 catalog 但还想留着手改，按既有语义交给上层保护逻辑（#2123 建议的
+/// "保存前校验并提示"是另一个更大的改动，不在本次范围）。
+fn model_catalog_pointer_has_unexpanded_variable(pointer: &str) -> bool {
+    let pointer = pointer.trim();
+    !pointer.is_empty() && (pointer.contains('%') || pointer.contains('$'))
 }
 
 fn sync_context_limits_from_config(profile: &mut RelayProfile, config_text: &str) {
@@ -2911,14 +2918,11 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     {
         provider["name"] = toml_edit::value(transport_provider_id.as_str());
     }
-    if provider
-        .get("wire_api")
-        .and_then(Item::as_str)
-        .map(str::trim)
-        .is_none_or(str::is_empty)
-    {
-        provider["wire_api"] = toml_edit::value("responses");
-    }
+    // Codex 26.901 起不再支持 `wire_api = "chat"`（见 openai/codex discussion #7782），
+    // 一旦出现会导致整份 config.toml 被判为无效并回退内置默认模型。
+    // Chat Completions 上游由本地协议代理（protocol_proxy）负责 responses→chat 转换，
+    // 因此对 Codex 暴露的 wire_api 必须恒为 "responses"。
+    provider["wire_api"] = toml_edit::value("responses");
     if profile.relay_mode != crate::settings::RelayMode::PureApi
         && provider
             .get("requires_openai_auth")
