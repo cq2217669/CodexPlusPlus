@@ -317,12 +317,64 @@ fn relay_options(settings: &Value) -> Vec<Value> {
         .flatten()
         .filter(|profile| reusable_relay_profile(profile))
         .filter_map(|profile| {
+            let models = relay_model_options(profile);
             Some(json!({
                 "id": configured_string(profile, "id")?,
                 "name": configured_string(profile, "name").unwrap_or_else(|| "未命名供应商".into()),
+                "models": models,
+                "defaultModel": models.first().cloned().unwrap_or_default(),
             }))
         })
         .collect()
+}
+
+fn relay_model_options(profile: &Value) -> Vec<String> {
+    let mut models = Vec::new();
+    let mut add = |value: &str| {
+        let model = strip_model_context_suffix(value);
+        if !model.is_empty() && !models.iter().any(|item| item == &model) {
+            models.push(model);
+        }
+    };
+    if let Some(model) = configured_string(profile, "model").or_else(|| {
+        profile
+            .get("configContents")
+            .and_then(Value::as_str)
+            .and_then(|raw| {
+                raw.lines()
+                    .find_map(|line| parse_toml_string_assignment(line, "model"))
+            })
+    }) {
+        add(&model);
+    }
+    if let Some(model_list) = configured_string(profile, "modelList") {
+        for model in model_list.split(['\r', '\n', ',']) {
+            add(model);
+        }
+    }
+    models
+}
+
+fn strip_model_context_suffix(value: &str) -> String {
+    let value = value.trim();
+    let Some(close) = value.rfind(']') else {
+        return value.to_string();
+    };
+    if close != value.len() - 1 {
+        return value.to_string();
+    }
+    let Some(open) = value[..close].rfind('[') else {
+        return value.to_string();
+    };
+    let suffix = value[open + 1..close].trim();
+    let numeric = suffix
+        .strip_suffix(['K', 'k', 'M', 'm'])
+        .unwrap_or(suffix)
+        .trim();
+    if !value[..open].trim().is_empty() && numeric.parse::<u64>().is_ok_and(|size| size > 0) {
+        return value[..open].trim().to_string();
+    }
+    value.to_string()
 }
 
 fn load_codex_global_state() -> Result<Value, RpcError> {
@@ -2315,6 +2367,34 @@ mod tests {
         assert_eq!(profile["baseUrl"], "https://relay.example/v1");
         assert!(profile.get("profiles").is_none());
         assert!(selected_profile(&plugin, &json!({ "profileRef": "missing" })).is_err());
+    }
+
+    #[test]
+    fn relay_options_expose_configured_model_choices() {
+        let options = relay_options(&json!({
+            "relayProfiles": [
+                {
+                    "id": "primary",
+                    "name": "Primary",
+                    "model": "main-model[1M]",
+                    "modelList": "main-model[1M]\nfast-model[200K], fallback-model"
+                },
+                {
+                    "id": "config-model",
+                    "name": "Config Model",
+                    "configContents": "model = \"from-config[128K]\""
+                },
+                { "id": "aggregate", "name": "Aggregate", "relayMode": "aggregate" }
+            ]
+        }));
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0]["defaultModel"], "main-model");
+        assert_eq!(
+            options[0]["models"],
+            json!(["main-model", "fast-model", "fallback-model"])
+        );
+        assert_eq!(options[1]["models"], json!(["from-config"]));
+        assert_eq!(strip_model_context_suffix("model[custom]"), "model[custom]");
     }
 
     #[test]

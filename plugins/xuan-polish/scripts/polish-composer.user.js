@@ -4,7 +4,7 @@
  */
 (() => {
   const SCRIPT_VERSION = "1.2.1";
-  const INSTANCE_REVISION = "official-2026-09-v24";
+  const INSTANCE_REVISION = "official-2026-09-v25";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -148,6 +148,7 @@
     retryBlockedUntil: 0,
     lastOptimizeError: "",
     settings: null,
+    settingsRequest: null,
     bridgeBroken: false,
     bridgeError: "",
     writeToken: 0,
@@ -253,17 +254,23 @@
   }
 
   async function refreshSettings() {
-    const result = await bridgeCall("/prompt-optimize/settings", {});
-    if (!result || result.status !== "ok" || !result.settings) {
-      runtime.bridgeBroken = true;
-      runtime.bridgeError = String(result?.error || result?.message || "无法读取润色配置");
-      runtime.settings = null;
-      return null;
-    }
-    runtime.bridgeBroken = false;
-    runtime.bridgeError = "";
-    runtime.settings = result.settings;
-    return runtime.settings;
+    if (runtime.settingsRequest) return runtime.settingsRequest;
+    const request = bridgeCall("/prompt-optimize/settings", {}).then((result) => {
+      if (!result || result.status !== "ok" || !result.settings) {
+        runtime.bridgeBroken = true;
+        runtime.bridgeError = String(result?.error || result?.message || "无法读取润色配置");
+        runtime.settings = null;
+        return null;
+      }
+      runtime.bridgeBroken = false;
+      runtime.bridgeError = "";
+      runtime.settings = result.settings;
+      return runtime.settings;
+    });
+    runtime.settingsRequest = request;
+    return request.finally(() => {
+      if (runtime.settingsRequest === request) runtime.settingsRequest = null;
+    });
   }
 
   function isConfigured(settings) {
@@ -965,16 +972,11 @@
     refreshButtonAppearance();
     showToast(retrying ? "正在重试润色，请稍候" : "正在润色，请稍候", "");
     try {
-      if (!(await refreshSettings())) {
-        if (token !== runtime.optimizeToken) return;
-        showOptimizeFailure(runtime.bridgeError || "无法读取润色配置", retrying);
-        return;
-      }
-      if (token !== runtime.optimizeToken) return;
-      if (!isConfigured(runtime.settings)) {
+      const settings = runtime.settings;
+      if (!settings || !isConfigured(settings)) {
         runtime.lastOptimizeError = "";
-        showToast("请先配置 API", "");
-        if (runtime.settings.configurationError) showToast(runtime.settings.configurationError, "error");
+        showToast(settings ? "请先配置润色供应商和模型" : "正在读取润色设置", "");
+        if (settings?.configurationError) showToast(settings.configurationError, "error");
         openSettingsPanel();
         return;
       }
@@ -993,7 +995,7 @@
       ].join("\n");
       runtime.optimizePhase = "generate";
       runtime.pendingGenerateToken = token;
-      const configuredTimeoutMs = Number(runtime.settings?.timeoutMs);
+      const configuredTimeoutMs = Number(settings.timeoutMs);
       const requestTimeoutMs = Number.isFinite(configuredTimeoutMs)
         ? Math.min(120000, Math.max(1000, configuredTimeoutMs))
         : 60000;
@@ -1005,7 +1007,7 @@
           recentTurns,
           includeProjectMap: promptOptimizeContext.shouldIncludeProjectMap(
             projectContextHint,
-            runtime.settings.style,
+            settings.style,
           ),
         },
       });
@@ -1122,9 +1124,41 @@
     document.querySelectorAll(`[${PANEL_ATTR}]`).forEach((node) => node.remove());
   }
 
-  async function openSettingsPanel() {
+  function providerForSettings(settings, relayId) {
+    return (settings.providers || []).find((provider) => provider.id === relayId) || null;
+  }
+
+  function providerModelOptions(settings, relayId) {
+    const provider = providerForSettings(settings, relayId);
+    const models = Array.isArray(provider?.models) ? provider.models : [];
+    return [...new Set(models.map((model) => String(model || "").trim()).filter(Boolean))];
+  }
+
+  function setProviderModelOptions(modelSelectEl, modelHintEl, settings, relayId, preferredModel) {
+    const provider = providerForSettings(settings, relayId);
+    const models = providerModelOptions(settings, relayId);
+    modelSelectEl.replaceChildren();
+    if (!models.length) {
+      modelSelectEl.add(new Option("该供应商未配置模型", ""));
+      modelSelectEl.disabled = true;
+      modelHintEl.textContent = "请先在供应商配置中填写模型列表。";
+      return "";
+    }
+    for (const model of models) modelSelectEl.add(new Option(model, model));
+    const selected = models.includes(preferredModel)
+      ? preferredModel
+      : models.includes(provider?.defaultModel)
+        ? provider.defaultModel
+        : models[0];
+    modelSelectEl.value = selected;
+    modelSelectEl.disabled = false;
+    modelHintEl.textContent = `共 ${models.length} 个已配置模型`;
+    return selected;
+  }
+
+  function openSettingsPanel(initialSettings = runtime.settings || {}, refresh = true) {
     closeSettingsPanel();
-    const settings = (await refreshSettings()) || runtime.settings || {};
+    const settings = initialSettings;
     const overlay = document.createElement("div");
     overlay.setAttribute(PANEL_ATTR, "true");
     overlay.dataset.cpoTheme = detectAppearance();
@@ -1140,17 +1174,8 @@
         <p class="cpo-sub">配置外部 LLM；API Key 只保存在 Xuan++ 本地设置中。</p>
         <div class="cpo-row">
           <div class="cpo-field">
-            <label>连接来源</label>
+            <label>供应商</label>
             <select data-cpo="relayId"></select>
-          </div>
-        </div>
-        <div class="cpo-row">
-          <div class="cpo-field">
-            <label>协议</label>
-            <select data-cpo="protocol">
-              <option value="openai">OpenAI 兼容</option>
-              <option value="anthropic">Anthropic</option>
-            </select>
           </div>
           <div class="cpo-field">
             <label>风格</label>
@@ -1159,22 +1184,36 @@
             </select>
           </div>
         </div>
-        <div class="cpo-field">
+        <div class="cpo-field" data-cpo-provider-model hidden>
+          <label>润色模型</label>
+          <select data-cpo="modelSelect"></select>
+          <p class="cpo-hint" data-cpo="modelHint"></p>
+        </div>
+        <div class="cpo-row" data-cpo-manual>
+          <div class="cpo-field">
+            <label>协议</label>
+            <select data-cpo="protocol">
+              <option value="openai">OpenAI 兼容</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+        </div>
+        <div class="cpo-field" data-cpo-manual>
           <label>Base URL</label>
           <input data-cpo="baseUrl" type="url" spellcheck="false" placeholder="https://api.example.com/v1" />
           <p class="cpo-hint">仅 HTTPS；OpenAI 兼容默认 ${DEFAULT_BASE_URLS.openai}</p>
         </div>
-        <div class="cpo-row">
+        <div class="cpo-row" data-cpo-manual>
           <div class="cpo-field">
             <label>润色模型</label>
-            <input data-cpo="model" spellcheck="false" placeholder="gpt-4o-mini" />
+            <input data-cpo="modelInput" spellcheck="false" placeholder="gpt-4o-mini" />
           </div>
           <div class="cpo-field">
             <label>API Key</label>
             <input data-cpo="apiKey" type="password" autocomplete="new-password" placeholder="留空保持不变" />
           </div>
         </div>
-        <div class="cpo-field">
+        <div class="cpo-field" data-cpo-manual>
           <label class="cpo-check"><input data-cpo="clearKey" type="checkbox" /> 清除已保存的 API Key</label>
           <p class="cpo-key-state">${settings.apiKeyConfigured ? "已保存 API Key（再次输入可替换）" : "未配置 API Key"}</p>
         </div>
@@ -1195,32 +1234,37 @@
     relayIdEl.value = settings.relayId || "";
     const protocolEl = overlay.querySelector('[data-cpo="protocol"]');
     const baseUrlEl = overlay.querySelector('[data-cpo="baseUrl"]');
-    const modelEl = overlay.querySelector('[data-cpo="model"]');
+    const modelInputEl = overlay.querySelector('[data-cpo="modelInput"]');
+    const modelSelectEl = overlay.querySelector('[data-cpo="modelSelect"]');
+    const modelHintEl = overlay.querySelector('[data-cpo="modelHint"]');
+    const providerModelField = overlay.querySelector("[data-cpo-provider-model]");
     const apiKeyEl = overlay.querySelector('[data-cpo="apiKey"]');
     const styleEl = overlay.querySelector('[data-cpo="style"]');
     const clearKeyEl = overlay.querySelector('[data-cpo="clearKey"]');
     protocolEl.value = protocol;
     baseUrlEl.value = baseUrl;
-    modelEl.value = model;
+    modelInputEl.value = model;
     styleEl.value = style;
     const updateConnectionSource = () => {
       const usesProvider = Boolean(relayIdEl.value);
-      for (const element of [protocolEl, baseUrlEl, apiKeyEl, clearKeyEl]) {
-        element.disabled = usesProvider;
-        element.closest(".cpo-field").hidden = usesProvider;
+      for (const section of overlay.querySelectorAll("[data-cpo-manual]")) {
+        section.hidden = usesProvider;
+        for (const element of section.querySelectorAll("input, select")) element.disabled = usesProvider;
       }
+      providerModelField.hidden = !usesProvider;
+      if (usesProvider) setProviderModelOptions(modelSelectEl, modelHintEl, settings, relayIdEl.value, model);
     };
     relayIdEl.addEventListener("change", updateConnectionSource);
     updateConnectionSource();
     protocolEl.addEventListener("change", () => {
       const nextProtocol = protocolEl.value === "anthropic" ? "anthropic" : "openai";
       const currentBase = baseUrlEl.value.trim();
-      const currentModel = modelEl.value.trim();
+      const currentModel = modelInputEl.value.trim();
       if (!currentBase || currentBase === DEFAULT_BASE_URLS.openai || currentBase === DEFAULT_BASE_URLS.anthropic) {
         baseUrlEl.value = DEFAULT_BASE_URLS[nextProtocol];
       }
       if (!currentModel || currentModel === DEFAULT_MODELS.openai || currentModel === DEFAULT_MODELS.anthropic) {
-        modelEl.value = DEFAULT_MODELS[nextProtocol];
+        modelInputEl.value = DEFAULT_MODELS[nextProtocol];
       }
     });
     overlay.addEventListener("click", (event) => {
@@ -1232,8 +1276,10 @@
     });
     overlay.querySelector('[data-cpo-action="save"]').addEventListener("click", (event) => {
       event.preventDefault();
-      void saveSettingsFromPanel(protocolEl, baseUrlEl, modelEl, apiKeyEl, styleEl, clearKeyEl, relayIdEl);
+      void saveSettingsFromPanel(protocolEl, baseUrlEl, modelInputEl, modelSelectEl, apiKeyEl, styleEl, clearKeyEl, relayIdEl);
     });
+    overlay.addEventListener("input", () => { overlay.dataset.cpoDirty = "true"; });
+    overlay.addEventListener("change", () => { overlay.dataset.cpoDirty = "true"; });
     overlay.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -1241,16 +1287,23 @@
       }
     });
     document.documentElement.appendChild(overlay);
+    if (refresh) {
+      void refreshSettings().then((nextSettings) => {
+        if (nextSettings && overlay.isConnected && overlay.dataset.cpoDirty !== "true" && nextSettings !== settings) {
+          openSettingsPanel(nextSettings, false);
+        }
+      });
+    }
     if (relayIdEl.value) relayIdEl.focus();
     else if (!settings.apiKeyConfigured) apiKeyEl.focus();
     else baseUrlEl.focus();
   }
 
-  async function saveSettingsFromPanel(protocolEl, baseUrlEl, modelEl, apiKeyEl, styleEl, clearKeyEl, relayIdEl) {
-    const model = modelEl.value.trim();
+  async function saveSettingsFromPanel(protocolEl, baseUrlEl, modelInputEl, modelSelectEl, apiKeyEl, styleEl, clearKeyEl, relayIdEl) {
+    const model = (relayIdEl.value ? modelSelectEl.value : modelInputEl.value).trim();
     if (!model) {
-      showToast("请填写润色模型", "error");
-      modelEl.focus();
+      showToast(relayIdEl.value ? "请先在供应商中配置润色模型" : "请填写润色模型", "error");
+      (relayIdEl.value ? modelSelectEl : modelInputEl).focus();
       return;
     }
     const next = {
@@ -1322,9 +1375,9 @@
     installComposerSendCleanup();
     installStyle();
     ensureButton();
-    await refreshSettings();
-    if (runtime.disposed) return;
-    refreshButtonAppearance();
+    void refreshSettings().then(() => {
+      if (!runtime.disposed) refreshButtonAppearance();
+    });
   }
 
   function ensure() {

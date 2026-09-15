@@ -193,6 +193,7 @@ function optimizeAdapter(generate) {
     retryBlockedUntil: 0,
     lastOptimizeError: "",
     settings: null,
+    settingsRequest: null,
     bridgeError: "",
   };
   const settings = {
@@ -202,6 +203,7 @@ function optimizeAdapter(generate) {
     style: "structured",
     timeoutMs: 60000,
   };
+  runtime.settings = settings;
   const context = vm.createContext({
     runtime,
     GENERATE_SETTLE_GRACE_MS: 5000,
@@ -275,13 +277,15 @@ test("设置桥接延迟时不销毁润色按钮", () => {
   const start = source.indexOf("  async function startObservers()");
   const end = source.indexOf("\n  function ensure()", start);
   const observerSource = source.slice(start, end);
-  assert.match(observerSource, /installStyle\(\);\s*ensureButton\(\);\s*await refreshSettings\(\);/);
+  assert.match(observerSource, /installStyle\(\);\s*ensureButton\(\);\s*void refreshSettings\(\)\.then/);
+  assert.doesNotMatch(observerSource, /await refreshSettings\(\)/);
   assert.doesNotMatch(observerSource, /destroyAll\(\)/);
 
   const optimizeStart = source.indexOf("  async function runOptimize()");
   const optimizeEnd = source.indexOf("\n  function cancelOptimize()", optimizeStart);
   const optimizeSource = source.slice(optimizeStart, optimizeEnd);
-  assert.match(optimizeSource, /if \(!isConfigured\(runtime\.settings\)\)/);
+  assert.match(optimizeSource, /if \(!settings \|\| !isConfigured\(settings\)\)/);
+  assert.doesNotMatch(optimizeSource, /await refreshSettings\(\)/);
 });
 
 test("润色失败后可立即重试，并给出可观察的重试反馈", async () => {
@@ -361,10 +365,29 @@ test("polish script supports cancellation, restore state and settings without ex
   assert.doesNotMatch(source, /bearer\s+\$?\{/i);
 });
 
+test("润色设置可选择已配置供应商及其模型", () => {
+  assert.match(source, /<label>供应商<\/label>/);
+  assert.match(source, /data-cpo="modelSelect"/);
+  assert.match(source, /function providerModelOptions\(/);
+  assert.match(source, /function setProviderModelOptions\(/);
+  assert.match(source, /provider\.defaultModel/);
+  assert.match(source, /data-cpo-manual/);
+});
+
+test("润色设置打开后后台刷新，不等待桥接返回", () => {
+  const start = source.indexOf("  function openSettingsPanel(");
+  const end = source.indexOf("\n  async function saveSettingsFromPanel", start);
+  const panelSource = source.slice(start, end);
+  assert.match(panelSource, /document\.documentElement\.appendChild\(overlay\);\s*if \(refresh\) \{\s*void refreshSettings\(\)\.then/);
+  assert.doesNotMatch(panelSource, /await refreshSettings\(\)/);
+  assert.match(source, /if \(runtime\.settingsRequest\) return runtime\.settingsRequest;/);
+});
+
 test("润色设置只提交插件原生字段", () => {
   const start = source.indexOf("  async function saveSettingsFromPanel(");
   const end = source.indexOf("\n  function scheduleEnsure()", start);
   const saveSource = source.slice(start, end);
+  assert.match(saveSource, /const model = \(relayIdEl\.value \? modelSelectEl\.value : modelInputEl\.value\)\.trim\(\);/);
   assert.match(saveSource, /const next = \{\s*relayId: relayIdEl\.value,\s*style: styleEl\.value,\s*model,/);
   assert.match(saveSource, /next\.protocol =/);
   assert.match(saveSource, /next\.baseUrl = baseUrl/);

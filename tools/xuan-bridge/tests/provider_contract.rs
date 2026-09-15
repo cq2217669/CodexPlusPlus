@@ -212,6 +212,52 @@ fn usage_query_ignores_a_custom_address_request() {
 }
 
 #[test]
+fn polish_settings_return_relay_model_choices_without_credentials() {
+    let home = tempfile::tempdir().unwrap();
+    let codex_settings = home.path().join("codex-settings.json");
+    fs::write(
+        &codex_settings,
+        serde_json::to_vec_pretty(&json!({
+            "activeRelayId": "primary",
+            "relayProfiles": [{
+                "id": "primary",
+                "name": "Primary Relay",
+                "protocol": "responses",
+                "upstreamBaseUrl": "https://relay.example/v1",
+                "authContents": "{\"OPENAI_API_KEY\":\"relay-secret\"}",
+                "model": "primary-model[1M]",
+                "modelList": "primary-model[1M]\nfast-model[200K]"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    write_config(
+        &home,
+        json!({
+            "schemaVersion": 1,
+            "plugins": { "xuan-polish": {} }
+        }),
+    );
+    let response = call_bridge(
+        &home,
+        "polish.settings.get",
+        json!({}),
+        &[("XUAN_CODEX_SETTINGS_PATH", codex_settings.to_str().unwrap())],
+    );
+    assert_eq!(response["result"]["settings"]["relayId"], "primary");
+    assert_eq!(
+        response["result"]["settings"]["providers"][0]["models"],
+        json!(["primary-model", "fast-model"])
+    );
+    assert_eq!(
+        response["result"]["settings"]["providers"][0]["defaultModel"],
+        "primary-model"
+    );
+    assert!(!response.to_string().contains("relay-secret"));
+}
+
+#[test]
 fn polish_profile_calls_responses_and_preserves_context_boundaries() {
     let home = tempfile::tempdir().unwrap();
     let (address, request) = serve_sse_once(concat!(
