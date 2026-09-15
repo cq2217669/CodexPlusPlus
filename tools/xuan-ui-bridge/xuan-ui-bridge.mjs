@@ -51,10 +51,13 @@ function pageAdapter(name, binding, owner) {
   const api = (route, payload = {}) => new Promise((resolve, reject) => {
     if (pending.size >= 32) return reject(new Error("插件请求过多，请稍后重试"));
     const id = `${owner}:${++sequence}`;
+    const timeoutMs = name === "xuan-polish"
+      ? route === "/v1/polish" ? 130_000 : 35_000
+      : 75_000;
     const timer = window.setTimeout(() => {
       pending.delete(id);
       reject(new Error("插件请求超时，请稍后重试"));
-    }, 75_000);
+    }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     try {
       window[binding](JSON.stringify({ id, route, payload }));
@@ -85,6 +88,33 @@ function pageAdapter(name, binding, owner) {
 
 export function adapterScript(name, binding, owner) {
   return `(${pageAdapter.toString()})(${JSON.stringify(name)},${JSON.stringify(binding)},${JSON.stringify(owner)})`;
+}
+
+export function pluginUiErrorMessage(name, error) {
+  const message = String(error?.message || error || "").trim();
+  if (/\p{Script=Han}/u.test(message)) return message;
+  if (name === "xuan-polish") {
+    if (/HTTP 429|too many requests|rate.?limit/i.test(message)) {
+      return "润色请求过于频繁或额度受限，请稍后重试";
+    }
+    if (/HTTP (?:401|403)|unauthorized|forbidden/i.test(message)) {
+      return "API Key 无效或无权访问当前模型，请检查润色设置";
+    }
+    if (/polish\.settings|settings\.get/i.test(message) && /timed out|timeout/i.test(message)) {
+      return "读取润色设置超时，请稍后重试";
+    }
+    if (/timed out|timeout/i.test(message)) return "润色请求超时，请稍后重试";
+    if (/exited with code|broken pipe|epipe/i.test(message)) {
+      return "润色插件进程异常退出，请重新打开任务后重试";
+    }
+    if (/did not return JSON|has no text/i.test(message)) {
+      return "润色服务返回内容无效，请检查接口和模型设置";
+    }
+    if (/polish request failed|failed to fetch|networkerror|econnrefused/i.test(message)) {
+      return "无法连接润色服务，请检查接口设置或稍后重试";
+    }
+  }
+  return "插件请求失败，请检查插件设置或重新打开任务";
 }
 
 export function isAppPage(target) {
@@ -180,8 +210,7 @@ export async function attachPage(target, { name, debugPort, request }) {
     try {
       let value;
       try { value = await dispatchUi(name, params.payload, request); } catch (error) {
-        const message = typeof error?.message === "string" && /\p{Script=Han}/u.test(error.message)
-          ? error.message : "插件请求失败，请检查插件设置或重新打开任务";
+        const message = pluginUiErrorMessage(name, error);
         value = { status: "failed", error: message, message };
       }
       if (closed || !contexts.has(params.executionContextId)) return;

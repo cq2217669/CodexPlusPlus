@@ -13,20 +13,22 @@ const routes = [
 
 function adapter(pageBridge) {
   const timers = new Map();
+  const delays = new Map();
   const context = vm.createContext({
     window: {
       __xuanPluginBridge: { "xuan-polish": pageBridge },
-      setTimeout(callback) { timers.set(1, callback); return 1; },
-      clearTimeout(id) { timers.delete(id); },
+      setTimeout(callback, delay) { timers.set(1, callback); delays.set(1, delay); return 1; },
+      clearTimeout(id) { timers.delete(id); delays.delete(id); },
     },
     BRIDGE_KEY: "__xuanPluginBridge",
-    BRIDGE_TIMEOUT_MS: 75000,
+    SETTINGS_BRIDGE_TIMEOUT_MS: 40000,
+    GENERATE_BRIDGE_TIMEOUT_MS: 135000,
   });
   const start = source.indexOf("  function bridgeCall(");
   const end = source.indexOf("  async function refreshSettings()", start);
   assert.ok(start >= 0 && end > start);
   vm.runInContext(source.slice(start, end), context);
-  return { call: context.bridgeCall, timers };
+  return { call: context.bridgeCall, timers, delays };
 }
 
 function functionSource(name) {
@@ -138,6 +140,122 @@ function composerAnchorAdapter() {
   return { ComposerElement, document, composerInsertAnchor: context.composerInsertAnchor };
 }
 
+function buttonAppearanceAdapter() {
+  class Button {
+    constructor() {
+      this.attributes = new Map();
+      this.classList = {
+        values: new Set(),
+        toggle: (name, enabled) => {
+          if (enabled) this.classList.values.add(name);
+          else this.classList.values.delete(name);
+        },
+      };
+      this.disabled = true;
+      this.textContent = "";
+      this.title = "";
+    }
+
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    }
+  }
+
+  const runtime = { loading: false };
+  const buttons = [new Button(), new Button()];
+  const context = vm.createContext({
+    runtime,
+    BUTTON_ATTR: "data-cpo-button-test",
+    BUTTON_LABELS: { idle: "润色", loading: "停止", restore: "恢复" },
+    HTMLElement: Button,
+    document: { querySelectorAll: () => buttons },
+    getThreadState: () => ({ mode: "idle" }),
+  });
+  vm.runInContext([
+    functionSource("currentButtonState"),
+    functionSource("refreshButtonAppearance"),
+  ].join("\n"), context);
+  return { runtime, buttons, refresh: context.refreshButtonAppearance };
+}
+
+function optimizeAdapter(generate) {
+  const toasts = [];
+  const calls = [];
+  const state = { mode: "idle", originalText: null, optimizedText: null };
+  const input = {};
+  const runtime = {
+    disposed: false,
+    loading: false,
+    optimizeToken: 0,
+    optimizePhase: "idle",
+    pendingGenerateToken: 0,
+    optimizeDeadlineAt: 0,
+    retryBlockedUntil: 0,
+    lastOptimizeError: "",
+    settings: null,
+    bridgeError: "",
+  };
+  const settings = {
+    baseUrlConfigured: true,
+    apiKeyConfigured: true,
+    model: "test-model",
+    style: "structured",
+    timeoutMs: 60000,
+  };
+  const context = vm.createContext({
+    runtime,
+    GENERATE_SETTLE_GRACE_MS: 5000,
+    Date,
+    Promise,
+    Number,
+    Math,
+    String,
+    refreshButtonAppearance() {},
+    showToast(message, kind) { toasts.push({ message, kind }); },
+    async refreshSettings() { runtime.settings = settings; runtime.bridgeError = ""; return settings; },
+    isConfigured: () => true,
+    openSettingsPanel() {},
+    findComposerInput: () => input,
+    normalizeText: (value) => String(value || "").trim(),
+    readComposerText: () => "草稿",
+    getThreadState: () => state,
+    collectRecentConversationTurns: () => [],
+    currentSessionId: () => "test-thread",
+    promptOptimizeContext: { shouldIncludeProjectMap: () => false },
+    promptOptimizeState: {
+      saveSnapshotIfApplied(actual, originalText, optimizedText, applied) {
+        if (!applied) return false;
+        actual.mode = "optimized";
+        actual.originalText = originalText;
+        actual.optimizedText = optimizedText;
+        return true;
+      },
+    },
+    async bridgeCall(path, payload) {
+      calls.push({ path, payload });
+      return path === "/prompt-optimize/generate"
+        ? generate()
+        : { status: "ok", settings };
+    },
+    writeComposerTextWithFallback: async () => ({ ok: true, clipboard: false }),
+    runRestore() {},
+  });
+  const optimizeStart = source.indexOf("  function retryWaitMessage()");
+  const optimizeEnd = source.indexOf("\n  async function runRestore()", optimizeStart);
+  const clickStart = source.indexOf("  function onButtonClick(", optimizeEnd);
+  const clickEnd = source.indexOf("\n  function onButtonContextMenu(", clickStart);
+  assert.ok(optimizeStart >= 0 && optimizeEnd > optimizeStart && clickStart > optimizeEnd && clickEnd > clickStart);
+  vm.runInContext(`${source.slice(optimizeStart, optimizeEnd)}\n${source.slice(clickStart, clickEnd)}`, context);
+  return {
+    calls,
+    runtime,
+    toasts,
+    cancel: context.cancelOptimize,
+    click: context.onButtonClick,
+    run: context.runOptimize,
+  };
+}
+
 test("polish script keeps the original composer workflow in an independent bridge adapter", () => {
   assert.match(source, /MutationObserver/);
   assert.match(source, /\/v1\/polish/);
@@ -164,6 +282,46 @@ test("设置桥接延迟时不销毁润色按钮", () => {
   const optimizeEnd = source.indexOf("\n  function cancelOptimize()", optimizeStart);
   const optimizeSource = source.slice(optimizeStart, optimizeEnd);
   assert.match(optimizeSource, /if \(!isConfigured\(runtime\.settings\)\)/);
+});
+
+test("润色失败后可立即重试，并给出可观察的重试反馈", async () => {
+  const fixture = optimizeAdapter(async () => ({ status: "failed", error: "服务暂不可用" }));
+  await fixture.run();
+  assert.equal(fixture.runtime.loading, false);
+  assert.equal(fixture.calls.filter((call) => call.path === "/prompt-optimize/generate").length, 1);
+  assert.equal(fixture.toasts.at(-1).message, "服务暂不可用");
+
+  await fixture.run();
+  assert.equal(fixture.calls.filter((call) => call.path === "/prompt-optimize/generate").length, 2);
+  assert.ok(fixture.toasts.some((toast) => toast.message === "正在重试润色，请稍候"));
+  assert.equal(fixture.toasts.at(-1).message, "重试失败：服务暂不可用");
+});
+
+test("润色和重试进行中时，所有已挂载按钮都显示停止", () => {
+  const fixture = buttonAppearanceAdapter();
+  fixture.runtime.loading = true;
+  fixture.refresh();
+  for (const button of fixture.buttons) {
+    assert.equal(button.textContent, "停止");
+    assert.equal(button.attributes.get("aria-busy"), "true");
+    assert.equal(button.classList.values.has("cpo-loading"), true);
+  }
+});
+
+test("主动停止后若底层请求仍在结束，再次点击会显示等待提示", async () => {
+  let finishGenerate;
+  const fixture = optimizeAdapter(() => new Promise((resolve) => { finishGenerate = resolve; }));
+  const pending = fixture.run();
+  while (!finishGenerate) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fixture.cancel(), true);
+  const generateCalls = fixture.calls.filter((call) => call.path === "/prompt-optimize/generate").length;
+  fixture.click({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(fixture.calls.filter((call) => call.path === "/prompt-optimize/generate").length, generateCalls);
+  assert.match(fixture.toasts.at(-1).message, /仍在后台结束.*秒内可再次润色/);
+
+  finishGenerate({ status: "failed", error: "请求已结束" });
+  await pending;
+  assert.equal(fixture.runtime.retryBlockedUntil, 0);
 });
 
 test("输入框重绘先恢复权限控件时，润色按钮仍可定位", () => {
@@ -259,7 +417,14 @@ test("润色业务失败及页面桥接超时均有可读结果并清除计时�
   assert.equal((await call("/prompt-optimize/settings", {})).error, "当前配置不可用");
   const stalled = adapter(() => new Promise(() => {}));
   const pending = stalled.call("/prompt-optimize/generate", { text: "草稿" });
+  assert.equal(stalled.delays.get(1), 135000);
   stalled.timers.get(1)();
   assert.match((await pending).error, /超时/);
   assert.equal(stalled.timers.size, 0);
+
+  const stalledSettings = adapter(() => new Promise(() => {}));
+  const settingsPending = stalledSettings.call("/prompt-optimize/settings", {});
+  assert.equal(stalledSettings.delays.get(1), 40000);
+  stalledSettings.timers.get(1)();
+  assert.match((await settingsPending).error, /读取润色设置超时/);
 });

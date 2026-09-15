@@ -65,7 +65,7 @@ function callBridge(method, params) {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`xuan-bridge request timed out: ${method}`));
-    }, method === "polish.generate" ? 75_000 : 30_000);
+    }, method === "polish.generate" ? 125_000 : 30_000);
     pending.set(id, { resolve, reject, timer });
     try {
       bridge.stdin.write(`${JSON.stringify({ id, method, params })}\n`);

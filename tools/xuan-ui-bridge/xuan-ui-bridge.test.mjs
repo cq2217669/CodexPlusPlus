@@ -6,7 +6,15 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import { once } from "node:events";
-import { adapterScript, contracts, dispatchUi, isAppPage, startPluginUi, validateSocket } from "./xuan-ui-bridge.mjs";
+import {
+  adapterScript,
+  contracts,
+  dispatchUi,
+  isAppPage,
+  pluginUiErrorMessage,
+  startPluginUi,
+  validateSocket,
+} from "./xuan-ui-bridge.mjs";
 
 const root = path.resolve(import.meta.dirname, "../..");
 
@@ -46,16 +54,17 @@ test("插件路由拒绝跨插件操作、远程地址和超限请求", async ()
 function page() {
   const calls = [];
   const timers = new Map();
+  const delays = new Map();
   let next = 0;
   const window = {
     location: { origin: "app://-" },
     localBinding: (value) => calls.push(JSON.parse(value)),
-    setTimeout(callback) { const id = ++next; timers.set(id, callback); return id; },
-    clearTimeout(id) { timers.delete(id); },
+    setTimeout(callback, delay) { const id = ++next; timers.set(id, callback); delays.set(id, delay); return id; },
+    clearTimeout(id) { timers.delete(id); delays.delete(id); },
   };
   window.top = window;
   const context = vm.createContext({ window });
-  return { calls, timers, window, install(owner) { vm.runInContext(adapterScript("xuan-polish", "localBinding", owner), context); } };
+  return { calls, timers, delays, window, install(owner) { vm.runInContext(adapterScript("xuan-polish", "localBinding", owner), context); } };
 }
 
 test("页面通道不修改宿主函数，响应与超时均清理回调", async () => {
@@ -69,11 +78,27 @@ test("页面通道不修改宿主函数，响应与超时均清理回调", async
   assert.equal(await pending, result);
   assert.equal(fixture.timers.size, 0);
   const timeout = api("/v1/polish/settings", {});
+  assert.equal([...fixture.delays.values()][0], 35_000);
   const check = assert.rejects(timeout, /超时/);
   [...fixture.timers.values()][0]();
   await check;
   api.dispose();
   assert.equal(fixture.window.__xuanPluginBridge["xuan-polish"], undefined);
+});
+
+test("润色生成请求等待后端超时完成，并将常见限制转换为中文提示", async () => {
+  const fixture = page();
+  fixture.install("owner");
+  const api = fixture.window.__xuanPluginBridge["xuan-polish"];
+  const pending = api("/v1/polish", { text: "草稿" });
+  assert.equal([...fixture.delays.values()][0], 130_000);
+  api.resolve(fixture.calls[0].id, { status: "ok" });
+  await pending;
+
+  assert.match(pluginUiErrorMessage("xuan-polish", new Error("polish endpoint returned HTTP 429")), /过于频繁|额度受限/);
+  assert.match(pluginUiErrorMessage("xuan-polish", new Error("xuan-bridge request timed out: polish.generate")), /润色请求超时/);
+  assert.match(pluginUiErrorMessage("xuan-polish", new Error("xuan-bridge request timed out: polish.settings.get")), /读取润色设置超时/);
+  assert.match(pluginUiErrorMessage("xuan-polish", new Error("polish endpoint returned HTTP 401")), /API Key/);
 });
 
 test("重连撤销旧回调但不重放写请求，其他插件保持不变", async () => {

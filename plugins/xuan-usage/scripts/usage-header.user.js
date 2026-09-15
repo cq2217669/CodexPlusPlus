@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-08-v6";
+  const REVISION = "builtin-2026-09-15-v9";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -297,6 +297,10 @@
     return `<div class="crb-stat crb-today"><span>今日已用</span><strong>${state.todayUsed == null ? "暂无数据" : escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>`;
   }
 
+  function toolbarHtml(isToday, rangeLabel) {
+    return `${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}<button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted">${state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel}</span>`;
+  }
+
   function settingsHtml() {
     if (!state.settingsOpen) return "";
     return `<div class="crb-settings">
@@ -311,7 +315,6 @@
     if (!panel) return;
     panel.hidden = !state.panelOpen;
     if (!state.panelOpen) return;
-    if (state.settingsOpen && panel.querySelector(".crb-settings")) return;
     const isToday = state.provider === "owlai";
     const rangeLabel = isToday ? "今天（站点时区）" : `${config.rangeDays} 天`;
     const body = state.status === "loading"
@@ -319,11 +322,18 @@
       : state.status === "ok"
         ? isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
         : `<div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(state.message || "暂无数据")}</div>`;
+    if (state.settingsOpen && panel.querySelector(".crb-settings")) {
+      const toolbar = panel.querySelector("[data-crb-toolbar]");
+      const content = panel.querySelector("[data-crb-content]");
+      if (toolbar) toolbar.innerHTML = toolbarHtml(isToday, rangeLabel);
+      if (content) content.innerHTML = body;
+      return;
+    }
     panel.innerHTML = `
-      <div class="crb-head"><div><div class="crb-title">${isToday ? "OwlAI 今日用量" : "中转余额"}</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
+      <div class="crb-head"><div><div class="crb-title">当前供应商用量</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
       ${settingsHtml()}
-      <div class="crb-toolbar">${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}<button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted">${state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel}</span></div>
-      ${body}`;
+      <div class="crb-toolbar" data-crb-toolbar>${toolbarHtml(isToday, rangeLabel)}</div>
+      <div data-crb-content>${body}</div>`;
   }
 
   function render() {

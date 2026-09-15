@@ -613,61 +613,23 @@ fn query_usage(params: &Value) -> Result<Value, RpcError> {
 
 fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, RpcError> {
     let plugin = load_plugin_settings("xuan-usage")?;
-    let (settings, profile_ref) = selected_profile(&plugin, params)?;
-    let mut base_url = environment_value("XUAN_USAGE_BASE_URL")
-        .or_else(|| configured_string(&settings, "baseUrl"))
-        .unwrap_or_default();
-    let configured_provider = environment_value("XUAN_USAGE_PROVIDER")
-        .or_else(|| configured_string(&settings, "provider"))
-        .unwrap_or_else(|| "auto".into());
-    if base_url.is_empty() && configured_provider == "owlai" {
-        base_url = "https://api.owlai.tech".into();
-    }
-    if base_url.is_empty() {
-        let codex_settings = load_codex_settings()?;
-        let Some(relay) = relay_connection_from_settings(&codex_settings, None)? else {
-            return Ok(None);
-        };
-        let provider = resolve_usage_provider(&relay.base_url, &configured_provider)?;
-        if relay.api_key.trim().is_empty() {
-            return Err(error(
-                "configuration_error",
-                "请在当前中转配置中填写并保存 API Key",
-            ));
-        }
-        return Ok(Some(UsageConnection {
-            provider,
-            profile_ref: relay.id,
-            profile_name: relay.name,
-            base_url: relay.base_url,
-            api_key: relay.api_key,
-            usage_path: params
-                .get("usagePath")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .or_else(|| configured_string(&settings, "usagePath"))
-                .unwrap_or_else(|| DEFAULT_USAGE_PATH.into()),
-            user_agent: relay.user_agent,
-        }));
-    }
-    let provider = resolve_usage_provider(&base_url, &configured_provider)?;
-    let api_key_env =
-        configured_string(&settings, "apiKeyEnv").unwrap_or_else(|| "XUAN_USAGE_API_KEY".into());
-    let api_key = secret_from_environment(&api_key_env)?;
-    if api_key.is_empty() {
+    let (settings, _) = selected_profile(&plugin, params)?;
+    let codex_settings = load_codex_settings()?;
+    let Some(relay) = relay_connection_from_settings(&codex_settings, None)? else {
+        return Ok(None);
+    };
+    if relay.api_key.trim().is_empty() {
         return Err(error(
             "configuration_error",
-            format!("用量凭据环境变量为空：{api_key_env}"),
+            "请在当前中转配置中填写并保存 API Key",
         ));
     }
     Ok(Some(UsageConnection {
-        provider,
-        profile_ref: profile_ref.clone(),
-        profile_name: configured_string(&settings, "name").unwrap_or(profile_ref),
-        base_url,
-        api_key,
+        provider: resolve_usage_provider(&relay.base_url, "auto")?,
+        profile_ref: relay.id,
+        profile_name: relay.name,
+        base_url: relay.base_url,
+        api_key: relay.api_key,
         usage_path: params
             .get("usagePath")
             .and_then(Value::as_str)
@@ -676,8 +638,7 @@ fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, R
             .map(ToOwned::to_owned)
             .or_else(|| configured_string(&settings, "usagePath"))
             .unwrap_or_else(|| DEFAULT_USAGE_PATH.into()),
-        user_agent: configured_string(&settings, "userAgent")
-            .unwrap_or_else(|| format!("XuanBridge/{BRIDGE_VERSION}")),
+        user_agent: relay.user_agent,
     }))
 }
 
@@ -1012,10 +973,7 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
     if text.chars().count() > connection.max_input_chars {
         return Err(error(
             "invalid_request",
-            format!(
-                "text exceeds the {} character limit",
-                connection.max_input_chars
-            ),
+            format!("润色内容超过 {} 个字符的限制", connection.max_input_chars),
         ));
     }
     let style = params
@@ -1029,8 +987,8 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
         .timeout(connection.timeout)
         .user_agent(&connection.user_agent)
         .build()
-        .map_err(|_| error("transport_error", "unable to initialize polish client"))?;
-    let (body, mut request) = match connection.protocol {
+        .map_err(|_| error("transport_error", "无法初始化润色请求客户端"))?;
+    let (body, request) = match connection.protocol {
         PolishProtocol::ChatCompletions => {
             let body = json!({
                 "model": connection.model,
@@ -1052,15 +1010,23 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
             let body = json!({
                 "model": connection.model,
                 "instructions": system,
-                "input": user_prompt,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": user_prompt
+                    }]
+                }],
                 "max_output_tokens": connection.max_output_tokens,
                 "store": false,
-                "stream": false
+                "stream": true
             });
             let request = client
                 .post(url)
                 .bearer_auth(connection.api_key.trim())
-                .header("Accept", "application/json")
+                .header("Accept", "text/event-stream")
+                .header("Cache-Control", "no-cache")
                 .json(&body);
             (body, request)
         }
@@ -1080,24 +1046,39 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
             (body, request)
         }
     };
-    request = request.header("Content-Type", "application/json");
     let response = request
         .send()
-        .map_err(|_| error("transport_error", "polish request failed or timed out"))?;
+        .map_err(|_| error("transport_error", "无法连接润色服务或请求超时，请稍后重试"))?;
     drop(body);
     let status = response.status();
-    let payload: Value = response
-        .json()
-        .map_err(|_| error("invalid_response", "polish endpoint did not return JSON"))?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let response_body = response
+        .text()
+        .map_err(|_| error("invalid_response", "无法读取润色服务返回的数据"))?;
     if !status.is_success() {
+        let payload = serde_json::from_str::<Value>(&response_body).unwrap_or(Value::Null);
         return Err(error(
             "remote_error",
-            format!("polish endpoint returned HTTP {}", status.as_u16()),
+            polish_remote_error(status.as_u16(), &payload),
         ));
     }
-    let text = extract_polished_text(connection.protocol, &payload);
+    let text = if connection.protocol == PolishProtocol::Responses
+        && (content_type.contains("text/event-stream")
+            || response_body.lines().any(|line| line.starts_with("data:")))
+    {
+        extract_responses_sse_text(&response_body)?
+    } else {
+        let payload: Value = serde_json::from_str(&response_body)
+            .map_err(|_| error("invalid_response", "润色服务返回的数据无法识别"))?;
+        extract_polished_text(connection.protocol, &payload)
+    };
     if text.trim().is_empty() {
-        return Err(error("invalid_response", "polish response has no text"));
+        return Err(error("invalid_response", "润色服务没有返回可用文本"));
     }
     Ok(json!({
         "status": "ok",
@@ -1105,6 +1086,98 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
         "model": connection.model,
         "text": strip_whole_fence(&text),
     }))
+}
+
+fn extract_responses_sse_text(body: &str) -> Result<String, RpcError> {
+    let normalized = body.replace("\r\n", "\n");
+    let mut deltas = String::new();
+    let mut fallback = String::new();
+    for event_block in normalized.split("\n\n") {
+        let event_name = event_block
+            .lines()
+            .find_map(|line| line.strip_prefix("event:"))
+            .map(str::trim)
+            .unwrap_or_default();
+        let data = event_block
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let payload: Value = serde_json::from_str(&data)
+            .map_err(|_| error("invalid_response", "润色服务返回了无法识别的流式数据"))?;
+        let event_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or(event_name);
+        match event_type {
+            "response.output_text.delta" => {
+                if let Some(delta) = payload.get("delta").and_then(Value::as_str) {
+                    deltas.push_str(delta);
+                }
+            }
+            "response.output_text.done" => {
+                if let Some(text) = payload.get("text").and_then(Value::as_str) {
+                    fallback = text.to_string();
+                }
+            }
+            "response.completed" => {
+                let response = payload.get("response").unwrap_or(&payload);
+                let text = extract_polished_text(PolishProtocol::Responses, response);
+                if !text.trim().is_empty() {
+                    fallback = text;
+                }
+            }
+            "response.failed" | "error" => {
+                let message = payload
+                    .pointer("/response/error/message")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.pointer("/error/message").and_then(Value::as_str))
+                    .or_else(|| payload.get("message").and_then(Value::as_str))
+                    .unwrap_or("上游未提供失败原因");
+                return Err(error(
+                    "remote_error",
+                    format!(
+                        "润色服务生成失败：{}",
+                        message.chars().take(240).collect::<String>()
+                    ),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if !deltas.trim().is_empty() {
+        return Ok(deltas);
+    }
+    if !fallback.trim().is_empty() {
+        return Ok(fallback);
+    }
+    Err(error("invalid_response", "润色服务没有返回可用文本"))
+}
+
+fn polish_remote_error(status: u16, payload: &Value) -> String {
+    let detail = payload
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("message").and_then(Value::as_str))
+        .or_else(|| payload.get("error").and_then(Value::as_str))
+        .map(|message| message.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|message| !message.is_empty())
+        .map(|message| message.chars().take(240).collect::<String>());
+    match status {
+        400 => detail
+            .map(|message| format!("润色请求被接口拒绝（HTTP 400）：{message}"))
+            .unwrap_or_else(|| "润色请求参数与当前接口不兼容（HTTP 400）".into()),
+        401 | 403 => "润色 API Key 无效，或当前账号无权访问所选模型".into(),
+        404 => "润色接口或模型不存在，请检查供应商地址和模型名称".into(),
+        429 => "润色请求过于频繁或额度受限，请稍后重试".into(),
+        _ => detail
+            .map(|message| format!("润色服务返回 HTTP {status}：{message}"))
+            .unwrap_or_else(|| format!("润色服务暂时无法完成请求（HTTP {status}）")),
+    }
 }
 
 fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcError> {
@@ -2272,6 +2345,20 @@ mod tests {
                 .unwrap()
                 .path(),
             "/v1/messages"
+        );
+    }
+
+    #[test]
+    fn polish_remote_errors_keep_safe_upstream_detail() {
+        let bad_request = polish_remote_error(
+            400,
+            &json!({ "error": { "message": "Unsupported parameter: store" } }),
+        );
+        assert!(bad_request.contains("HTTP 400"));
+        assert!(bad_request.contains("Unsupported parameter: store"));
+        assert_eq!(
+            polish_remote_error(429, &json!({ "error": { "message": "rate limited" } })),
+            "润色请求过于频繁或额度受限，请稍后重试"
         );
     }
 

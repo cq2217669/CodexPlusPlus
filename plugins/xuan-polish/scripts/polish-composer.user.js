@@ -3,8 +3,8 @@
  * 密钥和供应商请求保留在 xuan-bridge，不依赖宿主源码或定制启动器。
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.9";
-  const INSTANCE_REVISION = "official-2026-09-v22";
+  const SCRIPT_VERSION = "1.2.1";
+  const INSTANCE_REVISION = "official-2026-09-v24";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -19,7 +19,9 @@
   const POLL_MS = 1800;
   const DEBOUNCE_MS = 120;
   const TOAST_MS = 2400;
-  const BRIDGE_TIMEOUT_MS = 75000;
+  const SETTINGS_BRIDGE_TIMEOUT_MS = 40000;
+  const GENERATE_BRIDGE_TIMEOUT_MS = 135000;
+  const GENERATE_SETTLE_GRACE_MS = 5000;
   const MAX_CONTEXT_TURNS = 4;
   const MAX_CONTEXT_CHARS = 6000;
   const DEFAULT_BASE_URLS = {
@@ -140,8 +142,14 @@
     disposed: false,
     loading: false,
     optimizeToken: 0,
+    optimizePhase: "idle",
+    pendingGenerateToken: 0,
+    optimizeDeadlineAt: 0,
+    retryBlockedUntil: 0,
+    lastOptimizeError: "",
     settings: null,
     bridgeBroken: false,
+    bridgeError: "",
     writeToken: 0,
   };
 
@@ -209,8 +217,14 @@
     }[path];
     if (!route) return Promise.reject(new Error("Xuan 润色请求不受支持"));
     let timer = 0;
+    const timeoutMs = path === "/prompt-optimize/generate"
+      ? GENERATE_BRIDGE_TIMEOUT_MS
+      : SETTINGS_BRIDGE_TIMEOUT_MS;
     const timeout = new Promise((resolve) => {
-      timer = window.setTimeout(() => resolve({ error: "Xuan++ 桥请求超时" }), BRIDGE_TIMEOUT_MS);
+      const message = path === "/prompt-optimize/generate"
+        ? "润色请求超时，后台连接可能仍在结束，请稍后重试"
+        : "读取润色设置超时，请稍后重试";
+      timer = window.setTimeout(() => resolve({ status: "failed", error: message, message }), timeoutMs);
     });
     const request = Promise.resolve().then(async () => {
       const pageBridge = window[BRIDGE_KEY]?.["xuan-polish"];
@@ -230,6 +244,9 @@
   function polishBridgeErrorMessage(error) {
     const message = error?.error?.message || error?.message || error?.error || "";
     if (/Unknown bridge path/i.test(message)) return "润色插件接口不匹配，请更新插件后重新打开任务";
+    if (/HTTP 429|too many requests|rate.?limit/i.test(message)) return "润色请求过于频繁或额度受限，请稍后重试";
+    if (/HTTP (?:401|403)|unauthorized|forbidden/i.test(message)) return "API Key 无效或无权访问当前模型，请检查润色设置";
+    if (/timed out|timeout/i.test(message)) return "润色请求超时，请稍后重试";
     if (/failed to fetch|networkerror|econnrefused/i.test(message)) return "无法连接润色插件，请重新打开任务后重试";
     return typeof message === "string" && /\p{Script=Han}/u.test(message)
       ? message : "润色服务请求失败，请检查设置后重试";
@@ -239,10 +256,12 @@
     const result = await bridgeCall("/prompt-optimize/settings", {});
     if (!result || result.status !== "ok" || !result.settings) {
       runtime.bridgeBroken = true;
+      runtime.bridgeError = String(result?.error || result?.message || "无法读取润色配置");
       runtime.settings = null;
       return null;
     }
     runtime.bridgeBroken = false;
+    runtime.bridgeError = "";
     runtime.settings = result.settings;
     return runtime.settings;
   }
@@ -747,20 +766,24 @@
   }
 
   function refreshButtonAppearance(button) {
-    const current = button || document.querySelector(`[${BUTTON_ATTR}]`);
-    if (!(current instanceof HTMLElement)) return;
+    const buttons = button
+      ? [button]
+      : Array.from(document.querySelectorAll(`[${BUTTON_ATTR}]`));
     const state = currentButtonState();
-    current.classList.toggle("cpo-loading", state === "loading");
-    current.disabled = false;
-    current.setAttribute("aria-busy", state === "loading" ? "true" : "false");
-    current.setAttribute("aria-label", BUTTON_LABELS[state]);
-    current.textContent = BUTTON_LABELS[state];
-    current.title =
-      state === "loading"
-        ? "停止当前润色"
-        : state === "restore"
-          ? "恢复润色前的文本"
-          : "润色（右键设置）";
+    buttons.forEach((current) => {
+      if (!(current instanceof HTMLElement)) return;
+      current.classList.toggle("cpo-loading", state === "loading");
+      current.disabled = false;
+      current.setAttribute("aria-busy", state === "loading" ? "true" : "false");
+      current.setAttribute("aria-label", BUTTON_LABELS[state]);
+      current.textContent = BUTTON_LABELS[state];
+      current.title =
+        state === "loading"
+          ? "停止当前润色"
+          : state === "restore"
+            ? "恢复润色前的文本"
+            : "润色（右键设置）";
+    });
   }
 
   function createButton(fontSize) {
@@ -898,6 +921,10 @@
   function destroyAll() {
     runtime.optimizeToken += 1;
     runtime.loading = false;
+    runtime.optimizePhase = "idle";
+    runtime.pendingGenerateToken = 0;
+    runtime.optimizeDeadlineAt = 0;
+    runtime.retryBlockedUntil = 0;
     destroyButton();
     document.querySelectorAll(`[${PANEL_ATTR}]`).forEach((node) => node.remove());
     document.querySelectorAll(`[${TOAST_ATTR}]`).forEach((node) => node.remove());
@@ -919,18 +946,33 @@
     if (window[API_KEY] === api) window[API_KEY] = undefined;
   }
 
+  function retryWaitMessage() {
+    const seconds = Math.max(1, Math.ceil((runtime.retryBlockedUntil - Date.now()) / 1000));
+    return `上一次润色请求仍在后台结束，预计 ${seconds} 秒内可再次润色`;
+  }
+
+  function showOptimizeFailure(message, retrying) {
+    const normalized = String(message || "润色失败").slice(0, 200);
+    runtime.lastOptimizeError = normalized;
+    showToast(retrying ? `重试失败：${normalized}` : normalized, "error");
+  }
+
   async function runOptimize() {
     const token = ++runtime.optimizeToken;
+    const retrying = Boolean(runtime.lastOptimizeError);
     runtime.loading = true;
+    runtime.optimizePhase = "settings";
     refreshButtonAppearance();
+    showToast(retrying ? "正在重试润色，请稍候" : "正在润色，请稍候", "");
     try {
       if (!(await refreshSettings())) {
         if (token !== runtime.optimizeToken) return;
-        if (!runtime.bridgeBroken) showToast("无法读取润色配置", "error");
+        showOptimizeFailure(runtime.bridgeError || "无法读取润色配置", retrying);
         return;
       }
       if (token !== runtime.optimizeToken) return;
       if (!isConfigured(runtime.settings)) {
+        runtime.lastOptimizeError = "";
         showToast("请先配置 API", "");
         if (runtime.settings.configurationError) showToast(runtime.settings.configurationError, "error");
         openSettingsPanel();
@@ -939,6 +981,7 @@
       const input = findComposerInput();
       const original = normalizeText(readComposerText(input));
       if (!original) {
+        runtime.lastOptimizeError = "";
         showToast("请先输入内容", "");
         return;
       }
@@ -948,6 +991,13 @@
         original,
         ...recentTurns.flatMap((turn) => [turn.userText || "", turn.assistantText || ""]),
       ].join("\n");
+      runtime.optimizePhase = "generate";
+      runtime.pendingGenerateToken = token;
+      const configuredTimeoutMs = Number(runtime.settings?.timeoutMs);
+      const requestTimeoutMs = Number.isFinite(configuredTimeoutMs)
+        ? Math.min(120000, Math.max(1000, configuredTimeoutMs))
+        : 60000;
+      runtime.optimizeDeadlineAt = Date.now() + requestTimeoutMs + GENERATE_SETTLE_GRACE_MS;
       const result = await bridgeCall("/prompt-optimize/generate", {
         text: original,
         context: {
@@ -962,14 +1012,15 @@
       if (token !== runtime.optimizeToken) return;
       if (!result || result.status !== "ok") {
         const message = result && result.error ? result.error : "优化失败";
-        showToast(String(message).slice(0, 200), "error");
+        showOptimizeFailure(message, retrying);
         return;
       }
       const optimized = normalizeText(result.text || "");
       if (!optimized) {
-        showToast("模型返回为空", "error");
+        showOptimizeFailure("模型返回为空", retrying);
         return;
       }
+      runtime.lastOptimizeError = "";
       const activeInput = findComposerInput();
       if (!activeInput || normalizeText(readComposerText(activeInput)) !== original) {
         showToast("输入内容已变化，优化结果未写入", "");
@@ -984,8 +1035,14 @@
         showToast("写入输入框失败", "error");
       }
     } finally {
+      if (runtime.pendingGenerateToken === token) {
+        runtime.pendingGenerateToken = 0;
+        runtime.optimizeDeadlineAt = 0;
+        runtime.retryBlockedUntil = 0;
+      }
       if (token === runtime.optimizeToken) {
         runtime.loading = false;
+        runtime.optimizePhase = "idle";
         refreshButtonAppearance();
       }
     }
@@ -993,10 +1050,18 @@
 
   function cancelOptimize() {
     if (!runtime.loading) return false;
+    const requestStillRunning =
+      runtime.optimizePhase === "generate" && runtime.pendingGenerateToken === runtime.optimizeToken;
+    const retryBlockedUntil = requestStillRunning
+      ? Math.max(Date.now() + 1000, runtime.optimizeDeadlineAt)
+      : 0;
     runtime.optimizeToken += 1;
     runtime.loading = false;
+    runtime.optimizePhase = "idle";
+    runtime.retryBlockedUntil = retryBlockedUntil;
+    runtime.lastOptimizeError = "";
     refreshButtonAppearance();
-    showToast("已终止润色", "");
+    showToast(requestStillRunning ? `已停止等待。${retryWaitMessage()}` : "已终止润色", "");
     return true;
   }
 
@@ -1034,6 +1099,11 @@
       cancelOptimize();
       return;
     }
+    if (runtime.retryBlockedUntil > Date.now()) {
+      showToast(retryWaitMessage(), "");
+      return;
+    }
+    runtime.retryBlockedUntil = 0;
     const state = getThreadState();
     if (state.mode === "optimized") {
       void runRestore();

@@ -7,9 +7,9 @@
 
 The bridge implements bounded streaming workspace search, generic and OwlAI
 usage adapters, and Chat Completions, Responses and Anthropic polish adapters.
-Profiles are selected from `xuan-plugins.json`; credentials are resolved only
-inside the bridge and are never returned to the renderer. Mobile requests forward
-to `xuan-plus-remote` through `XUAN_MOBILE_BRIDGE_URL`.
+Usage queries always use the currently active relay provider; credentials are
+resolved only inside the bridge and are never returned to the renderer. Mobile
+requests forward to `xuan-plus-remote` through `XUAN_MOBILE_BRIDGE_URL`.
 
 Example profile configuration:
 
@@ -17,16 +17,7 @@ Example profile configuration:
 {
   "schemaVersion": 1,
   "plugins": {
-    "xuan-usage": {
-      "defaultProfile": "relay",
-      "profiles": {
-        "relay": {
-          "provider": "generic",
-          "baseUrl": "https://relay.example/v1",
-          "apiKeyEnv": "XUAN_USAGE_API_KEY"
-        }
-      }
-    },
+    "xuan-usage": { "usagePath": "/v1/usage" },
     "xuan-polish": {
       "defaultProfile": "polish",
       "profiles": {
@@ -47,9 +38,6 @@ Important environment variables:
 ```text
 XUAN_HOME
 XUAN_WORKSPACE_ROOTS
-XUAN_USAGE_BASE_URL
-XUAN_USAGE_API_KEY
-XUAN_USAGE_PROVIDER
 XUAN_POLISH_BASE_URL
 XUAN_POLISH_API_KEY
 XUAN_POLISH_MODEL
