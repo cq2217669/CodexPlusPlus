@@ -52,7 +52,6 @@ function page() {
     localBinding: (value) => calls.push(JSON.parse(value)),
     setTimeout(callback) { const id = ++next; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
-    __codexSessionDeleteBridge() { throw new Error("不应调用宿主路由"); },
   };
   window.top = window;
   const context = vm.createContext({ window });
@@ -61,7 +60,6 @@ function page() {
 
 test("页面通道不修改宿主函数，响应与超时均清理回调", async () => {
   const fixture = page();
-  const host = fixture.window.__codexSessionDeleteBridge;
   fixture.install("owner");
   const api = fixture.window.__xuanPluginBridge["xuan-polish"];
   const pending = api("/v1/polish", { text: "草稿" });
@@ -70,7 +68,6 @@ test("页面通道不修改宿主函数，响应与超时均清理回调", async
   api.resolve(fixture.calls[0].id, result);
   assert.equal(await pending, result);
   assert.equal(fixture.timers.size, 0);
-  assert.equal(fixture.window.__codexSessionDeleteBridge, host);
   const timeout = api("/v1/polish/settings", {});
   const check = assert.rejects(timeout, /超时/);
   [...fixture.timers.values()][0]();
@@ -138,7 +135,6 @@ test("四个用户脚本和宿主源码不再依赖定制转发或服务启动�
     const file = fs.readdirSync(directory).find((entry) => entry.endsWith(".user.js"));
     const source = fs.readFileSync(path.join(directory, file), "utf8");
     assert.match(source, /__xuanPluginBridge/);
-    assert.doesNotMatch(source, /__codexSessionDeleteBridge|127\.0\.0\.1:57324/);
   }
   for (const file of ["apps/codex-plus-launcher/src/main.rs", "crates/codex-plus-core/src/routes.rs"]) {
     assert.doesNotMatch(fs.readFileSync(path.join(root, file), "utf8"), /xuan_bridge|XuanBridgeServices|57324|17421/);

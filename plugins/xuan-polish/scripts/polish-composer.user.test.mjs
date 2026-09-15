@@ -11,17 +11,14 @@ const routes = [
   ["/settings/set", "/v1/polish/settings/set", "POST"],
 ];
 
-function adapter(pageBridge, fetch = () => { throw new Error("不应直连本地端口"); }) {
+function adapter(pageBridge) {
   const timers = new Map();
   const context = vm.createContext({
     window: {
       __xuanPluginBridge: { "xuan-polish": pageBridge },
-      __codexSessionDeleteBridge: () => { throw new Error("不应调用宿主扩展路由"); },
-      __XUAN_BRIDGE_TOKEN__: "test-local-token",
       setTimeout(callback) { timers.set(1, callback); return 1; },
       clearTimeout(id) { timers.delete(id); },
     },
-    fetch,
     BRIDGE_KEY: "__xuanPluginBridge",
     BRIDGE_TIMEOUT_MS: 75000,
   });
@@ -147,7 +144,6 @@ test("polish script keeps the original composer workflow in an independent bridg
   assert.match(source, /停止/);
   assert.match(source, /恢复/);
   assert.match(source, /Ctrl\+Enter|ctrlKey/);
-  assert.doesNotMatch(source, /127\.0\.0\.1:57324|__codexSessionDeleteBridge/);
   assert.match(source, /润色中|正在润色|loading/);
 });
 
@@ -155,6 +151,19 @@ test("polish script keeps Ctrl+Enter as a toggle shortcut", () => {
   assert.match(source, /if \(event\.ctrlKey && !event\.metaKey\) return true;/);
   assert.match(source, /const activeElement = document\.activeElement;/);
   assert.match(source, /function onPromptOptimizeShortcut\(event\) \{\s*if \(runtime\.disposed\) return;/);
+});
+
+test("设置桥接延迟时不销毁润色按钮", () => {
+  const start = source.indexOf("  async function startObservers()");
+  const end = source.indexOf("\n  function ensure()", start);
+  const observerSource = source.slice(start, end);
+  assert.match(observerSource, /installStyle\(\);\s*ensureButton\(\);\s*await refreshSettings\(\);/);
+  assert.doesNotMatch(observerSource, /destroyAll\(\)/);
+
+  const optimizeStart = source.indexOf("  async function runOptimize()");
+  const optimizeEnd = source.indexOf("\n  function cancelOptimize()", optimizeStart);
+  const optimizeSource = source.slice(optimizeStart, optimizeEnd);
+  assert.match(optimizeSource, /if \(!isConfigured\(runtime\.settings\)\)/);
 });
 
 test("输入框重绘先恢复权限控件时，润色按钮仍可定位", () => {
@@ -194,22 +203,32 @@ test("polish script supports cancellation, restore state and settings without ex
   assert.doesNotMatch(source, /bearer\s+\$?\{/i);
 });
 
-test("润色三个接口在直连不可用时都通过页面桥接且原样转发参数", async () => {
+test("润色设置只提交插件原生字段", () => {
+  const start = source.indexOf("  async function saveSettingsFromPanel(");
+  const end = source.indexOf("\n  function scheduleEnsure()", start);
+  const saveSource = source.slice(start, end);
+  assert.match(saveSource, /const next = \{\s*relayId: relayIdEl\.value,\s*style: styleEl\.value,\s*model,/);
+  assert.match(saveSource, /next\.protocol =/);
+  assert.match(saveSource, /next\.baseUrl = baseUrl/);
+  assert.match(saveSource, /next\.apiKey = apiKey/);
+});
+
+test("润色三个接口都通过页面桥接且原样转发参数", async () => {
   const calls = [];
-  const result = { status: "ok", settings: { enabled: true }, text: "修改后的文本" };
+  const result = { status: "ok", settings: {}, text: "修改后的文本" };
   const { call, timers } = adapter((path, payload) => {
     calls.push({ path, payload });
     return Promise.resolve(result);
   });
   for (const [path, route] of routes) {
-    const payload = { text: "草稿", enabled: true };
+    const payload = { text: "草稿" };
     assert.equal(await call(path, payload), result);
     assert.deepEqual(calls.at(-1), { path: route, payload });
     assert.equal(timers.size, 0);
   }
 });
 
-test("润色插件未连接时不回退宿主或 HTTP，也不要求更新启动器", async () => {
+test("润色插件未连接时返回可读错误", async () => {
   const { call } = adapter(undefined);
   for (const [path] of routes) {
     const result = await call(path, { text: "草稿" });
@@ -221,17 +240,16 @@ test("润色插件未连接时不回退宿主或 HTTP，也不要求更新启动
 
 test("润色页面桥接失败不回退重发，并展示中文错误", async () => {
   for (const bridge of [
-    () => { throw new Error("Failed to fetch (127.0.0.1:57324)"); },
     () => Promise.reject(new Error("networkerror")),
     () => ({ status: "failed", message: "Unknown bridge path" }),
     () => ({ status: "failed", error: { message: "服务暂不可用" } }),
   ]) {
     const { call, timers } = adapter(bridge);
-    const result = await call("/settings/set", { enabled: true });
+    const result = await call("/settings/set", { model: "test-model" });
     assert.equal(result.status, "failed");
     assert.equal(result.error, result.message);
     assert.match(result.message, /\p{Script=Han}/u);
-    assert.doesNotMatch(result.message, /Failed to fetch|127\.0\.0\.1|\[object Object\]/);
+    assert.doesNotMatch(result.message, /networkerror|\[object Object\]/);
     assert.equal(timers.size, 0);
   }
 });

@@ -5,20 +5,18 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 function resolveBridgeBinary() {
+  if (process.env.XUAN_BRIDGE_BIN) return process.env.XUAN_BRIDGE_BIN;
   if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-    const installed = path.join(process.env.LOCALAPPDATA, "XuanPlusPlus", "bin", "xuan-bridge.exe");
-    if (process.env.XUAN_BRIDGE_BIN && path.resolve(process.env.XUAN_BRIDGE_BIN).toLowerCase() !== installed.toLowerCase()) return process.env.XUAN_BRIDGE_BIN;
-    const pointer = path.join(path.dirname(installed), "current.json");
-    if (fs.existsSync(pointer)) {
-      const { version } = JSON.parse(fs.readFileSync(pointer, "utf8"));
-      if (!/^[a-f0-9]{64}$/.test(version)) throw new Error("插件运行文件索引无效，请重新安装插件");
-      const versioned = path.join(path.dirname(installed), "versions", version, "xuan-bridge.exe");
-      if (!fs.existsSync(versioned)) throw new Error("插件运行文件缺失，请重新安装插件");
-      return versioned;
-    }
-    if (fs.existsSync(installed)) return installed;
+    const root = path.join(process.env.LOCALAPPDATA, "XuanPlusPlus", "bin");
+    const pointer = path.join(root, "current.json");
+    if (!fs.existsSync(pointer)) throw new Error("插件运行文件索引缺失，请重新安装插件");
+    const { version } = JSON.parse(fs.readFileSync(pointer, "utf8"));
+    if (!/^[a-f0-9]{64}$/.test(version)) throw new Error("插件运行文件索引无效，请重新安装插件");
+    const versioned = path.join(root, "versions", version, "xuan-bridge.exe");
+    if (!fs.existsSync(versioned)) throw new Error("插件运行文件缺失，请重新安装插件");
+    return versioned;
   }
-  return process.env.XUAN_BRIDGE_BIN || "xuan-bridge";
+  return "xuan-bridge";
 }
 
 const bridgeBinary = resolveBridgeBinary();

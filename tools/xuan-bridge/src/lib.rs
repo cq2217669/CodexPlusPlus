@@ -1,15 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
@@ -197,7 +196,9 @@ fn relay_profile_api_key(profile: &Value, settings: &Value) -> String {
 
 fn relay_config_string(profile: &Value, key: &str) -> Option<String> {
     let raw = profile.get("configContents").and_then(Value::as_str)?;
-    let provider_id = raw.lines().find_map(|line| parse_toml_string_assignment(line, "model_provider"))?;
+    let provider_id = raw
+        .lines()
+        .find_map(|line| parse_toml_string_assignment(line, "model_provider"))?;
     let expected_section = format!("[model_providers.{provider_id}]");
     let mut in_provider = false;
     for line in raw.lines() {
@@ -206,9 +207,7 @@ fn relay_config_string(profile: &Value, key: &str) -> Option<String> {
             in_provider = trimmed == expected_section;
             continue;
         }
-        if in_provider
-            && let Some(value) = parse_toml_string_assignment(trimmed, key)
-        {
+        if in_provider && let Some(value) = parse_toml_string_assignment(trimmed, key) {
             return Some(value);
         }
     }
@@ -259,7 +258,12 @@ fn relay_connection_from_settings(
     let active_id = relay_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .or_else(|| settings.get("activeRelayId").and_then(Value::as_str).map(str::trim))
+        .or_else(|| {
+            settings
+                .get("activeRelayId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+        })
         .unwrap_or_default();
     let profile = settings
         .get("relayProfiles")
@@ -331,8 +335,12 @@ fn load_codex_global_state() -> Result<Value, RpcError> {
 fn collect_path_strings(value: &Value, paths: &mut Vec<String>) {
     match value {
         Value::String(value) => paths.push(value.clone()),
-        Value::Array(values) => values.iter().for_each(|value| collect_path_strings(value, paths)),
-        Value::Object(values) => values.values().for_each(|value| collect_path_strings(value, paths)),
+        Value::Array(values) => values
+            .iter()
+            .for_each(|value| collect_path_strings(value, paths)),
+        Value::Object(values) => values
+            .values()
+            .for_each(|value| collect_path_strings(value, paths)),
         _ => {}
     }
 }
@@ -435,15 +443,22 @@ fn workspace_projects(state: &Value) -> Vec<Value> {
                 .filter_map(existing_workspace_path)
                 .map(|path| path.to_string_lossy().to_string())
                 .collect::<Vec<_>>();
-            Some((order.get(&id).copied().unwrap_or(usize::MAX), name.clone(), json!({
-                "id": id,
-                "name": name,
-                "roots": roots,
-            })))
+            Some((
+                order.get(&id).copied().unwrap_or(usize::MAX),
+                name.clone(),
+                json!({
+                    "id": id,
+                    "name": name,
+                    "roots": roots,
+                }),
+            ))
         })
         .collect::<Vec<_>>();
     projects.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    projects.into_iter().map(|(_, _, project)| project).collect()
+    projects
+        .into_iter()
+        .map(|(_, _, project)| project)
+        .collect()
 }
 
 fn selected_project_id(state: &Value) -> Option<String> {
@@ -459,16 +474,18 @@ fn selected_project_id(state: &Value) -> Option<String> {
 
 fn project_id_for_thread(state: &Value, thread_id: &str) -> Option<String> {
     let assignments = state.get("thread-project-assignments")?.as_object()?;
-    thread_id_variants(thread_id).into_iter().find_map(|thread_id| {
-        assignments
-            .get(&thread_id)
-            .and_then(Value::as_object)
-            .and_then(|assignment| assignment.get("projectId"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    })
+    thread_id_variants(thread_id)
+        .into_iter()
+        .find_map(|thread_id| {
+            assignments
+                .get(&thread_id)
+                .and_then(Value::as_object)
+                .and_then(|assignment| assignment.get("projectId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
 }
 
 fn workspace_roots_response() -> Result<Value, RpcError> {
@@ -535,23 +552,25 @@ fn query_usage(params: &Value) -> Result<Value, RpcError> {
         }));
     };
     if connection.provider == "owlai" {
-        return Ok(match query_owlai(&connection.api_key, &connection.user_agent) {
-            Ok(data) => json!({
-                "status": "ok",
-                "disabled": false,
-                "provider": connection.provider,
-                "profileId": connection.profile_ref,
-                "profileRef": connection.profile_ref,
-                "profileName": connection.profile_name,
-                "data": data,
-            }),
-            Err(error) => json!({
-                "status": "failed",
-                "provider": connection.provider,
-                "profileName": connection.profile_name,
-                "message": error.message,
-            }),
-        });
+        return Ok(
+            match query_owlai(&connection.api_key, &connection.user_agent) {
+                Ok(data) => json!({
+                    "status": "ok",
+                    "disabled": false,
+                    "provider": connection.provider,
+                    "profileId": connection.profile_ref,
+                    "profileRef": connection.profile_ref,
+                    "profileName": connection.profile_name,
+                    "data": data,
+                }),
+                Err(error) => json!({
+                    "status": "failed",
+                    "provider": connection.provider,
+                    "profileName": connection.profile_name,
+                    "message": error.message,
+                }),
+            },
+        );
     }
     let url = build_usage_url(
         &connection.base_url,
@@ -638,7 +657,10 @@ fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, R
         configured_string(&settings, "apiKeyEnv").unwrap_or_else(|| "XUAN_USAGE_API_KEY".into());
     let api_key = secret_from_environment(&api_key_env)?;
     if api_key.is_empty() {
-        return Err(error("configuration_error", format!("用量凭据环境变量为空：{api_key_env}")));
+        return Err(error(
+            "configuration_error",
+            format!("用量凭据环境变量为空：{api_key_env}"),
+        ));
     }
     Ok(Some(UsageConnection {
         provider,
@@ -660,8 +682,8 @@ fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, R
 }
 
 fn resolve_usage_provider(endpoint: &str, configured: &str) -> Result<String, RpcError> {
-    let url = Url::parse(endpoint.trim())
-        .map_err(|_| error("configuration_error", "中转站地址无效"))?;
+    let url =
+        Url::parse(endpoint.trim()).map_err(|_| error("configuration_error", "中转站地址无效"))?;
     let is_owlai = url.scheme() == "https"
         && url.host_str() == Some(OWLAI_HOST)
         && url.port_or_known_default() == Some(443)
@@ -704,7 +726,12 @@ fn query_owlai(api_key: &str, user_agent: &str) -> Result<Value, RpcError> {
         .header("Accept-Language", "zh")
         .bearer_auth(api_key)
         .send()
-        .map_err(|_| error("transport_error", "今日用量查询连接失败或超时，请检查网络后重试"))?;
+        .map_err(|_| {
+            error(
+                "transport_error",
+                "今日用量查询连接失败或超时，请检查网络后重试",
+            )
+        })?;
     let status = response.status();
     if !status.is_success() {
         return Err(error("remote_error", usage_remote_error(status.as_u16())));
@@ -838,9 +865,10 @@ struct PolishConnection {
 fn polish_settings_response() -> Result<Value, RpcError> {
     let plugin = load_plugin_settings("xuan-polish")?;
     let codex = load_codex_settings()?;
-    let legacy_relay_id = configured_string(&codex, "codexAppPromptOptimizeRelayId");
     let connection_mode = configured_string(&plugin, "connectionMode").unwrap_or_else(|| {
-        if configured_string(&plugin, "baseUrl").is_some() && configured_string(&plugin, "relayId").is_none() {
+        if configured_string(&plugin, "baseUrl").is_some()
+            && configured_string(&plugin, "relayId").is_none()
+        {
             "manual".into()
         } else {
             "relay".into()
@@ -850,7 +878,6 @@ fn polish_settings_response() -> Result<Value, RpcError> {
         String::new()
     } else {
         configured_string(&plugin, "relayId")
-            .or(legacy_relay_id)
             .or_else(|| configured_string(&codex, "activeRelayId"))
             .unwrap_or_default()
     };
@@ -859,37 +886,27 @@ fn polish_settings_response() -> Result<Value, RpcError> {
     } else {
         relay_connection_from_settings(&codex, Some(&relay_id))?
     };
-    let manual_protocol = configured_string(&plugin, "protocol")
-        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeProtocol"))
-        .unwrap_or_else(|| "chat-completions".into());
-    let manual_base_url = configured_string(&plugin, "baseUrl")
-        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeBaseUrl"))
-        .unwrap_or_default();
-    let manual_api_key = configured_string(&plugin, "apiKey")
-        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeApiKey"))
-        .unwrap_or_default();
-    let api_key_env = configured_string(&plugin, "apiKeyEnv")
-        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeApiKeyEnv"))
-        .unwrap_or_else(|| "XUAN_POLISH_API_KEY".into());
+    let manual_protocol =
+        configured_string(&plugin, "protocol").unwrap_or_else(|| "chat-completions".into());
+    let manual_base_url = configured_string(&plugin, "baseUrl").unwrap_or_default();
+    let manual_api_key = configured_string(&plugin, "apiKey").unwrap_or_default();
+    let api_key_env =
+        configured_string(&plugin, "apiKeyEnv").unwrap_or_else(|| "XUAN_POLISH_API_KEY".into());
     let environment_key = secret_from_environment(&api_key_env)?;
-    let model = configured_string(&plugin, "model")
-        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeModel"))
-        .unwrap_or_default();
+    let model = configured_string(&plugin, "model").unwrap_or_default();
     let style = configured_string(&plugin, "style")
-        .or_else(|| configured_string(&codex, "codexAppPromptOptimizeStyle"))
         .filter(|value| matches!(value.as_str(), "structured" | "concise" | "coding"))
         .unwrap_or_else(|| "structured".into());
     let (protocol, base_url, api_key, configuration_error) = match relay {
-        Some(relay) => (
-            relay.protocol,
-            relay.base_url,
-            relay.api_key,
-            Value::Null,
-        ),
+        Some(relay) => (relay.protocol, relay.base_url, relay.api_key, Value::Null),
         None => (
             manual_protocol.clone(),
             manual_base_url.clone(),
-            if manual_api_key.is_empty() { environment_key.clone() } else { manual_api_key },
+            if manual_api_key.is_empty() {
+                environment_key.clone()
+            } else {
+                manual_api_key
+            },
             Value::Null,
         ),
     };
@@ -902,7 +919,6 @@ fn polish_settings_response() -> Result<Value, RpcError> {
             "manualProtocol": if manual_protocol == "anthropic" { "anthropic" } else { "openai" },
             "manualBaseUrl": manual_base_url,
             "manualModel": model,
-            "enabled": plugin.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             "protocol": match protocol.as_str() {
                 "anthropic" => "anthropic",
                 "responses" => "responses",
@@ -947,23 +963,29 @@ fn update_polish_settings(params: &Value) -> Result<Value, RpcError> {
         *polish = Value::Object(Default::default());
     }
     let polish = polish.as_object_mut().expect("object ensured above");
-    polish.insert("enabled".into(), Value::Bool(true));
     let relay_id = params
-        .get("codexAppPromptOptimizeRelayId")
+        .get("relayId")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or_default();
     polish.insert("relayId".into(), Value::String(relay_id.to_string()));
     polish.insert(
         "connectionMode".into(),
-        Value::String(if relay_id.is_empty() { "manual" } else { "relay" }.into()),
+        Value::String(
+            if relay_id.is_empty() {
+                "manual"
+            } else {
+                "relay"
+            }
+            .into(),
+        ),
     );
     for (source, target) in [
-        ("codexAppPromptOptimizeStyle", "style"),
-        ("codexAppPromptOptimizeModel", "model"),
-        ("codexAppPromptOptimizeProtocol", "protocol"),
-        ("codexAppPromptOptimizeBaseUrl", "baseUrl"),
-        ("codexAppPromptOptimizeApiKey", "apiKey"),
+        ("style", "style"),
+        ("model", "model"),
+        ("protocol", "protocol"),
+        ("baseUrl", "baseUrl"),
+        ("apiKey", "apiKey"),
     ] {
         if let Some(value) = params.get(source).and_then(Value::as_str) {
             let value = if target == "protocol" && value == "openai" {
@@ -1089,17 +1111,21 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
     let plugin = load_plugin_settings("xuan-polish")?;
     let (settings, profile_ref) = selected_profile(&plugin, params)?;
     let codex = load_codex_settings()?;
-    let use_codex_fallback = profile_ref.is_empty();
     let connection_mode = configured_string(&settings, "connectionMode").unwrap_or_else(|| {
-        if configured_string(&settings, "baseUrl").is_some() && configured_string(&settings, "relayId").is_none() {
+        if configured_string(&settings, "baseUrl").is_some()
+            && configured_string(&settings, "relayId").is_none()
+        {
             "manual".into()
         } else {
             "relay".into()
         }
     });
-    let relay_id = configured_string(&settings, "relayId")
-        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeRelayId")).flatten())
-        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "activeRelayId")).flatten());
+    let relay_id = configured_string(&settings, "relayId").or_else(|| {
+        profile_ref
+            .is_empty()
+            .then(|| configured_string(&codex, "activeRelayId"))
+            .flatten()
+    });
     let relay = if connection_mode == "manual" {
         None
     } else {
@@ -1110,7 +1136,6 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
     } else {
         environment_value("XUAN_POLISH_BASE_URL")
             .or_else(|| configured_string(&settings, "baseUrl"))
-            .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeBaseUrl")).flatten())
             .ok_or_else(|| error("configuration_error", "请先配置润色 Base URL"))?
     };
     let model = params
@@ -1121,23 +1146,19 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
         .map(ToOwned::to_owned)
         .or_else(|| environment_value("XUAN_POLISH_MODEL"))
         .or_else(|| configured_string(&settings, "model"))
-        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeModel")).flatten())
         .ok_or_else(|| error("configuration_error", "请先设置润色模型"))?;
     let protocol = relay
         .as_ref()
         .map(|relay| relay.protocol.clone())
         .or_else(|| environment_value("XUAN_POLISH_PROTOCOL"))
         .or_else(|| configured_string(&settings, "protocol"))
-        .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeProtocol")).flatten())
         .unwrap_or_else(|| "chat-completions".into());
     let api_key_env =
         configured_string(&settings, "apiKeyEnv").unwrap_or_else(|| "XUAN_POLISH_API_KEY".into());
     let api_key = if let Some(relay) = &relay {
         relay.api_key.clone()
     } else {
-        configured_string(&settings, "apiKey")
-            .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeApiKey")).flatten())
-            .unwrap_or(secret_from_environment(&api_key_env)?)
+        configured_string(&settings, "apiKey").unwrap_or(secret_from_environment(&api_key_env)?)
     };
     if api_key.is_empty() {
         return Err(error("configuration_error", "请先配置润色 API Key"));
@@ -1148,7 +1169,6 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
         api_key,
         model,
         style: configured_string(&settings, "style")
-            .or_else(|| use_codex_fallback.then(|| configured_string(&codex, "codexAppPromptOptimizeStyle")).flatten())
             .filter(|value| matches!(value.as_str(), "structured" | "concise" | "coding"))
             .unwrap_or_else(|| "structured".into()),
         max_input_chars: configured_u64(&settings, "maxInputChars", 24_000, 1_000, 100_000)
@@ -2042,21 +2062,17 @@ pub fn initialize_storage(root: &Path) -> Result<Value, String> {
         let default_config = json!({
             "schemaVersion": 1,
             "plugins": {
-                "xuan-workspace-search": { "enabled": true },
                 "xuan-usage": {
-                    "enabled": true,
                     "defaultProfile": "",
                     "profiles": {}
                 },
                 "xuan-polish": {
-                    "enabled": true,
                     "connectionMode": "relay",
                     "relayId": "",
                     "style": "structured",
                     "defaultProfile": "",
                     "profiles": {}
-                },
-                "xuan-mobile": { "enabled": true }
+                }
             },
             "mobile": { "enabled": false, "autoSync": false }
         });
@@ -2072,12 +2088,6 @@ pub fn initialize_storage(root: &Path) -> Result<Value, String> {
              CREATE TABLE IF NOT EXISTS bridge_meta (
                  key TEXT PRIMARY KEY NOT NULL,
                  value TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS migration_runs (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 source_settings TEXT NOT NULL,
-                 backup_path TEXT NOT NULL,
-                 migrated_at INTEGER NOT NULL
              );
              COMMIT;",
         )
@@ -2098,248 +2108,6 @@ pub fn initialize_storage(root: &Path) -> Result<Value, String> {
         "databasePath": database_path,
         "schemaVersion": DATABASE_SCHEMA_VERSION,
     }))
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MigratedConfig {
-    schema_version: u32,
-    migrated_at: String,
-    source_settings: String,
-    plugins: Value,
-    mobile: Value,
-}
-
-pub fn migrate_legacy_settings(input: &Path, output_root: &Path) -> Result<Value, String> {
-    let raw = std::fs::read_to_string(input).map_err(|error| error.to_string())?;
-    let source: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-    std::fs::create_dir_all(output_root).map_err(|error| error.to_string())?;
-    let storage = initialize_storage(output_root)?;
-    let backup = output_root.join(format!("legacy-settings-backup-{}.json", unix_timestamp()));
-    std::fs::copy(input, &backup).map_err(|error| error.to_string())?;
-    let mut permissions = std::fs::metadata(&backup)
-        .map_err(|error| error.to_string())?
-        .permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&backup, permissions).map_err(|error| error.to_string())?;
-    let state_backup_root = output_root.join("legacy-state");
-    std::fs::create_dir_all(&state_backup_root).map_err(|error| error.to_string())?;
-    let mut state_backups = Vec::new();
-    let mut remote_database_path = None;
-    if let Some(legacy_state_root) = input.parent() {
-        for name in ["mobile-remote.sqlite", "skills.json", "latest-status.json"] {
-            let source = legacy_state_root.join(name);
-            if !source.is_file() {
-                continue;
-            }
-            let destination = state_backup_root.join(name);
-            if name == "mobile-remote.sqlite" {
-                copy_sqlite_snapshot(&source, &destination)?;
-            } else {
-                std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
-            }
-            let mut permissions = std::fs::metadata(&destination)
-                .map_err(|error| error.to_string())?
-                .permissions();
-            permissions.set_readonly(true);
-            std::fs::set_permissions(&destination, permissions)
-                .map_err(|error| error.to_string())?;
-            state_backups.push(destination.clone());
-            if name == "mobile-remote.sqlite" {
-                let remote_root = output_root.join("xuan-plus-remote");
-                std::fs::create_dir_all(&remote_root).map_err(|error| error.to_string())?;
-                let writable = remote_root.join("mobile-remote.sqlite");
-                if !writable.exists() {
-                    std::fs::copy(&destination, &writable).map_err(|error| error.to_string())?;
-                    make_file_owner_writable(&writable)?;
-                }
-                remote_database_path = Some(writable);
-            }
-        }
-    }
-    let config = MigratedConfig {
-        schema_version: 1,
-        migrated_at: format!("{}", unix_timestamp()),
-        source_settings: input.to_string_lossy().to_string(),
-        plugins: json!({
-            "xuan-workspace-search": { "enabled": bool_field(&source, "codexAppWorkspaceSearchEnabled") },
-            "xuan-usage": {
-                "enabled": bool_field(&source, "codexAppRelayBalanceEnabled"),
-                "provider": string_field(&source, "codexAppRelayBalanceProvider"),
-                "defaultProfile": "",
-                "profiles": {},
-                "apiKeyEnv": "XUAN_USAGE_API_KEY",
-                "credentialMigrationRequired": !string_field(&source, "codexAppRelayBalanceOwlToken").is_empty()
-            },
-            "xuan-polish": {
-                "enabled": bool_field(&source, "codexAppPromptOptimizeEnabled"),
-                "legacyRelayId": string_field(&source, "codexAppPromptOptimizeRelayId"),
-                "defaultProfile": "",
-                "profiles": {},
-                "protocol": migrated_polish_protocol(&source),
-                "baseUrl": string_field(&source, "codexAppPromptOptimizeBaseUrl"),
-                "apiKeyEnv": migrated_polish_api_key_env(&source),
-                "model": string_field(&source, "codexAppPromptOptimizeModel"),
-                "style": string_field(&source, "codexAppPromptOptimizeStyle"),
-                "maxInputChars": u64_field(&source, "codexAppPromptOptimizeMaxInputChars", 24_000),
-                "maxOutputTokens": u64_field(&source, "codexAppPromptOptimizeMaxOutputTokens", 4_096),
-                "timeoutMs": u64_field(&source, "codexAppPromptOptimizeTimeoutMs", 60_000),
-                "credentialMigrationRequired": !string_field(&source, "codexAppPromptOptimizeApiKey").is_empty()
-                    || !string_field(&source, "codexAppPromptOptimizeRelayId").is_empty()
-            }
-        }),
-        mobile: json!({
-            "enabled": bool_field(&source, "mobileRemoteEnabled"),
-            "autoSync": bool_field(&source, "mobileRemoteAutoSync"),
-            "models": migrated_mobile_models(&source),
-            "databasePath": remote_database_path
-        }),
-    };
-    let output = output_root.join("xuan-plugins.json");
-    let encoded = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
-    std::fs::write(&output, encoded).map_err(|error| error.to_string())?;
-    let database_path = storage["databasePath"]
-        .as_str()
-        .map(PathBuf::from)
-        .ok_or_else(|| "storage initialization returned no database path".to_string())?;
-    let connection = Connection::open(&database_path).map_err(|error| error.to_string())?;
-    connection
-        .execute(
-            "INSERT INTO migration_runs(source_settings, backup_path, migrated_at)
-             VALUES(?1, ?2, ?3)",
-            params![
-                input.to_string_lossy(),
-                backup.to_string_lossy(),
-                unix_timestamp() as i64
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    Ok(json!({
-        "status": "ok",
-        "configPath": output,
-        "backupPath": backup,
-        "stateBackups": state_backups,
-        "remoteDatabasePath": remote_database_path,
-        "databasePath": database_path,
-        "schemaVersion": DATABASE_SCHEMA_VERSION,
-    }))
-}
-
-fn copy_sqlite_snapshot(source: &Path, destination: &Path) -> Result<(), String> {
-    let source = Connection::open_with_flags(source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| error.to_string())?;
-    let mut destination = Connection::open(destination).map_err(|error| error.to_string())?;
-    let backup = rusqlite::backup::Backup::new(&source, &mut destination)
-        .map_err(|error| error.to_string())?;
-    backup
-        .run_to_completion(64, Duration::from_millis(10), None)
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(windows)]
-#[allow(clippy::permissions_set_readonly_false)]
-fn make_file_owner_writable(path: &Path) -> Result<(), String> {
-    let mut permissions = std::fs::metadata(path)
-        .map_err(|error| error.to_string())?
-        .permissions();
-    permissions.set_readonly(false);
-    std::fs::set_permissions(path, permissions).map_err(|error| error.to_string())
-}
-
-#[cfg(unix)]
-fn make_file_owner_writable(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = std::fs::metadata(path)
-        .map_err(|error| error.to_string())?
-        .permissions();
-    permissions.set_mode(permissions.mode() | 0o200);
-    std::fs::set_permissions(path, permissions).map_err(|error| error.to_string())
-}
-
-fn migrated_mobile_models(source: &Value) -> Vec<Value> {
-    let active_id = source
-        .get("activeRelayId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let Some(profiles) = source.get("relayProfiles").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let Some(profile) = profiles
-        .iter()
-        .find(|profile| profile.get("id").and_then(Value::as_str) == Some(active_id))
-        .or_else(|| profiles.first())
-    else {
-        return Vec::new();
-    };
-    let provider = profile
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("custom");
-    let mut seen = std::collections::BTreeSet::new();
-    let mut models = Vec::new();
-    let list = profile
-        .get("modelList")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    for model in list
-        .split(['\r', '\n', ','])
-        .chain(profile.get("model").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|model| !model.is_empty() && model.len() <= 256)
-    {
-        if seen.insert(model.to_owned()) {
-            models.push(json!({"model": model, "provider": provider}));
-        }
-        if models.len() >= 100 {
-            break;
-        }
-    }
-    models
-}
-
-fn bool_field(source: &Value, key: &str) -> bool {
-    source.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn string_field(source: &Value, key: &str) -> String {
-    source
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_owned()
-}
-
-fn u64_field(source: &Value, key: &str, default: u64) -> u64 {
-    source.get(key).and_then(Value::as_u64).unwrap_or(default)
-}
-
-fn migrated_polish_protocol(source: &Value) -> String {
-    match string_field(source, "codexAppPromptOptimizeProtocol").as_str() {
-        "responses" => "responses",
-        "anthropic" => "anthropic",
-        _ => "chat-completions",
-    }
-    .to_string()
-}
-
-fn migrated_polish_api_key_env(source: &Value) -> String {
-    let configured = string_field(source, "codexAppPromptOptimizeApiKeyEnv");
-    if configured.is_empty() {
-        "XUAN_POLISH_API_KEY".into()
-    } else {
-        configured
-    }
-}
-
-fn unix_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 pub fn serve_json_lines<R: Read, W: Write>(reader: R, mut writer: W) -> Result<(), String> {
@@ -2368,301 +2136,6 @@ pub fn serve_json_lines<R: Read, W: Write>(reader: R, mut writer: W) -> Result<(
     Ok(())
 }
 
-pub fn serve_http(addr: &str) -> Result<(), String> {
-    let address: SocketAddr = addr
-        .parse()
-        .map_err(|_| "HTTP address must be an IP socket address".to_string())?;
-    if !address.ip().is_loopback() {
-        return Err("xuan-bridge HTTP server only accepts loopback addresses".into());
-    }
-    let listener = TcpListener::bind(address).map_err(|error| error.to_string())?;
-    serve_http_listener(listener, None)
-}
-
-pub fn serve_http_listener(
-    listener: TcpListener,
-    max_connections: Option<usize>,
-) -> Result<(), String> {
-    if !listener
-        .local_addr()
-        .map_err(|error| error.to_string())?
-        .ip()
-        .is_loopback()
-    {
-        return Err("xuan-bridge HTTP server only accepts loopback addresses".into());
-    }
-    let state = MutexState::new();
-    for (index, stream) in listener.incoming().enumerate() {
-        let stream = stream.map_err(|error| error.to_string())?;
-        let state = state.clone();
-        if max_connections.is_some() {
-            handle_http_connection(stream, state)?;
-        } else {
-            thread::spawn(move || {
-                let _ = handle_http_connection(stream, state);
-            });
-        }
-        if max_connections.is_some_and(|limit| index + 1 >= limit) {
-            break;
-        }
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct MutexState(std::sync::Arc<std::sync::Mutex<BridgeState>>);
-
-impl MutexState {
-    fn new() -> Self {
-        Self(std::sync::Arc::new(std::sync::Mutex::new(
-            BridgeState::new(),
-        )))
-    }
-}
-
-fn handle_http_connection(mut stream: TcpStream, state: MutexState) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .map_err(|error| error.to_string())?;
-    let mut request = Vec::new();
-    let mut header_end = None;
-    let mut chunk = [0_u8; 1024];
-    while request.len() < 64 * 1024 {
-        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        request.extend_from_slice(&chunk[..read]);
-        if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-            header_end = Some(index + 4);
-            break;
-        }
-    }
-    let Some(header_end) = header_end else {
-        return write_http_error(&mut stream, 400, "invalid HTTP request", None);
-    };
-    let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
-    let mut lines = headers.lines();
-    let request_line = lines.next().unwrap_or_default().to_string();
-    let mut request_parts = request_line.split_whitespace();
-    let http_method = request_parts.next().unwrap_or_default().to_string();
-    let path = request_parts.next().unwrap_or_default().to_string();
-    let parsed_headers = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
-        .collect::<HashMap<_, _>>();
-    let origin = parsed_headers.get("origin").map(String::as_str);
-    if !origin.is_none_or(is_allowed_origin) {
-        return write_http_error(&mut stream, 403, "HTTP origin is not allowed", origin);
-    }
-    if http_method == "OPTIONS" {
-        return write_http_empty(&mut stream, 204, origin);
-    }
-    if !authorized_http_request(&parsed_headers) {
-        return write_http_error(&mut stream, 401, "HTTP bridge token is invalid", origin);
-    }
-    let content_length = parsed_headers
-        .get("content-length")
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > 2 * 1024 * 1024 {
-        return write_http_error(&mut stream, 413, "request body is too large", origin);
-    }
-    while request.len() < header_end + content_length {
-        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        request.extend_from_slice(&chunk[..read]);
-    }
-    let Some((method, expected_method)) = http_bridge_method(&path) else {
-        return write_http_error(&mut stream, 404, "unknown HTTP bridge path", origin);
-    };
-    if expected_method != http_method {
-        return write_http_error(&mut stream, 405, "HTTP method is not allowed", origin);
-    }
-    let params = if content_length == 0 {
-        Value::Object(Default::default())
-    } else {
-        match serde_json::from_slice(&request[header_end..header_end + content_length]) {
-            Ok(value) => value,
-            Err(_) => {
-                return write_http_error(&mut stream, 400, "request body must be JSON", origin);
-            }
-        }
-    };
-    let response = {
-        let mut guard = state
-            .0
-            .lock()
-            .map_err(|_| "bridge state is poisoned".to_string())?;
-        handle_request(
-            &mut guard,
-            RpcRequest {
-                id: Value::String("http".into()),
-                method: method.into(),
-                params,
-            },
-        )
-    };
-    let status = if response.error.is_some() { 400 } else { 200 };
-    let body = if let Some(result) = response.result {
-        result
-    } else {
-        json!({ "status": "failed", "error": response.error })
-    };
-    let body = serde_json::to_vec(&body).map_err(|error| error.to_string())?;
-    let header = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n",
-        if status == 200 { "OK" } else { "Bad Request" },
-        body.len(),
-        cors_headers(origin),
-    );
-    stream
-        .write_all(header.as_bytes())
-        .and_then(|_| stream.write_all(&body))
-        .map_err(|error| error.to_string())
-}
-
-fn write_http_error(
-    stream: &mut TcpStream,
-    status: u16,
-    message: &str,
-    origin: Option<&str>,
-) -> Result<(), String> {
-    let body = serde_json::to_vec(
-        &json!({ "status": "failed", "error": { "code": "http_error", "message": message } }),
-    )
-    .map_err(|error| error.to_string())?;
-    let reason = match status {
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        _ => "Bad Request",
-    };
-    let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n",
-        body.len(),
-        cors_headers(origin),
-    );
-    stream
-        .write_all(header.as_bytes())
-        .and_then(|_| stream.write_all(&body))
-        .map_err(|error| error.to_string())
-}
-
-fn write_http_empty(
-    stream: &mut TcpStream,
-    status: u16,
-    origin: Option<&str>,
-) -> Result<(), String> {
-    let header = format!(
-        "HTTP/1.1 {status} No Content\r\nContent-Length: 0\r\nConnection: close\r\n{}\r\n",
-        cors_headers(origin),
-    );
-    stream
-        .write_all(header.as_bytes())
-        .map_err(|error| error.to_string())
-}
-
-fn cors_headers(origin: Option<&str>) -> String {
-    let mut headers = String::from(
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-Xuan-Bridge-Token\r\nVary: Origin\r\n",
-    );
-    if let Some(origin) = origin.filter(|origin| is_allowed_origin(origin)) {
-        headers.push_str(&format!("Access-Control-Allow-Origin: {origin}\r\n"));
-    }
-    headers
-}
-
-fn authorized_http_request(headers: &HashMap<String, String>) -> bool {
-    let Ok(expected) = std::env::var("XUAN_BRIDGE_HTTP_TOKEN") else {
-        return true;
-    };
-    let expected = expected.trim();
-    expected.is_empty()
-        || headers
-            .get("x-xuan-bridge-token")
-            .is_some_and(|provided| constant_time_eq(provided.trim(), expected))
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
-}
-
-fn is_allowed_origin(origin: &str) -> bool {
-    let origin = origin.trim();
-    if origin.eq_ignore_ascii_case("null")
-        || origin.eq_ignore_ascii_case("app://-")
-        || origin.eq_ignore_ascii_case("app://localhost")
-        || origin.eq_ignore_ascii_case("tauri://localhost")
-    {
-        return true;
-    }
-    if std::env::var("XUAN_BRIDGE_ALLOWED_ORIGINS")
-        .ok()
-        .is_some_and(|configured| {
-            configured
-                .split(',')
-                .any(|allowed| allowed.trim().eq_ignore_ascii_case(origin))
-        })
-    {
-        return true;
-    }
-    let Ok(url) = Url::parse(origin) else {
-        return false;
-    };
-    let host = url.host_str().unwrap_or_default();
-    matches!(url.scheme(), "http" | "https")
-        && (host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-            || matches!(
-                host,
-                "chatgpt.com" | "chat.openai.com" | "codex.openai.com" | "tauri.localhost"
-            ))
-}
-
-fn http_bridge_method(path: &str) -> Option<(&'static str, &'static str)> {
-    let path = path.split('?').next().unwrap_or(path);
-    match path {
-        "/v1/health" => Some(("bridge.health", "GET")),
-        "/v1/paths" => Some(("bridge.paths", "GET")),
-        "/v1/search/roots" => Some(("workspace.roots", "POST")),
-        "/v1/search/projects" => Some(("workspace.projects", "POST")),
-        "/v1/search/current-root" => Some(("workspace.current_root", "POST")),
-        "/v1/search/start" => Some(("workspace.search.start", "POST")),
-        "/v1/search/poll" => Some(("workspace.search.poll", "POST")),
-        "/v1/search/cancel" => Some(("workspace.search.cancel", "POST")),
-        "/v1/search/preview" => Some(("workspace.search.preview", "POST")),
-        "/v1/usage" => Some(("usage.query", "POST")),
-        "/v1/polish/settings" => Some(("polish.settings.get", "GET")),
-        "/v1/polish/settings/set" => Some(("polish.settings.set", "POST")),
-        "/v1/polish" => Some(("polish.generate", "POST")),
-        "/v1/mobile/status" => Some(("mobile.status", "GET")),
-        "/v1/mobile/pair" => Some(("mobile.pair", "POST")),
-        "/v1/mobile/enable" => Some(("mobile.enable", "POST")),
-        "/v1/mobile/confirm" => Some(("mobile.confirm", "POST")),
-        "/v1/mobile/auto-sync" => Some(("mobile.auto_sync", "POST")),
-        "/v1/mobile/select" => Some(("mobile.select", "POST")),
-        "/v1/mobile/tasks" => Some(("mobile.tasks", "POST")),
-        "/v1/mobile/send-input" => Some(("mobile.send_input", "POST")),
-        "/v1/mobile/stop" => Some(("mobile.stop", "POST")),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2675,32 +2148,6 @@ mod tests {
         assert_eq!(result["status"], "ok");
         assert_eq!(result["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
         assert_eq!(result["capabilities"]["workspaceSearch"], true);
-    }
-
-    #[test]
-    fn migration_creates_read_only_backup_and_namespaced_config() {
-        let dir = std::env::temp_dir().join(format!(
-            "xuan-bridge-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let input = dir.join("settings.json");
-        fs::write(
-            &input,
-            r#"{"codexAppWorkspaceSearchEnabled":true,"codexAppPromptOptimizeModel":"gpt-test","codexAppPromptOptimizeApiKey":"do-not-copy"}"#,
-        )
-        .unwrap();
-        let output = migrate_legacy_settings(&input, &dir).unwrap();
-        let config = fs::read_to_string(output["configPath"].as_str().unwrap()).unwrap();
-        assert!(config.contains("xuan-workspace-search"));
-        assert!(config.contains("gpt-test"));
-        assert!(!config.contains("do-not-copy"));
-        let backup = output["backupPath"].as_str().unwrap();
-        assert!(fs::metadata(backup).unwrap().permissions().readonly());
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2843,15 +2290,5 @@ mod tests {
         assert!(prompt.contains("<conversation_context>"));
         assert!(prompt.contains("<project_map>\nsrc/main.rs\n</project_map>"));
         assert!(prompt.contains("<draft>\ncontinue the change\n</draft>"));
-    }
-
-    #[test]
-    fn http_origin_defaults_are_narrow() {
-        assert!(is_allowed_origin("https://chatgpt.com"));
-        assert!(is_allowed_origin("http://127.0.0.1:5173"));
-        assert!(is_allowed_origin("null"));
-        assert!(!is_allowed_origin("https://evil.example"));
-        assert!(constant_time_eq("same-token", "same-token"));
-        assert!(!constant_time_eq("same-token", "other-token"));
     }
 }

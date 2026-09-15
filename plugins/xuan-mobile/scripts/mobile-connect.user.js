@@ -150,7 +150,7 @@
     try {
       const pending = Promise.resolve().then(async () => {
         const pageBridge = window.__xuanPluginBridge?.["xuan-mobile"];
-        // 绑定仅提交给独立插件，宿主和页面 HTTP 均不参与转发。
+        // 绑定仅提交给独立插件页面桥，避免跨越插件边界。
         if (typeof pageBridge !== "function") throw new Error("手机插件尚未连接，请确认插件已启用并重新打开任务");
         return pageBridge(path, payload || {});
       });

@@ -3,8 +3,8 @@
  * 密钥和供应商请求保留在 xuan-bridge，不依赖宿主源码或定制启动器。
  */
 (() => {
-  const SCRIPT_VERSION = "1.1.8";
-  const INSTANCE_REVISION = "official-2026-09-v21";
+  const SCRIPT_VERSION = "1.1.9";
+  const INSTANCE_REVISION = "official-2026-09-v22";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -701,11 +701,7 @@
   }
 
   function isSuccessfulSettingsSave(result) {
-    return Boolean(
-      result &&
-        result.status !== "failed" &&
-        (result.status === "ok" || typeof result.codexAppPromptOptimizeProtocol === "string"),
-    );
+    return Boolean(result && result.status === "ok");
   }
 
   function installStyle() {
@@ -934,10 +930,6 @@
         return;
       }
       if (token !== runtime.optimizeToken) return;
-      if (!runtime.settings.enabled) {
-        destroyAll();
-        return;
-      }
       if (!isConfigured(runtime.settings)) {
         showToast("请先配置 API", "");
         if (runtime.settings.configurationError) showToast(runtime.settings.configurationError, "error");
@@ -1192,22 +1184,22 @@
       return;
     }
     const next = {
-      codexAppPromptOptimizeRelayId: relayIdEl.value,
-      codexAppPromptOptimizeStyle: styleEl.value,
-      codexAppPromptOptimizeModel: model,
+      relayId: relayIdEl.value,
+      style: styleEl.value,
+      model,
     };
     if (!relayIdEl.value) {
-      next.codexAppPromptOptimizeProtocol = protocolEl.value === "anthropic" ? "anthropic" : "openai";
+      next.protocol = protocolEl.value === "anthropic" ? "anthropic" : "openai";
       const baseUrl = baseUrlEl.value.trim().replace(/\/+$/, "");
       if (!baseUrl) {
         showToast("请填写 Base URL", "error");
         baseUrlEl.focus();
         return;
       }
-      next.codexAppPromptOptimizeBaseUrl = baseUrl;
+      next.baseUrl = baseUrl;
       const apiKey = apiKeyEl.value.trim();
-      if (apiKey) next.codexAppPromptOptimizeApiKey = apiKey;
-      if (clearKeyEl.checked) next.codexAppPromptOptimizeApiKey = "";
+      if (apiKey) next.apiKey = apiKey;
+      if (clearKeyEl.checked) next.apiKey = "";
     }
     const saveButton = document.querySelector(`[${PANEL_ATTR}] [data-cpo-action="save"]`);
     if (saveButton) saveButton.disabled = true;
@@ -1256,16 +1248,13 @@
         /* ignore */
       }
     }, POLL_MS);
-    await refreshSettings();
-    if (runtime.disposed) return;
-    if (!runtime.settings || runtime.settings.enabled === false) {
-      destroyAll();
-      return;
-    }
     installPromptOptimizeShortcut();
     installComposerSendCleanup();
     installStyle();
     ensureButton();
+    await refreshSettings();
+    if (runtime.disposed) return;
+    refreshButtonAppearance();
   }
 
   function ensure() {

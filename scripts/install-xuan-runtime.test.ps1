@@ -5,8 +5,13 @@ $child = $null
 $failed = $false
 try {
     [System.IO.Directory]::CreateDirectory($testRoot) | Out-Null
-    $bridge = Join-Path $root 'tools\xuan-bridge\target\release\xuan-bridge.exe'
-    $remote = Join-Path $root 'apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe'
+    $bridge = Get-ChildItem -LiteralPath (Join-Path $root 'tools\xuan-bridge\target') -Filter 'xuan-bridge.exe' -File -Recurse |
+        Where-Object { $_.Directory.Name -eq 'release' } |
+        Select-Object -First 1 -ExpandProperty FullName
+    $remote = Get-ChildItem -LiteralPath (Join-Path $root 'apps\xuan-plus-remote\bridge\target') -Filter 'xuan-plus-remote-bridge.exe' -File -Recurse |
+        Where-Object { $_.Directory.Name -eq 'release' } |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $bridge -or -not $remote) { throw '未找到 release 版插件运行文件。' }
     $ui = Join-Path $testRoot 'xuan-ui-bridge.mjs'
     Copy-Item -LiteralPath (Join-Path $root 'tools\xuan-ui-bridge\xuan-ui-bridge.mjs') -Destination $ui
     $hiddenParent = [System.IO.Directory]::CreateDirectory((Join-Path $testRoot 'AppData'))

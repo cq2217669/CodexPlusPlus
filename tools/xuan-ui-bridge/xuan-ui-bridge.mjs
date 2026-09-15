@@ -281,11 +281,7 @@ export function startPluginUi({ name, request, debugPort = Number(process.env.XU
     if (stopped) return;
     // 端口租约只选举插件实例，不接收操作；重复打开任务不会重复执行绑定或润色。
     if (name === "xuan-mobile" && autoStartMobile && !mobileChild && !await portOpen(17421)) {
-      const legacy = process.env.LOCALAPPDATA
-        ? path.join(process.env.LOCALAPPDATA, "XuanPlusPlus", "bin", "xuan-plus-remote-bridge.exe") : "";
-      const override = process.env.XUAN_REMOTE_BRIDGE_BIN;
-      const binary = override && path.resolve(override).toLowerCase() !== legacy.toLowerCase()
-        ? override : remoteBinary || legacy;
+      const binary = process.env.XUAN_REMOTE_BRIDGE_BIN || remoteBinary;
       if (binary && fs.existsSync(binary) && !stopped) {
         mobileChild = spawn(binary, [], { stdio: "ignore", windowsHide: true });
         mobileChild.once("error", () => { mobileChild = undefined; });

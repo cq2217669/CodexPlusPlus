@@ -45,7 +45,7 @@ try {
     }
     $batch = [System.Text.UTF8Encoding]::new($false, $true).GetString($batchBytes)
     if ($batch -match '(?<!\r)\n') { throw '批处理不能包含 LF-only 换行。' }
-    $stopCall = $batch.IndexOf('"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%PLUGIN_PROCESS_STOPPER%"')
+    $stopCall = $batch.IndexOf('"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%PLUGIN_PROCESS_STOPPER%"')
     if ($stopCall -lt $batch.IndexOf('echo [5/7]') -or $stopCall -ge $batch.IndexOf('plugin add "%%P@xuan-curated"')) {
         throw '批处理必须在更新插件前调用进程清理。'
     }
@@ -57,27 +57,28 @@ try {
     $bin = Join-Path $testRoot 'runtime with spaces'
     $versioned = Join-Path (Join-Path $bin 'versions') ('a' * 64)
     $outside = $bin + '-other'
-    $source = Join-Path $root 'tools\xuan-bridge\target\release\xuan-bridge.exe'
-    foreach ($directory in @($bin, $versioned, $outside)) {
+    $source = Get-ChildItem -LiteralPath (Join-Path $root 'tools\xuan-bridge\target') -Filter 'xuan-bridge.exe' -File -Recurse |
+        Where-Object { $_.Directory.Name -eq 'release' } |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $source) { throw '未找到 release 版 xuan-bridge.exe。' }
+    foreach ($directory in @($versioned, $outside)) {
         [System.IO.Directory]::CreateDirectory($directory) | Out-Null
         Copy-Item -LiteralPath $source -Destination (Join-Path $directory 'xuan-bridge.exe')
     }
     $node = (Get-Command node.exe -ErrorAction Stop).Source
     $stopper = Join-Path $PSScriptRoot 'stop-xuan-plugin-processes.ps1'
     $pluginRoot = Join-Path $root 'plugins\xuan-workspace-search'
-    $legacy = Start-TestProcess -File $node -Arguments @('./server.mjs') -Bridge (Join-Path $bin 'xuan-bridge.exe') -WorkingDirectory $pluginRoot
-    $legacyBridge = Get-TestBridge -Parent $legacy
     $version = Start-TestProcess -File $node -Arguments @((Join-Path $pluginRoot 'server.mjs')) -Bridge (Join-Path $versioned 'xuan-bridge.exe') -WorkingDirectory $pluginRoot
     $versionBridge = Get-TestBridge -Parent $version
     $unrelated = Start-TestProcess -File $node -Arguments @('server.mjs') -Bridge (Join-Path $outside 'xuan-bridge.exe') -WorkingDirectory $pluginRoot
     $unrelatedBridge = Get-TestBridge -Parent $unrelated
-    $hostBridge = Start-TestProcess -File (Join-Path $bin 'xuan-bridge.exe') -Bridge (Join-Path $bin 'xuan-bridge.exe') -WorkingDirectory $testRoot
+    $hostBridge = Start-TestProcess -File (Join-Path $versioned 'xuan-bridge.exe') -Bridge (Join-Path $versioned 'xuan-bridge.exe') -WorkingDirectory $testRoot
     $otherEntry = 'const {spawn}=require("node:child_process");const child=spawn(process.env.XUAN_BRIDGE_BIN,[],{stdio:["pipe","ignore","ignore"],windowsHide:true});process.stdin.resume();process.stdin.on("end",()=>child.stdin.end());'
-    $other = Start-TestProcess -File $node -Arguments @('-e', $otherEntry, 'server.mjs') -Bridge (Join-Path $bin 'xuan-bridge.exe') -WorkingDirectory $testRoot
+    $other = Start-TestProcess -File $node -Arguments @('-e', $otherEntry, 'server.mjs') -Bridge (Join-Path $versioned 'xuan-bridge.exe') -WorkingDirectory $testRoot
     $otherBridge = Get-TestBridge -Parent $other
 
     # 使用 stdio Bridge 模拟手机子进程，只验证进程归属，不启动真实手机服务或监听端口。
-    $remoteBinary = Join-Path $bin 'xuan-plus-remote-bridge.exe'
+    $remoteBinary = Join-Path $versioned 'xuan-plus-remote-bridge.exe'
     Copy-Item -LiteralPath $source -Destination $remoteBinary
     $fixture = Join-Path (Join-Path $testRoot 'mobile plugin') 'server.mjs'
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $fixture)) | Out-Null
@@ -89,10 +90,10 @@ process.stdin.resume();
 process.stdin.on("end", () => children.forEach(child => child.stdin.end()));
 '@
     [System.IO.File]::WriteAllText($fixture, $fixtureSource, [System.Text.UTF8Encoding]::new($false))
-    $mobile = Start-TestProcess -File $node -Arguments @($fixture) -Bridge (Join-Path $bin 'xuan-bridge.exe') -WorkingDirectory $testRoot -Remote $remoteBinary
+    $mobile = Start-TestProcess -File $node -Arguments @($fixture) -Bridge (Join-Path $versioned 'xuan-bridge.exe') -WorkingDirectory $testRoot -Remote $remoteBinary
     $mobileBridge = Get-TestBridge -Parent $mobile
-    $mobileRemote = Get-TestBridge -Parent $mobile -Name 'xuan-plus-remote-bridge.exe'
-    $hostRemote = Start-TestProcess -File $remoteBinary -Bridge (Join-Path $bin 'xuan-bridge.exe') -WorkingDirectory $testRoot
+    $mobileBridgeChild = Get-TestBridge -Parent $mobile -Name 'xuan-plus-remote-bridge.exe'
+    $hostRemote = Start-TestProcess -File $remoteBinary -Bridge (Join-Path $versioned 'xuan-bridge.exe') -WorkingDirectory $testRoot
 
     & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $stopper -BinDirectory $bin -WhatIf
     if ($LASTEXITCODE -ne 0) { throw '插件进程清理预演失败。' }
@@ -101,7 +102,7 @@ process.stdin.on("end", () => children.forEach(child => child.stdin.end()));
     }
     & pwsh.exe -NoLogo -NoProfile -NonInteractive -File $stopper -BinDirectory $bin
     if ($LASTEXITCODE -ne 0) { throw '插件进程清理失败。' }
-    foreach ($child in @($legacy, $legacyBridge, $version, $versionBridge, $mobile, $mobileBridge, $mobileRemote)) {
+    foreach ($child in @($version, $versionBridge, $mobile, $mobileBridge, $mobileBridgeChild)) {
         if (-not $child.WaitForExit(5000)) { throw '目标插件进程未被清理。' }
     }
     $preserved = @($unrelated, $unrelatedBridge, $hostBridge, $other, $otherBridge, $hostRemote)
@@ -113,7 +114,7 @@ process.stdin.on("end", () => children.forEach(child => child.stdin.end()));
     foreach ($child in $preserved) {
         if ($child.HasExited) { throw '重复清理误杀了无关进程。' }
     }
-    [pscustomobject]@{ batchContract = $true; whatIf = $true; legacy = $true; versioned = $true; mobileChild = $true; unrelatedPreserved = $true; hostPreserved = $true; otherEntryPreserved = $true; idempotent = $true } | ConvertTo-Json -Compress
+    [pscustomobject]@{ batchContract = $true; whatIf = $true; versioned = $true; mobileChild = $true; unrelatedPreserved = $true; hostPreserved = $true; otherEntryPreserved = $true; idempotent = $true } | ConvertTo-Json -Compress
 } catch {
     $failed = $true
     Write-Error $_ -ErrorAction Continue

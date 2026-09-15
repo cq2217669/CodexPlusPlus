@@ -33,15 +33,12 @@ set "BIN_DIR=%LOCALAPPDATA%\XuanPlusPlus\bin"
 set "CODEX_PLUS_USER_SCRIPT_DIR=%APPDATA%\Codex++\user_scripts"
 set "XUAN_BRIDGE_MANIFEST=%ROOT_DIR%\tools\xuan-bridge\Cargo.toml"
 set "XUAN_BRIDGE_BUILD=%ROOT_DIR%\tools\xuan-bridge\target\release\xuan-bridge.exe"
-set "XUAN_BRIDGE_BIN=%BIN_DIR%\xuan-bridge.exe"
 set "UI_BRIDGE_SOURCE=%ROOT_DIR%\tools\xuan-ui-bridge\xuan-ui-bridge.mjs"
 set "RUNTIME_INSTALLER=%ROOT_DIR%\scripts\install-xuan-runtime.ps1"
 set "PLUGIN_PROCESS_STOPPER=%ROOT_DIR%\scripts\stop-xuan-plugin-processes.ps1"
 set "REMOTE_BRIDGE_MANIFEST=%ROOT_DIR%\apps\xuan-plus-remote\bridge\Cargo.toml"
 set "REMOTE_BRIDGE_BUILD=%ROOT_DIR%\apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe"
-set "XUAN_REMOTE_BRIDGE_BIN=%BIN_DIR%\xuan-plus-remote-bridge.exe"
 set "XUAN_MOBILE_BRIDGE_URL=http://127.0.0.1:17421"
-set "XUAN_BRIDGE_ALLOWED_ORIGINS=app://-"
 set "MARKETPLACE_PATH=%ROOT_DIR%\.agents\plugins\marketplace.json"
 set "POLISH_SCRIPT_SOURCE=%ROOT_DIR%\plugins\xuan-polish\scripts\polish-composer.user.js"
 set "POLISH_SCRIPT_TARGET=%CODEX_PLUS_USER_SCRIPT_DIR%\xuan-polish-composer.user.js"
@@ -130,7 +127,7 @@ if errorlevel 1 (
   echo [ERROR] Cannot create the local bridge directory.
   exit /b 1
 )
-"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%RUNTIME_INSTALLER%" -BridgeSource "%XUAN_BRIDGE_BUILD%" -RemoteSource "%REMOTE_BRIDGE_BUILD%" -UiSource "%UI_BRIDGE_SOURCE%" -BinDirectory "%BIN_DIR%"
+"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%RUNTIME_INSTALLER%" -BridgeSource "%XUAN_BRIDGE_BUILD%" -RemoteSource "%REMOTE_BRIDGE_BUILD%" -UiSource "%UI_BRIDGE_SOURCE%" -BinDirectory "%BIN_DIR%"
 if errorlevel 1 (
   echo [错误] 独立插件运行文件安装失败。
   exit /b 1
@@ -146,7 +143,7 @@ if errorlevel 1 (
 
 echo [5/7] Registering and installing four Codex plugins...
 echo   清理仍在运行的 Xuan 插件进程，保留 Codex++ 主程序...
-"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%PLUGIN_PROCESS_STOPPER%" -BinDirectory "%BIN_DIR%"
+"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%PLUGIN_PROCESS_STOPPER%" -BinDirectory "%BIN_DIR%"
 if errorlevel 1 (
   echo [错误] Xuan 插件进程未能清理完成，已停止安装。
   exit /b 1
@@ -228,15 +225,11 @@ exit /b 0
 
 :find_powershell
 set "POWERSHELL_CMD="
-set "POWERSHELL_EXECUTION_POLICY="
 for /f "delims=" %%C in ('where.exe pwsh.exe 2^>nul') do if not defined POWERSHELL_CMD set "POWERSHELL_CMD=%%C"
 if not defined POWERSHELL_CMD if defined LOCALAPPDATA if exist "%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe" set "POWERSHELL_CMD=%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe"
 if not defined POWERSHELL_CMD if defined ProgramFiles if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" set "POWERSHELL_CMD=%ProgramFiles%\PowerShell\7\pwsh.exe"
-if not defined POWERSHELL_CMD set "POWERSHELL_EXECUTION_POLICY=-ExecutionPolicy Bypass"
-for /f "delims=" %%C in ('where.exe powershell.exe 2^>nul') do if not defined POWERSHELL_CMD set "POWERSHELL_CMD=%%C"
-if not defined POWERSHELL_CMD if defined SystemRoot if exist "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" set "POWERSHELL_CMD=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not defined POWERSHELL_CMD (
-  echo [ERROR] PowerShell was not found: pwsh.exe or powershell.exe
+  echo [ERROR] pwsh.exe was not found.
   exit /b 1
 )
 echo   [OK] PowerShell: %POWERSHELL_CMD%

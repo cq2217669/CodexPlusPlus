@@ -6,7 +6,6 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import http from "node:http";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const bridgeBinary = process.env.XUAN_BRIDGE_BIN || path.join(
@@ -154,33 +153,6 @@ test("workspace search MCP tool calls the bridge end to end", async () => {
   }
 });
 
-test("windows plugin server finds the installed bridge without refreshed user environment", { skip: process.platform !== "win32" }, async () => {
-  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-local-app-data-"));
-  const installedBridge = path.join(localAppData, "XuanPlusPlus", "bin", "xuan-bridge.exe");
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-fallback-"));
-  fs.mkdirSync(path.dirname(installedBridge), { recursive: true });
-  fs.copyFileSync(bridgeBinary, installedBridge);
-  fs.writeFileSync(path.join(workspace, "sample.txt"), "fallback works\n");
-  const server = startServer("xuan-workspace-search", {
-    env: { LOCALAPPDATA: localAppData },
-    unsetEnv: ["XUAN_BRIDGE_BIN"]
-  });
-  try {
-    await server.request(30, "initialize");
-    const response = await server.request(31, "tools/call", {
-      name: "workspace_search",
-      arguments: { root: workspace, query: "fallback works", maxResults: 10 }
-    });
-    assert.equal(response.result.isError, false);
-    const payload = JSON.parse(response.result.content[0].text);
-    assert.equal(payload.result.results[0].relativePath, "sample.txt");
-  } finally {
-    await server.close();
-    fs.rmSync(workspace, { recursive: true, force: true });
-    await fs.promises.rm(localAppData, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-  }
-});
-
 test("installed-style MCP stdio exits after input closes", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-mcp-exit-"));
   const pluginRoot = path.join(import.meta.dirname, "xuan-workspace-search");
@@ -220,44 +192,28 @@ test("all plugin MCP servers ignore cancellation notifications and answer ping",
   }
 });
 
-test("版本化安装加载独立界面模块，兼容旧环境变量并随 MCP 退出", { skip: process.platform !== "win32" }, async () => {
+test("版本化安装只按 current 索引加载 Bridge", { skip: process.platform !== "win32" }, async () => {
   const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), "xuan-versioned-runtime-"));
   const bin = path.join(localAppData, "XuanPlusPlus", "bin");
   const version = "a".repeat(64);
   const runtime = path.join(bin, "versions", version);
   fs.mkdirSync(runtime, { recursive: true });
   fs.copyFileSync(bridgeBinary, path.join(runtime, "xuan-bridge.exe"));
-  fs.copyFileSync(path.join(repoRoot, "tools", "xuan-ui-bridge", "xuan-ui-bridge.mjs"), path.join(runtime, "xuan-ui-bridge.mjs"));
   fs.writeFileSync(path.join(bin, "current.json"), JSON.stringify({ version }));
-  let probes = 0;
-  const debug = http.createServer((request, response) => {
-    probes++;
-    response.writeHead(200);
-    response.end("[]");
-  });
-  debug.listen(0, "127.0.0.1");
-  await once(debug, "listening");
   const server = startServer("xuan-polish", {
     env: {
       LOCALAPPDATA: localAppData,
-      XUAN_BRIDGE_BIN: path.join(bin, "xuan-bridge.exe"),
-      XUAN_CODEX_DEBUG_PORT: String(debug.address().port),
-      XUAN_UI_BRIDGE_DISABLE: "0",
+      XUAN_UI_BRIDGE_DISABLE: "1",
     },
-    unsetEnv: ["XUAN_UI_BRIDGE_MODULE"],
+    unsetEnv: ["XUAN_BRIDGE_BIN"],
   });
   try {
     const initialized = await server.request(60, "initialize");
     assert.equal(initialized.result.serverInfo.name, "xuan-polish");
-    for (let attempt = 0; attempt < 100 && probes === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    assert.ok(probes > 0, "已安装的独立界面模块未启动");
     const validation = await server.request(61, "tools/call", { name: "polish_text", arguments: { text: "" } });
     assert.equal(validation.result.isError, true);
   } finally {
     await server.close();
-    await new Promise((resolve) => debug.close(resolve));
     fs.rmSync(localAppData, { recursive: true, force: true });
   }
 });

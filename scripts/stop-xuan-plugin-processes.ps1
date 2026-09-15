@@ -10,7 +10,7 @@ try {
     if ($root -eq [System.IO.Path]::GetPathRoot($root).TrimEnd('\', '/')) {
         throw '插件运行目录不能是磁盘根目录。'
     }
-    $binaryPattern = '^' + [regex]::Escape($root) + '\\(?:versions\\[a-f0-9]{64}\\)?xuan-(?:bridge|plus-remote-bridge)\.exe$'
+    $binaryPattern = '^' + [regex]::Escape($root) + '\\versions\\[a-f0-9]{64}\\xuan-(?:bridge|plus-remote-bridge)\.exe$'
     $bridges = @(Get-CimInstance -ClassName Win32_Process `
         -Filter "Name = 'xuan-bridge.exe' OR Name = 'xuan-plus-remote-bridge.exe'" `
         -Property ProcessId, ParentProcessId, Name, ExecutablePath, CreationDate |

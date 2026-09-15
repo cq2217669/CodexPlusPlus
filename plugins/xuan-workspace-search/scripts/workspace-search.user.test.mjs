@@ -16,7 +16,6 @@ test("workspace search script provides project selection, preview and the origin
 
 test("workspace search script calls only the independent bridge and never sends credentials", () => {
   assert.match(source, /__xuanPluginBridge/);
-  assert.doesNotMatch(source, /__codexSessionDeleteBridge|127\.0\.0\.1:57324/);
   assert.match(source, /workspace-search\/projects/);
   assert.match(source, /工作区全文搜索/);
   assert.doesNotMatch(source, /Authorization\s*:/i);

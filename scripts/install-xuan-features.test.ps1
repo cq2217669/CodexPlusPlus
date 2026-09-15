@@ -9,19 +9,18 @@ try {
     foreach ($script in @('scripts\install-xuan-runtime.ps1', 'scripts\stop-xuan-plugin-processes.ps1')) {
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $root $script))
         if ($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
-            throw "Windows PowerShell 兼容脚本必须使用 UTF-8 BOM：$script"
+            throw "PowerShell 脚本必须使用 UTF-8 BOM：$script"
         }
     }
     $pwshLookup = $source.IndexOf('where.exe pwsh.exe')
-    $legacyFallback = $source.IndexOf('%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe')
-    if ($pwshLookup -lt 0 -or $legacyFallback -lt 0 -or $pwshLookup -ge $legacyFallback) {
-        throw '批处理必须优先使用 pwsh.exe，并回退到 Windows PowerShell。'
+    if ($pwshLookup -lt 0 -or $source.IndexOf('powershell.exe') -ge 0) {
+        throw '批处理必须仅使用 pwsh.exe。'
     }
-    if ($source.IndexOf('"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive %POWERSHELL_EXECUTION_POLICY% -File "%RUNTIME_INSTALLER%"') -lt 0) {
+    if ($source.IndexOf('"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%RUNTIME_INSTALLER%"') -lt 0) {
         throw '运行时安装必须使用已解析的 PowerShell 命令。'
     }
-    if ($source.IndexOf('if not defined POWERSHELL_CMD set "POWERSHELL_EXECUTION_POLICY=-ExecutionPolicy Bypass"') -lt 0) {
-        throw 'Windows PowerShell 回退必须绕过当前进程的执行策略。'
+    if ($source.IndexOf('ExecutionPolicy') -ge 0) {
+        throw '批处理不得修改 PowerShell 执行策略。'
     }
     if ($source.IndexOf('dir /b /s "%LOCALAPPDATA%\OpenAI\Codex\bin\rg.exe"') -lt 0 -or
         $source.IndexOf('for %%D in ("%RIPGREP_CMD%") do set "PATH=%%~dpD;%PATH%"') -lt 0) {
