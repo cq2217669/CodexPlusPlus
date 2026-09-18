@@ -20,6 +20,10 @@ const DEFAULT_USAGE_PATH: &str = "/v1/usage";
 const DEFAULT_TIMEZONE: &str = "Asia/Shanghai";
 const OWLAI_HOST: &str = "api.owlai.tech";
 const OWLAI_USAGE_URL: &str = "https://api.owlai.tech/v1/usage";
+const OPENOX_HOST: &str = "openox.tech";
+const OPENOX_API_BASE_URL: &str = "https://openox.tech";
+const OPENOX_USAGE_PAGE_SIZE: u64 = 100;
+const OPENOX_USAGE_MAX_PAGES: u64 = 500;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESULTS: usize = 2_000;
@@ -97,6 +101,8 @@ fn dispatch(state: &mut BridgeState, method: &str, params: Value) -> Result<Valu
         "workspace.search.cancel" => cancel_search(state, &params),
         "workspace.search.preview" => preview_file(&params),
         "usage.query" => query_usage(&params),
+        "usage.settings.get" => usage_settings_response(),
+        "usage.settings.set" => update_usage_settings(&params),
         "polish.settings.get" => polish_settings_response(),
         "polish.settings.set" => update_polish_settings(&params),
         "polish.generate" => generate_polish(&params),
@@ -593,6 +599,21 @@ struct UsageConnection {
     api_key: String,
     usage_path: String,
     user_agent: String,
+    openox_key_name: String,
+    openox_token: String,
+}
+
+#[derive(Debug, Default)]
+struct OpenOxModelUsage {
+    requests: u64,
+    hit_requests: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_creation_tokens: u64,
+    cache_write_tokens: u64,
+    cache_read_tokens: u64,
+    total_tokens: u64,
+    cost: f64,
 }
 
 fn query_usage(params: &Value) -> Result<Value, RpcError> {
@@ -623,6 +644,25 @@ fn query_usage(params: &Value) -> Result<Value, RpcError> {
                 }),
             },
         );
+    }
+    if connection.provider == "openox" {
+        return Ok(match query_openox(&connection, params) {
+            Ok(data) => json!({
+                "status": "ok",
+                "disabled": false,
+                "provider": connection.provider,
+                "profileId": connection.profile_ref,
+                "profileRef": connection.profile_ref,
+                "profileName": connection.profile_name,
+                "data": data,
+            }),
+            Err(error) => json!({
+                "status": "failed",
+                "provider": connection.provider,
+                "profileName": connection.profile_name,
+                "message": error.message,
+            }),
+        });
     }
     let url = build_usage_url(
         &connection.base_url,
@@ -670,14 +710,16 @@ fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, R
     let Some(relay) = relay_connection_from_settings(&codex_settings, None)? else {
         return Ok(None);
     };
-    if relay.api_key.trim().is_empty() {
+    let provider = resolve_usage_provider(&relay.base_url, "auto")?;
+    if provider != "openox" && relay.api_key.trim().is_empty() {
         return Err(error(
             "configuration_error",
             "请在当前中转配置中填写并保存 API Key",
         ));
     }
+    let (openox_key_name, openox_token) = openox_credentials(&plugin, &relay.id);
     Ok(Some(UsageConnection {
-        provider: resolve_usage_provider(&relay.base_url, "auto")?,
+        provider,
         profile_ref: relay.id,
         profile_name: relay.name,
         base_url: relay.base_url,
@@ -691,20 +733,169 @@ fn resolve_usage_connection(params: &Value) -> Result<Option<UsageConnection>, R
             .or_else(|| configured_string(&settings, "usagePath"))
             .unwrap_or_else(|| DEFAULT_USAGE_PATH.into()),
         user_agent: relay.user_agent,
+        openox_key_name,
+        openox_token,
+    }))
+}
+
+fn openox_credentials(plugin: &Value, relay_id: &str) -> (String, String) {
+    let settings = plugin
+        .get("openox")
+        .and_then(|value| value.get(relay_id))
+        .unwrap_or(&Value::Null);
+    (
+        configured_string(settings, "keyName").unwrap_or_default(),
+        configured_string(settings, "token").unwrap_or_default(),
+    )
+}
+
+fn usage_settings_response() -> Result<Value, RpcError> {
+    let plugin = load_plugin_settings("xuan-usage")?;
+    let codex = load_codex_settings()?;
+    let Some(relay) = relay_connection_from_settings(&codex, None)? else {
+        return Ok(json!({
+            "status": "ok",
+            "disabled": true,
+            "provider": "generic",
+            "message": "当前中转未配置可用的地址",
+        }));
+    };
+    let provider = resolve_usage_provider(&relay.base_url, "auto")?;
+    let (key_name, token) = openox_credentials(&plugin, &relay.id);
+    Ok(json!({
+        "status": "ok",
+        "disabled": false,
+        "provider": provider,
+        "profileId": relay.id,
+        "profileName": relay.name,
+        "keyName": key_name,
+        "tokenConfigured": !token.is_empty(),
+    }))
+}
+
+fn update_usage_settings(params: &Value) -> Result<Value, RpcError> {
+    let codex = load_codex_settings()?;
+    let relay = relay_connection_from_settings(&codex, None)?
+        .ok_or_else(|| error("configuration_error", "当前中转未配置可用的地址"))?;
+    if resolve_usage_provider(&relay.base_url, "auto")? != "openox" {
+        return Err(error(
+            "configuration_error",
+            "只有当前中转为 OpenOx 时才能保存该设置",
+        ));
+    }
+    let key_name = params
+        .get("keyName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if key_name.is_empty() || key_name.chars().count() > 120 {
+        return Err(error("invalid_request", "请填写有效的 OpenOx KEY 名称"));
+    }
+    let token = params
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !token.is_empty() && !valid_header_secret(token) {
+        return Err(error("invalid_request", "OpenOx Token 格式无效"));
+    }
+
+    let root = config_root();
+    initialize_storage(&root).map_err(|message| error("configuration_error", message))?;
+    let path = root.join("xuan-plugins.json");
+    let mut config = load_json_file(&path, "Xuan 插件设置")?;
+    if !config.is_object() {
+        config = json!({ "schemaVersion": 1, "plugins": {} });
+    }
+    let plugins = config
+        .as_object_mut()
+        .expect("object ensured above")
+        .entry("plugins")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !plugins.is_object() {
+        *plugins = Value::Object(Default::default());
+    }
+    let usage = plugins
+        .as_object_mut()
+        .expect("object ensured above")
+        .entry("xuan-usage")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !usage.is_object() {
+        *usage = Value::Object(Default::default());
+    }
+    let openox = usage
+        .as_object_mut()
+        .expect("object ensured above")
+        .entry("openox")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !openox.is_object() {
+        *openox = Value::Object(Default::default());
+    }
+    let relay_settings = openox
+        .as_object_mut()
+        .expect("object ensured above")
+        .entry(relay.id.clone())
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !relay_settings.is_object() {
+        *relay_settings = Value::Object(Default::default());
+    }
+    let relay_settings = relay_settings
+        .as_object_mut()
+        .expect("object ensured above");
+    relay_settings.insert("keyName".into(), Value::String(key_name.to_string()));
+    if !token.is_empty() {
+        relay_settings.insert("token".into(), Value::String(token.to_string()));
+    }
+    let token_configured = relay_settings
+        .get("token")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+
+    let encoded = serde_json::to_vec_pretty(&config)
+        .map_err(|_| error("configuration_error", "无法编码 Xuan 插件设置"))?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, encoded)
+        .map_err(|_| error("configuration_error", "无法保存 Xuan 插件设置"))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|_| error("configuration_error", "无法替换 Xuan 插件设置"))?;
+    Ok(json!({
+        "status": "ok",
+        "provider": "openox",
+        "profileId": relay.id,
+        "profileName": relay.name,
+        "keyName": key_name,
+        "tokenConfigured": token_configured,
+        "message": "OpenOx 设置已保存",
     }))
 }
 
 fn resolve_usage_provider(endpoint: &str, configured: &str) -> Result<String, RpcError> {
     let url =
         Url::parse(endpoint.trim()).map_err(|_| error("configuration_error", "中转站地址无效"))?;
-    let is_owlai = url.scheme() == "https"
-        && url.host_str() == Some(OWLAI_HOST)
+    let valid_https_origin = url.scheme() == "https"
         && url.port_or_known_default() == Some(443)
         && url.username().is_empty()
         && url.password().is_none();
+    let is_owlai = valid_https_origin && url.host_str() == Some(OWLAI_HOST);
+    let is_openox = valid_https_origin
+        && url
+            .host_str()
+            .is_some_and(|host| host == OPENOX_HOST || host.ends_with(&format!(".{OPENOX_HOST}")));
     match configured.trim() {
-        "" | "auto" => Ok(if is_owlai { "owlai" } else { "generic" }.into()),
+        "" | "auto" => Ok(if is_openox {
+            "openox"
+        } else if is_owlai {
+            "owlai"
+        } else {
+            "generic"
+        }
+        .into()),
         "generic" => Ok("generic".into()),
+        "openox" if is_openox => Ok("openox".into()),
+        "openox" => Err(error(
+            "configuration_error",
+            "OpenOx 方案仅适用于 openox.tech 的 HTTPS 中转",
+        )),
         "owlai" if is_owlai => Ok("owlai".into()),
         "owlai" => Err(error(
             "configuration_error",
@@ -712,6 +903,225 @@ fn resolve_usage_provider(endpoint: &str, configured: &str) -> Result<String, Rp
         )),
         _ => Err(error("configuration_error", "用量方案无效，请重新选择")),
     }
+}
+
+fn valid_header_secret(value: &str) -> bool {
+    !value.is_empty()
+        && value.is_ascii()
+        && !value
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+}
+
+fn openox_api_base_url() -> Url {
+    if let Some(value) = environment_value("XUAN_OPENOX_API_BASE_URL")
+        && let Ok(url) = Url::parse(&value)
+        && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
+        && matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+    {
+        return url;
+    }
+    Url::parse(OPENOX_API_BASE_URL).expect("static OpenOx URL must be valid")
+}
+
+fn openox_url(path: &str) -> Url {
+    let mut url = openox_api_base_url();
+    url.set_path(path);
+    url.set_query(None);
+    url.set_fragment(None);
+    url
+}
+
+fn openox_get_json(
+    client: &Client,
+    token: &str,
+    url: Url,
+    query: &[(&str, String)],
+) -> Result<Value, RpcError> {
+    let response = client
+        .get(url)
+        .query(query)
+        .header("Accept", "application/json")
+        .header("Accept-Language", "zh-CN")
+        .bearer_auth(token)
+        .send()
+        .map_err(|_| error("transport_error", "OpenOx 用量查询连接失败或超时"))?;
+    let status = response.status();
+    let payload: Value = response
+        .json()
+        .map_err(|_| error("invalid_response", "OpenOx 返回的数据无法识别"))?;
+    if !status.is_success() {
+        return Err(error("remote_error", usage_remote_error(status.as_u16())));
+    }
+    if payload.get("success") == Some(&Value::Bool(false)) {
+        return Err(error("remote_error", "OpenOx 未能完成用量查询"));
+    }
+    Ok(payload)
+}
+
+fn usage_u64(value: Option<&Value>) -> u64 {
+    value
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
+                .or_else(|| value.as_str().and_then(|number| number.parse().ok()))
+        })
+        .unwrap_or_default()
+}
+
+fn usage_f64(value: Option<&Value>) -> f64 {
+    value
+        .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok()))
+        .filter(|number| number.is_finite() && *number >= 0.0)
+        .unwrap_or_default()
+}
+
+fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, RpcError> {
+    let key_name = connection.openox_key_name.trim();
+    if key_name.is_empty() {
+        return Err(error(
+            "configuration_error",
+            "请先在用量设置中填写 OpenOx KEY 名称",
+        ));
+    }
+    let token = connection.openox_token.trim();
+    if !valid_header_secret(token) {
+        return Err(error(
+            "configuration_error",
+            "请先在用量设置中填写有效的 OpenOx Token",
+        ));
+    }
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .user_agent(&connection.user_agent)
+        .build()
+        .map_err(|_| error("transport_error", "无法初始化 OpenOx 用量查询"))?;
+    let subscription = openox_get_json(
+        &client,
+        token,
+        openox_url("/api/v1/subscriptions/current"),
+        &[],
+    )?;
+
+    let mut models: HashMap<String, OpenOxModelUsage> = HashMap::new();
+    let mut page = 1_u64;
+    let mut seen = 0_u64;
+    loop {
+        let mut query = vec![
+            ("page", page.to_string()),
+            ("size", OPENOX_USAGE_PAGE_SIZE.to_string()),
+        ];
+        for (name, param) in [("start_date", "startDate"), ("end_date", "endDate")] {
+            if let Some(value) = params
+                .get(param)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                query.push((name, value.to_string()));
+            }
+        }
+        let payload = openox_get_json(&client, token, openox_url("/api/v1/usage"), &query)?;
+        let items = payload
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .ok_or_else(|| error("invalid_response", "OpenOx 用量明细缺少 items"))?;
+        let total = usage_u64(payload.pointer("/data/total"));
+        for item in items {
+            if item.get("api_key_name").and_then(Value::as_str) != Some(key_name) {
+                continue;
+            }
+            let model = item
+                .get("model_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("未知模型")
+                .to_string();
+            let cache_read_tokens = usage_u64(item.get("cache_read_tokens"));
+            let usage = models.entry(model).or_default();
+            usage.requests += 1;
+            usage.hit_requests += u64::from(cache_read_tokens > 0);
+            usage.input_tokens += usage_u64(item.get("input_tokens"));
+            usage.output_tokens += usage_u64(item.get("output_tokens"));
+            usage.cache_creation_tokens += usage_u64(item.get("cache_creation_tokens"));
+            usage.cache_write_tokens += usage_u64(item.get("cache_write_tokens"));
+            usage.cache_read_tokens += cache_read_tokens;
+            usage.total_tokens += usage_u64(item.get("total_tokens"));
+            usage.cost += usage_f64(item.get("cost"));
+        }
+        seen = seen.saturating_add(items.len() as u64);
+        if items.is_empty() || seen >= total {
+            break;
+        }
+        page += 1;
+        if page > OPENOX_USAGE_MAX_PAGES {
+            return Err(error(
+                "invalid_response",
+                "OpenOx 用量记录过多，请缩短统计范围",
+            ));
+        }
+    }
+
+    let mut model_rows = models
+        .into_iter()
+        .map(|(model, usage)| {
+            let prompt_tokens = usage.input_tokens.saturating_add(usage.cache_read_tokens);
+            json!({
+                "model": model,
+                "requests": usage.requests,
+                "hitRequests": usage.hit_requests,
+                "hitRate": if usage.requests > 0 { usage.hit_requests as f64 / usage.requests as f64 } else { 0.0 },
+                "inputTokens": usage.input_tokens,
+                "outputTokens": usage.output_tokens,
+                "cacheCreationTokens": usage.cache_creation_tokens,
+                "cacheWriteTokens": usage.cache_write_tokens,
+                "cacheReadTokens": usage.cache_read_tokens,
+                "cacheTokenRate": if prompt_tokens > 0 { usage.cache_read_tokens as f64 / prompt_tokens as f64 } else { 0.0 },
+                "totalTokens": usage.total_tokens,
+                "cost": usage.cost,
+                "actualCost": usage.cost,
+            })
+        })
+        .collect::<Vec<_>>();
+    model_rows.sort_by(|left, right| {
+        usage_f64(right.get("cost"))
+            .total_cmp(&usage_f64(left.get("cost")))
+            .then_with(|| {
+                usage_u64(right.get("totalTokens")).cmp(&usage_u64(left.get("totalTokens")))
+            })
+    });
+
+    let subscription_data = subscription
+        .pointer("/data/subscription")
+        .or_else(|| subscription.pointer("/data/active_subscriptions/0"))
+        .unwrap_or(&Value::Null);
+    let today_credit = subscription_data
+        .get("today_credit")
+        .or_else(|| subscription.pointer("/data/today_credit"))
+        .unwrap_or(&Value::Null);
+    Ok(json!({
+        "unit": "USD",
+        "keyName": key_name,
+        "planName": subscription_data.get("plan_name").and_then(Value::as_str).unwrap_or_default(),
+        "status": subscription_data.get("status").and_then(Value::as_str).unwrap_or_default(),
+        "today": {
+            "limit": quota_number(today_credit.get("limit")),
+            "used": quota_number(today_credit.get("used")),
+            "remaining": quota_number(today_credit.get("remaining")),
+        },
+        "period": {
+            "limit": quota_number(subscription_data.get("period_quota")),
+            "used": quota_number(subscription_data.get("period_used")),
+            "remaining": quota_number(subscription_data.get("period_remaining")),
+            "end": subscription_data.get("period_end").and_then(Value::as_str).unwrap_or_default(),
+        },
+        "models": model_rows,
+    }))
 }
 
 fn query_owlai(api_key: &str, user_agent: &str) -> Result<Value, RpcError> {
@@ -2338,6 +2748,16 @@ mod tests {
         );
         assert_eq!(OWLAI_USAGE_URL, "https://api.owlai.tech/v1/usage");
         assert!(resolve_usage_provider("https://relay.example/v1", "owlai").is_err());
+        assert_eq!(
+            resolve_usage_provider("https://api.openox.tech/v1", "auto").unwrap(),
+            "openox"
+        );
+        assert_eq!(
+            resolve_usage_provider("https://openox.tech/v1", "openox").unwrap(),
+            "openox"
+        );
+        assert!(resolve_usage_provider("https://evilopenox.tech/v1", "openox").is_err());
+        assert!(resolve_usage_provider("http://api.openox.tech/v1", "openox").is_err());
         let data = parse_owlai_today(&json!({
             "balance": 100,
             "usage": {

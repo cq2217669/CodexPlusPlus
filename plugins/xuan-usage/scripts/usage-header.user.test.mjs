@@ -6,9 +6,13 @@ import path from "node:path";
 const source = fs.readFileSync(path.join(import.meta.dirname, "usage-header.user.js"), "utf8");
 
 test("usage script renders the current provider usage panel", () => {
-  assert.match(source, /builtin-2026-09-15-v9/);
+  assert.match(source, /builtin-2026-09-18-v10/);
   assert.match(source, /\/v1\/usage/);
   assert.match(source, /provider === "owlai"/);
+  assert.match(source, /provider === "openox"/);
+  assert.match(source, /KEY 名称/);
+  assert.match(source, /Token 命中率/);
+  assert.match(source, /今日可用/);
   assert.match(source, /todayUsed/);
   assert.match(source, /当前供应商用量/);
   assert.doesNotMatch(source, /data-config="baseUrl"/);
@@ -33,4 +37,7 @@ test("usage script uses the independent bridge and keeps credentials out of the 
   assert.doesNotMatch(source, /baseUrl: config\.baseUrl/);
   assert.doesNotMatch(source, /Authorization\s*:/i);
   assert.doesNotMatch(source, /bearer\s+\$?\{/i);
+  assert.doesNotMatch(source, /localStorage\.setItem\([^\n]*token/i);
+  assert.match(source, /type="password"/);
+  assert.match(source, /tokenConfigured/);
 });

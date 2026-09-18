@@ -62,6 +62,41 @@ fn serve_json_once(body: Value) -> (SocketAddr, Receiver<String>) {
     serve_once("application/json", serde_json::to_vec(&body).unwrap())
 }
 
+fn serve_json_sequence(bodies: Vec<Value>) -> (SocketAddr, Receiver<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut requests = Vec::new();
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while request.len() < 64 * 1024 {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            requests.push(String::from_utf8_lossy(&request).to_string());
+            let body = serde_json::to_vec(&body).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        }
+        sender.send(requests).unwrap();
+    });
+    (address, receiver)
+}
+
 fn serve_sse_once(events: &str) -> (SocketAddr, Receiver<String>) {
     serve_once("text/event-stream", events.as_bytes().to_vec())
 }
@@ -209,6 +244,176 @@ fn usage_query_ignores_a_custom_address_request() {
             .to_ascii_lowercase()
             .contains("authorization: bearer relay-secret")
     );
+}
+
+#[test]
+fn openox_settings_are_scoped_to_the_active_relay_without_returning_the_token() {
+    let home = tempfile::tempdir().unwrap();
+    let codex_settings = home.path().join("codex-settings.json");
+    fs::write(
+        &codex_settings,
+        serde_json::to_vec_pretty(&json!({
+            "activeRelayId": "openox-primary",
+            "relayProfiles": [{
+                "id": "openox-primary",
+                "name": "OpenOx",
+                "protocol": "responses",
+                "upstreamBaseUrl": "https://api.openox.tech/v1",
+                "authContents": "{\"OPENAI_API_KEY\":\"relay-secret\"}"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    write_config(
+        &home,
+        json!({ "schemaVersion": 1, "plugins": { "xuan-usage": {} } }),
+    );
+    let env = [("XUAN_CODEX_SETTINGS_PATH", codex_settings.to_str().unwrap())];
+    let initial = call_bridge(&home, "usage.settings.get", json!({}), &env);
+    assert_eq!(initial["result"]["provider"], "openox");
+    assert_eq!(initial["result"]["tokenConfigured"], false);
+
+    let saved = call_bridge(
+        &home,
+        "usage.settings.set",
+        json!({ "keyName": "codex-main", "token": "dashboard-token" }),
+        &env,
+    );
+    assert_eq!(saved["result"]["keyName"], "codex-main");
+    assert_eq!(saved["result"]["tokenConfigured"], true);
+    assert!(!saved.to_string().contains("dashboard-token"));
+
+    let stored: Value =
+        serde_json::from_slice(&fs::read(home.path().join("xuan-plugins.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored["plugins"]["xuan-usage"]["openox"]["openox-primary"]["token"],
+        "dashboard-token"
+    );
+    let reloaded = call_bridge(&home, "usage.settings.get", json!({}), &env);
+    assert_eq!(reloaded["result"]["keyName"], "codex-main");
+    assert_eq!(reloaded["result"]["tokenConfigured"], true);
+    assert!(!reloaded.to_string().contains("dashboard-token"));
+}
+
+#[test]
+fn openox_usage_filters_the_named_key_and_aggregates_cache_hits_by_model() {
+    let home = tempfile::tempdir().unwrap();
+    let (address, requests) = serve_json_sequence(vec![
+        json!({
+            "success": true,
+            "data": {
+                "subscription": {
+                    "plan_name": "企业 Enterprise",
+                    "status": "active",
+                    "period_quota": "9000",
+                    "period_used": "300",
+                    "period_remaining": "8700",
+                    "period_end": "2026-10-20T08:25:03Z",
+                    "today_credit": { "limit": "300", "used": "267.5", "remaining": "32.5" }
+                }
+            }
+        }),
+        json!({
+            "success": true,
+            "data": {
+                "total": 3,
+                "items": [
+                    {
+                        "api_key_name": "codex-main", "model_id": "gpt-6-astra",
+                        "input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 900,
+                        "cache_creation_tokens": 0, "cache_write_tokens": 0,
+                        "total_tokens": 1020, "cost": "0.12"
+                    },
+                    {
+                        "api_key_name": "codex-main", "model_id": "gpt-6-astra",
+                        "input_tokens": 400, "output_tokens": 30, "cache_read_tokens": 0,
+                        "cache_creation_tokens": 50, "cache_write_tokens": 0,
+                        "total_tokens": 480, "cost": "0.08"
+                    },
+                    {
+                        "api_key_name": "another-key", "model_id": "gpt-5.6-terra",
+                        "input_tokens": 999, "output_tokens": 99, "cache_read_tokens": 999,
+                        "total_tokens": 2097, "cost": "9.99"
+                    }
+                ]
+            }
+        }),
+    ]);
+    let codex_settings = home.path().join("codex-settings.json");
+    fs::write(
+        &codex_settings,
+        serde_json::to_vec_pretty(&json!({
+            "activeRelayId": "openox-primary",
+            "relayProfiles": [{
+                "id": "openox-primary",
+                "name": "OpenOx",
+                "protocol": "responses",
+                "upstreamBaseUrl": "https://api.openox.tech/v1",
+                "authContents": "{\"OPENAI_API_KEY\":\"relay-secret\"}"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    write_config(
+        &home,
+        json!({
+            "schemaVersion": 1,
+            "plugins": {
+                "xuan-usage": {
+                    "openox": {
+                        "openox-primary": {
+                            "keyName": "codex-main",
+                            "token": "dashboard-token"
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    let response = call_bridge(
+        &home,
+        "usage.query",
+        json!({ "startDate": "2026-09-18", "endDate": "2026-09-18" }),
+        &[
+            ("XUAN_CODEX_SETTINGS_PATH", codex_settings.to_str().unwrap()),
+            ("XUAN_OPENOX_API_BASE_URL", &format!("http://{address}")),
+        ],
+    );
+    assert_eq!(response["result"]["provider"], "openox");
+    assert_eq!(response["result"]["data"]["today"]["remaining"], 32.5);
+    assert_eq!(
+        response["result"]["data"]["models"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let model = &response["result"]["data"]["models"][0];
+    assert_eq!(model["model"], "gpt-6-astra");
+    assert_eq!(model["requests"], 2);
+    assert_eq!(model["hitRequests"], 1);
+    assert_eq!(model["inputTokens"], 500);
+    assert_eq!(model["cacheReadTokens"], 900);
+    assert_eq!(model["cost"], 0.2);
+    assert!((model["hitRate"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
+    assert!((model["cacheTokenRate"].as_f64().unwrap() - (900.0 / 1400.0)).abs() < 1e-9);
+    assert!(!response.to_string().contains("dashboard-token"));
+
+    let requests = requests.recv().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("GET /api/v1/subscriptions/current "));
+    assert!(requests[1].starts_with("GET /api/v1/usage?"));
+    assert!(requests[1].contains("start_date=2026-09-18"));
+    assert!(requests[1].contains("end_date=2026-09-18"));
+    for request in requests {
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer dashboard-token")
+        );
+    }
 }
 
 #[test]

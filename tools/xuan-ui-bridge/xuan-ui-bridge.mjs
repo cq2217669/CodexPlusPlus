@@ -18,7 +18,14 @@ export const contracts = {
       "/v1/search/preview": "workspace.search.preview",
     },
   },
-  "xuan-usage": { port: 57402, routes: { "/v1/usage": "usage.query" } },
+  "xuan-usage": {
+    port: 57402,
+    routes: {
+      "/v1/usage": "usage.query",
+      "/v1/usage/settings": "usage.settings.get",
+      "/v1/usage/settings/set": "usage.settings.set",
+    },
+  },
   "xuan-polish": {
     port: 57403,
     routes: {

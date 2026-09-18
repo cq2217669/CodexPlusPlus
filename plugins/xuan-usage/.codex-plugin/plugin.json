@@ -16,7 +16,8 @@
     "developerName": "XuanPlusPlus",
     "category": "Developer Tools",
     "capabilities": [
-      "Read"
+      "Read",
+      "Write"
     ]
   }
 }
