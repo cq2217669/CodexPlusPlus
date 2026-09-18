@@ -216,11 +216,11 @@ echo   [通过] 插件自行管理通信和子进程，不修改 Codex++ 程序�
 echo.
 echo Four features were installed as independent plugins:
 echo   1. Polish: polish, cancel, restore, settings and Ctrl+Enter
-echo   2. Usage: original panel with automatic OwlAI usage lookup
+echo   2. Usage: OpenOx daily quota and per-KEY model cache statistics
 echo   3. Search: project search, preview, cancel and Ctrl+Shift+F
 echo   4. Mobile: desktop entry, pairing QR, confirmation and task sync
 echo.
-echo 重新打开 Codex++ 并新建任务，以加载更新后的插件和用户脚本。
+echo 安装会结束旧任务的插件进程；请完全退出并重新打开 Codex++，再新建任务加载更新。
 exit /b 0
 
 :find_powershell

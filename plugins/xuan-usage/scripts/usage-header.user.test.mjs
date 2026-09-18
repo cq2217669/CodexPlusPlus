@@ -6,7 +6,7 @@ import path from "node:path";
 const source = fs.readFileSync(path.join(import.meta.dirname, "usage-header.user.js"), "utf8");
 
 test("usage script renders the current provider usage panel", () => {
-  assert.match(source, /builtin-2026-09-18-v10/);
+  assert.match(source, /builtin-2026-09-18-v11/);
   assert.match(source, /\/v1\/usage/);
   assert.match(source, /provider === "owlai"/);
   assert.match(source, /provider === "openox"/);
@@ -40,4 +40,10 @@ test("usage script uses the independent bridge and keeps credentials out of the 
   assert.doesNotMatch(source, /localStorage\.setItem\([^\n]*token/i);
   assert.match(source, /type="password"/);
   assert.match(source, /tokenConfigured/);
+});
+
+test("usage settings do not masquerade as generic while the bridge is unresolved", () => {
+  assert.match(source, /provider: "unknown"/);
+  assert.match(source, /if \(state\.provider === "unknown"\)/);
+  assert.match(source, /当前任务的用量插件连接不可用/);
 });

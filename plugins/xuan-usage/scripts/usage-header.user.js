@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v10";
+  const REVISION = "builtin-2026-09-18-v11";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -41,7 +41,7 @@
     models: [],
     speedPerHour: null,
     updatedAt: null,
-    provider: "generic",
+    provider: "unknown",
     todayUsed: null,
     todayLimit: null,
     todayRemaining: null,
@@ -359,6 +359,12 @@
 
   function settingsHtml() {
     if (!state.settingsOpen) return "";
+    if (state.provider === "unknown") {
+      const message = state.status === "loading"
+        ? "正在连接用量插件…"
+        : "当前任务的用量插件连接不可用。请完全退出并重新打开 Codex++，然后新建任务后再设置。";
+      return `<div class="crb-settings"><div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(message)}</div></div>`;
+    }
     return `<div class="crb-settings">
       ${state.provider === "openox" ? `<label class="crb-field"><span>KEY 名称</span><input class="crb-input" data-openox="keyName" value="${escapeHtml(state.openoxKeyName)}" placeholder="OpenOx 令牌名称"></label>
       <label class="crb-field"><span>Token</span><input class="crb-input" data-openox="token" type="password" value="" placeholder="${state.tokenConfigured ? "已配置，留空不修改" : "登录 Token"}" autocomplete="off"></label>` : state.provider === "owlai" ? "" : `<label class="crb-field crb-field-wide"><span>余额接口路径</span><input class="crb-input" data-config="usagePath" value="${escapeHtml(config.usagePath)}" placeholder="/v1/usage"></label>

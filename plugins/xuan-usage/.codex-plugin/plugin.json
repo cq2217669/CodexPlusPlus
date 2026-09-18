@@ -1,6 +1,6 @@
 {
   "name": "xuan-usage",
-  "version": "0.1.2+codex.20260913172044",
+  "version": "0.1.2+codex.20260918010556",
   "description": "Query relay usage through a provider-neutral local bridge.",
   "author": {
     "name": "XuanPlusPlus"
@@ -10,7 +10,9 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Xuan Usage",
-    "defaultPrompt": ["查询当前中转用量，不显示任何凭据。"],
+    "defaultPrompt": [
+      "\u67e5\u8be2\u5f53\u524d\u4e2d\u8f6c\u7528\u91cf\uff0c\u4e0d\u663e\u793a\u4efb\u4f55\u51ed\u636e\u3002"
+    ],
     "shortDescription": "Inspect relay usage and account summaries.",
     "longDescription": "Adds provider adapters for relay usage while retaining official Codex token history.",
     "developerName": "XuanPlusPlus",
