@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path (Join-Path $root 'target') ('xuan-process-stop-test-' + [guid]::NewGuid().ToString('N'))
 $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
@@ -50,7 +50,7 @@ try {
         throw '批处理必须在更新插件前调用进程清理。'
     }
     if ($batch.IndexOf('if /i "%MODE%"=="check"') -ge $stopCall -or
-        $batch -notmatch '(?s)-File "%PLUGIN_PROCESS_STOPPER%"[^\r\n]+\r\nif errorlevel 1 \(\r\n[^\r\n]+\r\n  exit /b 1') {
+        $batch -notmatch '(?s)-File "%PLUGIN_PROCESS_STOPPER%"[^\r\n]+\r\nif errorlevel 1 \(\r\n[^\r\n]+\r\n  goto :fail') {
         throw '检查模式必须跳过清理，且清理失败必须停止安装。'
     }
     [System.IO.Directory]::CreateDirectory($testRoot) | Out-Null

@@ -16,8 +16,34 @@ $binaries = @($mainBinary, $managerBinary)
 function Get-CodexPlusProcesses {
     $filter = "Name = '$mainBinary' OR Name = '$managerBinary'"
     @(Get-CimInstance -ClassName Win32_Process -Filter $filter `
-        -Property ProcessId, Name, ExecutablePath, CreationDate |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like "*$($_.Name)" })
+        -Property ProcessId, Name, ExecutablePath, CreationDate)
+}
+
+# 保留已退出父进程的身份，仍可识别其尚未退出的子进程；拒绝 PID 复用形成的假父子关系。
+function Get-CodexPlusProcessTree {
+    param([object[]]$Roots, [object[]]$Snapshot)
+    $known = @{}
+    $result = [System.Collections.Generic.List[object]]::new()
+    foreach ($root in $Roots) {
+        if (-not $known.ContainsKey([int]$root.ProcessId)) {
+            $known[[int]$root.ProcessId] = $root
+            $result.Add($root)
+        }
+    }
+    do {
+        $added = $false
+        foreach ($item in $Snapshot) {
+            if ($known.ContainsKey([int]$item.ProcessId)) { continue }
+            $parent = $known[[int]$item.ParentProcessId]
+            if (-not $parent -or $item.CreationDate -lt $parent.CreationDate) { continue }
+            $liveParent = @($Snapshot | Where-Object { $_.ProcessId -eq $parent.ProcessId })
+            if ($liveParent.Count -gt 0 -and $liveParent[0].CreationDate -ne $parent.CreationDate) { continue }
+            $known[[int]$item.ProcessId] = $item
+            $result.Add($item)
+            $added = $true
+        }
+    } while ($added)
+    return $result.ToArray()
 }
 
 function Get-CodexPlusInstallDirectories {
@@ -56,15 +82,25 @@ try {
     if ($env:OS -ne 'Windows_NT') { throw 'Codex++ 主程序重启仅支持 Windows。' }
 
     if ($Action -eq 'Stop') {
-        $procs = Get-CodexPlusProcesses
-        # 主程序先记录、先结束，管理控制台随后处理。
+        $procs = @(Get-CodexPlusProcesses)
+        if (@($procs | Where-Object { -not $_.ExecutablePath }).Count -gt 0) {
+            throw '无法读取 Codex++ 进程路径，不能确认清理范围，已停止安装。'
+        }
+        # 恢复时只启动入口，不直接重启渲染器、CLI 或插件子进程。
         $ordered = @($procs | Where-Object { $_.Name -eq $mainBinary }) +
             @($procs | Where-Object { $_.Name -ne $mainBinary })
         $paths = @()
         foreach ($proc in $ordered) {
             if ($paths -notcontains $proc.ExecutablePath) { $paths += $proc.ExecutablePath }
         }
-        if ($StateFile) {
+        $snapshot = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, ExecutablePath, CreationDate)
+        $stopRoots = @($procs | Where-Object { $_.Name -eq $managerBinary }) +
+            @($procs | Where-Object { $_.Name -eq $mainBinary })
+        $tree = @(Get-CodexPlusProcessTree -Roots $stopRoots -Snapshot $snapshot)
+        if (@($tree | Where-Object { $_.ProcessId -eq $PID }).Count -gt 0) {
+            throw '安装器位于 Codex++ 子进程树中，请从独立的资源管理器或终端运行安装脚本。'
+        }
+        if ($StateFile -and -not $WhatIfPreference) {
             if ($paths.Count -gt 0) {
                 Set-Content -LiteralPath $StateFile -Value $paths -Encoding UTF8
             } else {
@@ -76,30 +112,51 @@ try {
             exit 0
         }
         $stopped = 0
-        foreach ($item in $ordered) {
-            $process = $null
-            try {
-                $process = Get-Process -Id $item.ProcessId -ErrorAction Stop
-            } catch {
-                continue
-            }
-            if ($process.HasExited) { continue }
-            # 结束前复核进程身份，避免误杀同名进程。
-            $current = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($item.ProcessId)"
-            if (-not $current -or $current.CreationDate -ne $item.CreationDate -or $current.ExecutablePath -ne $item.ExecutablePath) {
-                continue
-            }
-            if ($PSCmdlet.ShouldProcess($item.ExecutablePath, '结束 Codex++ 主程序进程')) {
-                Stop-Process -InputObject $process -Force -ErrorAction Stop
-                if (-not $process.WaitForExit(15000)) {
-                    throw "Codex++ 主程序进程未及时退出：$($item.ExecutablePath)"
+        # 每轮先停止父进程，防止继续派生；保留完整快照以清理随后成为孤儿的子进程。
+        for ($attempt = 0; $attempt -lt 5; $attempt++) {
+            $snapshot = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, ExecutablePath, CreationDate)
+            $tree = @(Get-CodexPlusProcessTree -Roots $tree -Snapshot $snapshot)
+            foreach ($item in $tree) {
+                $process = $null
+                try {
+                    try {
+                        $process = [System.Diagnostics.Process]::GetProcessById($item.ProcessId)
+                    } catch [System.ArgumentException] { continue }
+                    if ($process.HasExited) { continue }
+                    $null = $process.Handle
+                    # 结束前复核进程身份，避免误杀同名进程。
+                    $current = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($item.ProcessId)"
+                    if (-not $current -or $current.CreationDate -ne $item.CreationDate) {
+                        continue
+                    }
+                    if (-not $item.ExecutablePath -or $current.ExecutablePath -ne $item.ExecutablePath) {
+                        throw "无法核实进程身份，停止安装：PID $($item.ProcessId)"
+                    }
+                    if ($PSCmdlet.ShouldProcess($item.ExecutablePath, '结束 Codex++ 或客户端子进程')) {
+                        Stop-Process -InputObject $process -Force -ErrorAction Stop
+                        if (-not $process.WaitForExit(15000)) {
+                            throw "进程未及时退出：$($item.ExecutablePath)"
+                        }
+                        $stopped++
+                        Write-Output "  [已结束] $($item.Name) (PID $($item.ProcessId))"
+                    }
+                } catch [System.InvalidOperationException] {
+                    if (-not $process -or -not $process.HasExited) { throw }
+                } finally {
+                    if ($process) { $process.Dispose() }
                 }
-                $stopped++
             }
+            if ($WhatIfPreference) { exit 0 }
+            $snapshot = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, ExecutablePath, CreationDate)
+            $tree = @(Get-CodexPlusProcessTree -Roots $tree -Snapshot $snapshot)
+            $remaining = @($snapshot | Where-Object {
+                $live = $_
+                @($tree | Where-Object { $_.ProcessId -eq $live.ProcessId -and $_.CreationDate -eq $live.CreationDate }).Count -gt 0
+            })
+            if ($remaining.Count -eq 0) { break }
         }
-        if (-not $WhatIfPreference) {
-            $remaining = Get-CodexPlusProcesses
-            if ($remaining.Count -gt 0) { throw '仍有 Codex++ 主程序进程未退出，已停止安装。' }
+        if ($remaining.Count -gt 0 -or @(Get-CodexPlusProcesses).Count -gt 0) {
+            throw '仍有 Codex++ 或客户端子进程未退出，已停止安装。'
         }
         Write-Output "Codex++ 主程序已结束，强制结束 $stopped 个进程；安装完成后会自动重新启动。"
         exit 0
@@ -126,19 +183,18 @@ try {
         }
     }
     if ($targets.Count -eq 0) {
-        Write-Output '[警告] 未找到 Codex++ 主程序，请手动启动 Codex++。'
-        exit 0
+        throw '未找到 Codex++ 主程序，请手动启动 Codex++。'
     }
     $running = Get-CodexPlusProcesses
     foreach ($target in $targets) {
         $name = [System.IO.Path]::GetFileName($target)
-        if (@($running | Where-Object { $_.Name -eq $name }).Count -gt 0) {
+        if (@($running | Where-Object { $_.ExecutablePath -eq $target }).Count -gt 0) {
             Write-Output "  [跳过] $name 已在运行。"
             continue
         }
         if ($PSCmdlet.ShouldProcess($target, '启动 Codex++ 主程序')) {
-            Start-Process -FilePath $target -WorkingDirectory ([System.IO.Path]::GetDirectoryName($target))
-            Write-Output "  [OK] 已启动 Codex++ 主程序：$target"
+            Start-Process -FilePath $target -WorkingDirectory ([System.IO.Path]::GetDirectoryName($target)) -WindowStyle Hidden -ErrorAction Stop
+            Write-Output "  [OK] 已提交 Codex++ 启动请求：$target"
         }
     }
     exit 0

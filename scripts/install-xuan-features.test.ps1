@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $temporary = Join-Path (Join-Path $root 'target') ('xuan-installer-summary-test-' + [guid]::NewGuid().ToString('N'))
 $failed = $false
@@ -27,12 +27,14 @@ try {
         throw '批处理必须能定位 Codex 内置 rg.exe，并供后续子进程使用。'
     }
     $start = $source.IndexOf('echo [7/7]')
-    $end = $source.IndexOf(':require_command', $start)
+    $end = $source.IndexOf(':restart_codex_plus' + "`r`n", $source.IndexOf('exit /b 0', $start))
     if ($start -lt 0 -or $end -lt 0) { throw '未找到安装结束提示。' }
     $tail = $source.Substring($start, $end - $start)
     if ($tail -notmatch '^echo \[7/7\][^\r\n]+\r\n\r\necho {3}\[通过\]') {
         throw '完成提示的中文输出之间必须保留空行。'
     }
+    # 摘要测试不能调用真实生命周期脚本。
+    $tail = $tail.Replace('call :restart_codex_plus', 'ver >nul')
     [System.IO.Directory]::CreateDirectory($temporary) | Out-Null
     $fixture = Join-Path $temporary 'summary.cmd'
     $wrapper = Join-Path $temporary 'wrapper.cmd'

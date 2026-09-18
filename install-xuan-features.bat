@@ -37,7 +37,7 @@ set "UI_BRIDGE_SOURCE=%ROOT_DIR%\tools\xuan-ui-bridge\xuan-ui-bridge.mjs"
 set "RUNTIME_INSTALLER=%ROOT_DIR%\scripts\install-xuan-runtime.ps1"
 set "PLUGIN_PROCESS_STOPPER=%ROOT_DIR%\scripts\stop-xuan-plugin-processes.ps1"
 set "CODEX_PLUS_LIFECYCLE=%ROOT_DIR%\scripts\restart-codex-plus.ps1"
-set "CODEX_PLUS_STATE_FILE=%TEMP%\xuan-codex-plus-processes.txt"
+set "CODEX_PLUS_STATE_FILE=%TEMP%\xuan-codex-plus-processes-%RANDOM%-%RANDOM%.txt"
 set "REMOTE_BRIDGE_MANIFEST=%ROOT_DIR%\apps\xuan-plus-remote\bridge\Cargo.toml"
 set "REMOTE_BRIDGE_BUILD=%ROOT_DIR%\apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe"
 set "XUAN_MOBILE_BRIDGE_URL=http://127.0.0.1:17421"
@@ -135,7 +135,7 @@ if errorlevel 1 (
   echo [错误] 独立插件运行文件安装失败。
   exit /b 1
 )
-echo   [通过] 独立插件运行文件已按版本安装，无需关闭或替换 Codex++。
+echo   [通过] 独立插件运行文件已按版本安装，稍后将关闭并重启 Codex++。
 
 echo [4/7] Initializing plugin configuration...
 "%XUAN_BRIDGE_BUILD%" init "%XUAN_HOME%"
@@ -219,9 +219,11 @@ if errorlevel 1 (
 echo   [OK] mobile User Script installed.
 
 echo [7/7] 独立插件运行环境已就绪。
+
 echo   [通过] 插件自行管理通信和子进程，不修改 Codex++ 程序或更新逻辑。
 
 call :restart_codex_plus
+if errorlevel 1 exit /b 1
 
 echo.
 echo Four features were installed as independent plugins:
@@ -230,7 +232,7 @@ echo   2. Usage: OpenOx daily quota and per-KEY model cache statistics
 echo   3. Search: project search, preview, cancel and Ctrl+Shift+F
 echo   4. Mobile: desktop entry, pairing QR, confirmation and task sync
 echo.
-echo 安装已结束旧任务的插件进程与 Codex++ 主程序，并自动重新启动 Codex++；新建任务即可加载更新。
+echo 安装已结束 Codex++ 及其客户端子进程，并提交自动启动请求；新建任务即可加载更新。
 exit /b 0
 
 :restart_codex_plus
@@ -238,11 +240,13 @@ echo   重新启动 Codex++ 主程序...
 "%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%CODEX_PLUS_LIFECYCLE%" -Action Start -StateFile "%CODEX_PLUS_STATE_FILE%"
 if errorlevel 1 (
   echo [警告] Codex++ 主程序未能自动启动，请手动打开 Codex++。
+  exit /b 1
 )
 del /q "%CODEX_PLUS_STATE_FILE%" >nul 2>&1
 exit /b 0
 
 :fail
+if not exist "%CODEX_PLUS_STATE_FILE%" exit /b 1
 echo   安装未完成，尝试恢复 Codex++ 主程序...
 call :restart_codex_plus
 exit /b 1
