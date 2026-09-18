@@ -36,6 +36,8 @@ set "XUAN_BRIDGE_BUILD=%ROOT_DIR%\tools\xuan-bridge\target\release\xuan-bridge.e
 set "UI_BRIDGE_SOURCE=%ROOT_DIR%\tools\xuan-ui-bridge\xuan-ui-bridge.mjs"
 set "RUNTIME_INSTALLER=%ROOT_DIR%\scripts\install-xuan-runtime.ps1"
 set "PLUGIN_PROCESS_STOPPER=%ROOT_DIR%\scripts\stop-xuan-plugin-processes.ps1"
+set "CODEX_PLUS_LIFECYCLE=%ROOT_DIR%\scripts\restart-codex-plus.ps1"
+set "CODEX_PLUS_STATE_FILE=%TEMP%\xuan-codex-plus-processes.txt"
 set "REMOTE_BRIDGE_MANIFEST=%ROOT_DIR%\apps\xuan-plus-remote\bridge\Cargo.toml"
 set "REMOTE_BRIDGE_BUILD=%ROOT_DIR%\apps\xuan-plus-remote\bridge\target\release\xuan-plus-remote-bridge.exe"
 set "XUAN_MOBILE_BRIDGE_URL=http://127.0.0.1:17421"
@@ -79,6 +81,7 @@ for %%F in (
   "%UI_BRIDGE_SOURCE%"
   "%RUNTIME_INSTALLER%"
   "%PLUGIN_PROCESS_STOPPER%"
+  "%CODEX_PLUS_LIFECYCLE%"
   "%REMOTE_BRIDGE_MANIFEST%"
   "%MARKETPLACE_PATH%"
   "%POLISH_SCRIPT_SOURCE%"
@@ -142,18 +145,24 @@ if errorlevel 1 (
 )
 
 echo [5/7] Registering and installing four Codex plugins...
-echo   清理仍在运行的 Xuan 插件进程，保留 Codex++ 主程序...
+echo   结束 Codex++ 主程序，释放被占用的插件文件（安装完成后会自动重启）...
+"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%CODEX_PLUS_LIFECYCLE%" -Action Stop -StateFile "%CODEX_PLUS_STATE_FILE%"
+if errorlevel 1 (
+  echo [错误] Codex++ 主程序未能结束，已停止安装。
+  goto :fail
+)
+echo   清理仍在运行的 Xuan 插件进程...
 "%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%PLUGIN_PROCESS_STOPPER%" -BinDirectory "%BIN_DIR%"
 if errorlevel 1 (
   echo [错误] Xuan 插件进程未能清理完成，已停止安装。
-  exit /b 1
+  goto :fail
 )
 call "%CODEX_CMD%" plugin marketplace list | findstr.exe /i /b /c:"xuan-curated" >nul
 if errorlevel 1 (
   call "%CODEX_CMD%" plugin marketplace add "%ROOT_DIR%"
   if errorlevel 1 (
     echo [ERROR] Cannot register the local Xuan marketplace.
-    exit /b 1
+    goto :fail
   )
 ) else (
   echo   [OK] Local Xuan marketplace is registered.
@@ -165,14 +174,14 @@ for %%P in (xuan-workspace-search xuan-usage xuan-polish xuan-mobile) do (
     if errorlevel 1 (
       echo [ERROR] Cannot install or enable plugin: %%P
       del /q "%PLUGIN_LIST_FILE%" >nul 2>&1
-      exit /b 1
+      goto :fail
     )
     call "%CODEX_CMD%" plugin list > "%PLUGIN_LIST_FILE%"
     findstr.exe /i /r /c:"%%P@xuan-curated.*installed, enabled" "%PLUGIN_LIST_FILE%" >nul
     if errorlevel 1 (
       echo [ERROR] Cannot verify plugin: %%P
       del /q "%PLUGIN_LIST_FILE%" >nul 2>&1
-      exit /b 1
+      goto :fail
     )
     echo   [OK] %%P installed and enabled.
 )
@@ -182,36 +191,37 @@ echo [6/7] Installing four Codex++ User Scripts...
 if not exist "%CODEX_PLUS_USER_SCRIPT_DIR%" mkdir "%CODEX_PLUS_USER_SCRIPT_DIR%"
 if errorlevel 1 (
   echo [ERROR] Cannot create the Codex++ User Script directory.
-  exit /b 1
+  goto :fail
 )
 copy /y "%POLISH_SCRIPT_SOURCE%" "%POLISH_SCRIPT_TARGET%" >nul
 if errorlevel 1 (
   echo [ERROR] Cannot install polish User Script.
-  exit /b 1
+  goto :fail
 )
 echo   [OK] polish User Script installed.
 copy /y "%USAGE_SCRIPT_SOURCE%" "%USAGE_SCRIPT_TARGET%" >nul
 if errorlevel 1 (
   echo [ERROR] Cannot install usage User Script.
-  exit /b 1
+  goto :fail
 )
 echo   [OK] usage User Script installed.
 copy /y "%SEARCH_SCRIPT_SOURCE%" "%SEARCH_SCRIPT_TARGET%" >nul
 if errorlevel 1 (
   echo [ERROR] Cannot install search User Script.
-  exit /b 1
+  goto :fail
 )
 echo   [OK] search User Script installed.
 copy /y "%MOBILE_SCRIPT_SOURCE%" "%MOBILE_SCRIPT_TARGET%" >nul
 if errorlevel 1 (
   echo [ERROR] Cannot install mobile User Script.
-  exit /b 1
+  goto :fail
 )
 echo   [OK] mobile User Script installed.
 
 echo [7/7] 独立插件运行环境已就绪。
-
 echo   [通过] 插件自行管理通信和子进程，不修改 Codex++ 程序或更新逻辑。
+
+call :restart_codex_plus
 
 echo.
 echo Four features were installed as independent plugins:
@@ -220,8 +230,22 @@ echo   2. Usage: OpenOx daily quota and per-KEY model cache statistics
 echo   3. Search: project search, preview, cancel and Ctrl+Shift+F
 echo   4. Mobile: desktop entry, pairing QR, confirmation and task sync
 echo.
-echo 安装会结束旧任务的插件进程；请完全退出并重新打开 Codex++，再新建任务加载更新。
+echo 安装已结束旧任务的插件进程与 Codex++ 主程序，并自动重新启动 Codex++；新建任务即可加载更新。
 exit /b 0
+
+:restart_codex_plus
+echo   重新启动 Codex++ 主程序...
+"%POWERSHELL_CMD%" -NoLogo -NoProfile -NonInteractive -File "%CODEX_PLUS_LIFECYCLE%" -Action Start -StateFile "%CODEX_PLUS_STATE_FILE%"
+if errorlevel 1 (
+  echo [警告] Codex++ 主程序未能自动启动，请手动打开 Codex++。
+)
+del /q "%CODEX_PLUS_STATE_FILE%" >nul 2>&1
+exit /b 0
+
+:fail
+echo   安装未完成，尝试恢复 Codex++ 主程序...
+call :restart_codex_plus
+exit /b 1
 
 :find_powershell
 set "POWERSHELL_CMD="

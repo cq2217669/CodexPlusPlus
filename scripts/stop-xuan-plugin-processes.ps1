@@ -65,7 +65,7 @@ try {
                 throw '仍有 Xuan 插件进程未退出，已停止安装。'
             }
         }
-        Write-Output "Xuan 插件进程清理完成，强制结束 $stopped 个进程；未结束 Codex++ 主程序。"
+        Write-Output "Xuan 插件进程清理完成，强制结束 $stopped 个进程；Codex++ 主程序由安装脚本统一结束并重启。"
     }
 } catch {
     Write-Error $_ -ErrorAction Continue

@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v11";
+  const REVISION = "builtin-2026-09-18-v14";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -42,6 +42,7 @@
     speedPerHour: null,
     updatedAt: null,
     provider: "unknown",
+    bridgeReady: false,
     todayUsed: null,
     todayLimit: null,
     todayRemaining: null,
@@ -143,6 +144,25 @@
     return Number.isNaN(date.getTime()) ? safeText(value) : date.toLocaleDateString();
   }
 
+  function daysUntil(endValue) {
+    if (!endValue) return null;
+    const end = new Date(endValue);
+    const now = new Date();
+    if (Number.isNaN(end.getTime())) return null;
+    const startOfEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
+    const startOfNow = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return Math.round((startOfEnd - startOfNow) / 86_400_000);
+  }
+
+  // 把剩余天数拼到「有效期」label 末尾，避免在 strong 数值行里被强行断行
+  function expiryLabel(value) {
+    const days = daysUntil(value);
+    if (days == null) return "有效期";
+    if (days < 0) return `有效期（已过期 ${Math.abs(days)} 天）`;
+    if (days === 0) return "有效期（今天到期）";
+    return `有效期（剩 ${days} 天）`;
+  }
+
   function parseBalance(payload) {
     const quota = payload?.quota && typeof payload.quota === "object" ? payload.quota : {};
     const raw = payload?.balance ?? payload?.remaining ?? quota.remaining;
@@ -231,17 +251,17 @@
       #${ROOT_ID}[data-native-menu="false"]:hover,#${ROOT_ID}[data-open="true"]{background:color-mix(in srgb,CanvasText 5%,transparent);color:color-mix(in srgb,CanvasText 72%,transparent)}
       #${ROOT_ID}[data-native-menu="false"]:focus-visible{outline:2px solid color-mix(in srgb,CanvasText 65%,transparent);outline-offset:-2px}
       #${ROOT_ID}[data-state="failed"]{color:#dc2626}#${ROOT_ID}[data-state="loading"]{opacity:.72}
-      #${PANEL_ID}{position:fixed;z-index:2147482401;top:50px;right:16px;width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 64px);overflow:auto;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;background:Canvas;color:CanvasText;box-shadow:0 18px 54px rgba(0,0,0,.24);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+      #${PANEL_ID}{position:fixed;z-index:2147482401;top:50px;right:16px;width:min(720px,calc(100vw - 24px));max-width:calc(100vw - 24px);border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;background:Canvas;color:CanvasText;box-shadow:0 18px 54px rgba(0,0,0,.24);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
       #${PANEL_ID}[hidden]{display:none}#${PANEL_ID} *{box-sizing:border-box}
-      .crb-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 14%,transparent);background:Canvas}
+      .crb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 14%,transparent);background:Canvas}
       .crb-title{font-size:15px;font-weight:700}.crb-sub{margin-top:2px;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:12px}.crb-actions{display:flex;gap:6px}
       .crb-button,.crb-select,.crb-input{height:30px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:5px;background:Canvas;color:CanvasText;font:inherit}.crb-button{padding:0 10px;cursor:pointer}.crb-button:hover{background:color-mix(in srgb,CanvasText 8%,Canvas)}.crb-icon{width:30px;padding:0;font-size:18px}
       .crb-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-select{padding:0 26px 0 8px}.crb-muted{color:color-mix(in srgb,CanvasText 58%,transparent);font-size:12px}
       .crb-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:color-mix(in srgb,currentColor 12%,transparent);border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-stat{min-width:0;padding:12px 14px;background:Canvas}.crb-stat span{display:block;color:color-mix(in srgb,CanvasText 58%,transparent);font-size:11px}.crb-stat strong{display:block;margin-top:3px;font-size:15px;overflow-wrap:anywhere}
-      .crb-message{padding:18px 16px;color:color-mix(in srgb,CanvasText 66%,transparent)}.crb-error{color:#dc2626}.crb-table-wrap{overflow:auto}.crb-table{width:100%;border-collapse:collapse;white-space:nowrap}.crb-table th,.crb-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 10%,transparent);text-align:right}.crb-table th{position:sticky;top:59px;background:Canvas;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px;font-weight:600}.crb-table th:first-child,.crb-table td:first-child{text-align:left;max-width:190px;overflow:hidden;text-overflow:ellipsis}.crb-total td{font-weight:700;background:color-mix(in srgb,CanvasText 4%,Canvas)}
+      .crb-message{padding:18px 16px;color:color-mix(in srgb,CanvasText 66%,transparent)}.crb-error{color:#dc2626}.crb-table-wrap{overflow:visible}.crb-table{width:100%;border-collapse:collapse;white-space:nowrap}.crb-table th,.crb-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 10%,transparent);text-align:right}.crb-table th{background:Canvas;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px;font-weight:600}.crb-table th:first-child,.crb-table td:first-child{text-align:left;max-width:190px;overflow:hidden;text-overflow:ellipsis}.crb-total td{font-weight:700;background:color-mix(in srgb,CanvasText 4%,Canvas)}
       .crb-settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-field{display:grid;gap:5px}.crb-field-wide{grid-column:1/-1}.crb-field span{font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.crb-input{width:100%;padding:0 9px}.crb-settings-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px}
       .crb-head>div:first-child{min-width:0;overflow-wrap:anywhere}.crb-actions{flex-shrink:0}.crb-today{padding:16px}.crb-today strong{font-size:20px}
-      @media(max-width:720px){#${ROOT_ID}{top:8px}.crb-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}.crb-table th{top:59px}}
+      @media(max-width:720px){#${ROOT_ID}{top:8px}.crb-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}}
     `;
     document.documentElement.appendChild(style);
   }
@@ -279,22 +299,14 @@
   }
 
   function badgeText() {
-    if (state.provider === "openox") {
-      if (state.status === "loading") return "今日可用 …";
-      if (state.status === "disabled") return "OpenOx 设置";
-      if (state.status !== "ok") return "今日可用 --";
-      return `今日可用 ${formatMoney(state.todayRemaining, state.unit)} / ${formatMoney(state.todayLimit, state.unit)}`;
-    }
-    if (state.provider === "owlai") {
-      if (state.status === "loading") return "今日已用 …";
-      if (state.status !== "ok") return "今日已用 --";
-      return `今日已用 ${state.todayUsed == null ? "暂无数据" : formatMoney(state.todayUsed, state.unit)}`;
-    }
-    if (state.status === "loading") return "余额 …";
-    if (state.status === "disabled") return "余额 设置";
-    if (state.status !== "ok") return "余额 --";
-    if (state.unlimited) return "余额 无限";
-    return `余额 ${formatMoney(state.balance, state.unit)}`;
+    // 统一用「余额 $X」窄文本，避免在窄窗口与右上角的窗口控制按钮重叠
+    const remaining = state.provider === "openox" ? state.todayRemaining : state.balance;
+    if (state.status === "loading") return `余额 …`;
+    if (state.status === "disabled") return `余额 设置`;
+    if (state.status !== "ok") return `余额 --`;
+    if (state.provider === "owlai") return `今日已用 ${state.todayUsed == null ? "暂无数据" : formatMoney(state.todayUsed, state.unit)}`;
+    if (state.unlimited) return `余额 无限`;
+    return `余额 ${formatMoney(remaining, state.unit)}`;
   }
 
   function summaryHtml(models) {
@@ -313,10 +325,10 @@
   function openoxSummaryHtml() {
     return `
       <div class="crb-summary">
-        <div class="crb-stat"><span>今日可用</span><strong>${escapeHtml(formatMoney(state.todayRemaining, state.unit))} / ${escapeHtml(formatMoney(state.todayLimit, state.unit))}</strong></div>
+        <div class="crb-stat"><span>今日可用</span><strong>${escapeHtml(formatMoney(state.todayRemaining, state.unit))}</strong></div>
         <div class="crb-stat"><span>今日已用</span><strong>${escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>
-        <div class="crb-stat"><span>周期剩余</span><strong>${escapeHtml(formatMoney(state.periodRemaining, state.unit))} / ${escapeHtml(formatMoney(state.periodLimit, state.unit))}</strong></div>
-        <div class="crb-stat"><span>有效期</span><strong>${escapeHtml(formatDate(state.periodEnd))}</strong></div>
+        <div class="crb-stat"><span>周期剩余</span><strong>${escapeHtml(formatMoney(state.periodRemaining, state.unit))}</strong></div>
+        <div class="crb-stat"><span>${escapeHtml(expiryLabel(state.periodEnd))}</span><strong>${escapeHtml(formatDate(state.periodEnd))}</strong></div>
       </div>`;
   }
 
@@ -359,7 +371,7 @@
 
   function settingsHtml() {
     if (!state.settingsOpen) return "";
-    if (state.provider === "unknown") {
+    if (!state.bridgeReady) {
       const message = state.status === "loading"
         ? "正在连接用量插件…"
         : "当前任务的用量插件连接不可用。请完全退出并重新打开 Codex++，然后新建任务后再设置。";
@@ -378,13 +390,18 @@
     if (!panel) return;
     panel.hidden = !state.panelOpen;
     if (!state.panelOpen) return;
-    const isToday = state.provider === "owlai";
-    const rangeLabel = isToday ? "今天（站点时区）" : `${config.rangeDays} 天`;
-    const body = state.status === "loading"
-      ? '<div class="crb-message">正在读取用量…</div>'
-      : state.status === "ok"
-        ? state.provider === "openox" ? `${openoxSummaryHtml()}${openoxTableHtml(state.models)}` : isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
-        : `<div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(state.message || "暂无数据")}</div>`;
+    // OpenOx 后端只能按天聚合，前端同样收窄为当天；其余 provider 保持原行为
+    const isToday = state.provider === "owlai" || state.provider === "openox";
+    const rangeLabel = state.provider === "openox"
+      ? "今天（OpenOx 限定当天）"
+      : isToday ? "今天（站点时区）" : `${config.rangeDays} 天`;
+    const body = state.status === "loading" && !state.bridgeReady
+      ? '<div class="crb-message">正在连接用量插件…</div>'
+      : state.status === "loading"
+        ? '<div class="crb-message">正在读取用量…</div>'
+        : state.status === "ok"
+          ? state.provider === "openox" ? `${openoxSummaryHtml()}${openoxTableHtml(state.models)}` : isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
+          : `<div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(state.message || "暂无数据")}</div>`;
     if (state.settingsOpen && panel.querySelector(".crb-settings")) {
       const toolbar = panel.querySelector("[data-crb-toolbar]");
       const content = panel.querySelector("[data-crb-content]");
@@ -438,14 +455,65 @@
     }).finally(() => clearTimeout(timeout));
   }
 
+  // 桥握手探针：用最轻的 settings 调用确认桥适配器和 native 通道都就绪。
+  // settings 端只读本地 JSON，几乎瞬时返回；超时即视为桥不可用，避免卡住 UI。
+  async function probeBridge(timeoutMs = 1500) {
+    const api = window.__xuanPluginBridge?.["xuan-usage"];
+    if (typeof api !== "function") return false;
+    let timer;
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(() => api("/v1/usage/settings", {})),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("probe-timeout")), timeoutMs);
+        }),
+      ]);
+      return Boolean(result && result.status !== "failed");
+    } catch (_) {
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async function fetchUsage() {
+    // 1) 桥握手：未就绪直接停留在 "正在连接用量插件…" 状态，避免对未在线的桥发起业务请求
+    const ready = await probeBridge(1500);
+    if (!ready) {
+      previousSnapshot = null;
+      return {
+        status: "loading",
+        provider: "unknown",
+        bridgeReady: false,
+        message: "正在连接用量插件…",
+        profileName: state.profileName || "",
+        balance: null,
+        unit: state.unit,
+        unlimited: false,
+        planName: "",
+        models: [],
+        speedPerHour: null,
+        updatedAt: state.updatedAt || null,
+        todayUsed: null,
+        todayLimit: null,
+        todayRemaining: null,
+        periodLimit: null,
+        periodUsed: null,
+        periodRemaining: null,
+        periodEnd: "",
+        openoxKeyName: "",
+        tokenConfigured: false,
+      };
+    }
+    // 2) 桥已就绪：在本次结果合并到 state 时保留 bridgeReady=true
+    state.bridgeReady = true;
     // 旧的自定义时区不应阻止 OwlAI 查询；通用方案仍在收到响应后校验。
     let range;
     let rangeError;
     try { range = dateRange(config.rangeDays); } catch (error) { rangeError = error; }
     const settings = await callBridge("/relay-balance/settings", {});
     if (!settings || settings.status === "failed") throw new Error(settings?.message || "读取用量设置失败");
-    if (settings.disabled) return { status: "disabled", message: settings.message || "当前中转不支持余额查询", profileName: settings.profileName || "", provider: settings.provider || "generic" };
+    if (settings.disabled) return { status: "disabled", message: settings.message || "当前中转不支持余额查询", profileName: settings.profileName || "", provider: settings.provider || "generic", bridgeReady: true };
     if (settings.provider === "openox" && (!settings.keyName || !settings.tokenConfigured)) {
       previousSnapshot = null;
       return {
@@ -453,6 +521,10 @@
         openoxKeyName: settings.keyName || "", tokenConfigured: Boolean(settings.tokenConfigured),
         message: "请在设置中填写 OpenOx KEY 名称和 Token",
       };
+    }
+    // OpenOx 站点只允许按天聚合，强制按当天查询，给后端 start_date=end_date=今天
+    if (settings.provider === "openox") {
+      range = dateRange(1);
     }
     const result = await callBridge("/relay-balance/query", {
       usagePath: config.usagePath,
@@ -530,13 +602,21 @@
     if (requestPromise) return requestPromise;
     const revision = configRevision;
     setState({ status: "loading", message: "正在读取用量" });
+    // 默认按配置间隔；桥未就绪 / 失败 / 禁用时由本次结果自适应收缩
+    let nextRetryMs = config.refreshMinutes * 60_000;
     const request = fetchUsage()
       .then((next) => {
         if (!destroyed && revision === configRevision) setState(next);
+        if (next?.bridgeReady === false) nextRetryMs = 3000;
+        else if (next?.status === "ok") nextRetryMs = config.refreshMinutes * 60_000;
+        else if (next?.status === "failed" || next?.status === "disabled") nextRetryMs = 30_000;
+        else nextRetryMs = config.refreshMinutes * 60_000;
         return next;
       })
       .catch((error) => {
-        if (!destroyed && revision === configRevision) setState({ status: "failed", balance: null, todayUsed: null, message: error?.message || "用量查询失败，请检查用量方案和统计时区" });
+        if (!destroyed && revision === configRevision) setState({ status: "failed", bridgeReady: state.bridgeReady, balance: null, todayUsed: null, message: error?.message || "用量查询失败，请检查用量方案和统计时区" });
+        // 桥一直就绪但调用栈崩溃：30s 后重试，避免对供应商施压
+        nextRetryMs = state.bridgeReady ? 30_000 : 3000;
         return null;
       })
       .finally(() => {
@@ -544,15 +624,17 @@
         if (!destroyed && revision !== configRevision) {
           previousSnapshot = null;
           void refresh(true);
-        } else schedule();
+        } else schedule(nextRetryMs);
       });
     requestPromise = request;
     return request;
   }
 
-  function schedule() {
+  function schedule(delayMs) {
     window.clearTimeout(timer);
-    if (!destroyed) timer = window.setTimeout(() => void refresh(), config.refreshMinutes * 60_000);
+    if (destroyed) return;
+    const ms = Number.isFinite(delayMs) ? delayMs : config.refreshMinutes * 60_000;
+    timer = window.setTimeout(() => void refresh(true), ms);
   }
 
   function onPanelClick(event) {
