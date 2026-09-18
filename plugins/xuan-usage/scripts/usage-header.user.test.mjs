@@ -6,7 +6,7 @@ import path from "node:path";
 const source = fs.readFileSync(path.join(import.meta.dirname, "usage-header.user.js"), "utf8");
 
 test("usage script renders the current provider usage panel", () => {
-  assert.match(source, /builtin-2026-09-18-v19/);
+  assert.match(source, /builtin-2026-09-18-v23/);
   assert.match(source, /\/v1\/usage/);
   assert.match(source, /provider === "owlai"/);
   assert.match(source, /provider === "openox"/);
@@ -14,7 +14,7 @@ test("usage script renders the current provider usage panel", () => {
   assert.match(source, /Token 命中率/);
   assert.doesNotMatch(source, /<th>请求时间<\/th><th>输入<\/th><th>缓存读取<\/th>/);
   assert.doesNotMatch(source, /命中请求 \/ 比例/);
-  assert.match(source, /今日可用/);
+  assert.doesNotMatch(source, /今日可用/);
   assert.match(source, /todayUsed/);
   assert.match(source, /当前供应商用量/);
   assert.doesNotMatch(source, /data-config="baseUrl"/);
@@ -28,10 +28,12 @@ test("usage script updates the result while preserving open settings inputs", ()
   assert.match(source, /data-crb-content/);
   assert.match(source, /if \(state\.settingsOpen && panel\.querySelector\("\.crb-settings"\)\) \{/);
   assert.match(source, /if \(toolbar\) toolbar\.innerHTML = toolbarHtml\(isToday, rangeLabel\);/);
-  assert.match(source, /if \(content\) content\.innerHTML = body;/);
+  assert.match(source, /content\.innerHTML = body;/);
   assert.match(source, /function updateOpenoxValues\(content\)/);
   assert.match(source, /existingContent\.dataset\.openoxStructure === openoxStructureSignature\(\)/);
-  assert.match(source, /if \(state\.status !== "ok"\) setState\(\{ status: "loading"/);
+  assert.match(source, /const settingsDomMatches = Boolean\(panel\.querySelector\("\.crb-settings"\)\) === state\.settingsOpen/);
+  assert.match(source, /\{ refreshing: true, status: "loading", message: "正在读取用量" \}/);
+  assert.match(source, /function syncPanelControls\(rangeLabel\)/);
   assert.doesNotMatch(source, /if \(state\.settingsOpen && panel\.querySelector\("\.crb-settings"\)\) return;/);
 });
 
@@ -69,17 +71,20 @@ test("usage script waits for bridge injection without duplicating the settings R
   assert.match(source, /nextRetryMs = 30_000/);
 });
 
-test("usage script renders one table per OpenOx KEY with a single shared total", () => {
+test("usage script renders one table and one independent total per OpenOx KEY", () => {
   // 不再要求 KEY 名称：设置里只剩 Token 输入框
   assert.doesNotMatch(source, /data-openox="keyName"/);
   assert.doesNotMatch(source, /请填写 OpenOx KEY 名称/);
   assert.match(source, /data-openox="token"/);
   assert.match(source, /请在设置中填写 OpenOx Token/);
-  // 每个 KEY 一张表，所有 KEY 的合计只作为最后一张表的末行出现
-  assert.match(source, /function openoxRowsHtml\(models, totalModels = null\)/);
+  // 每个 KEY 一张表，每张表的末行都由该 KEY 的模型明细独立合计
+  assert.match(source, /function openoxRowsHtml\(models, keyName = ""\)/);
   assert.match(source, /function openoxTablesHtml\(\)/);
-  assert.match(source, /index === keys\.length - 1 \? state\.models : null/);
-  assert.match(source, /全部 KEY 合计/);
+  assert.match(source, /openoxRowsHtml\(item\.models \|\| \[\], item\.keyName \|\| ""\)/);
+  assert.match(source, /model: "合计"/);
+  assert.match(source, /totals\(activeModels\(key\.models, "openox", key\.keyName\)\)/);
+  assert.doesNotMatch(source, /全部 KEY 合计/);
+  assert.doesNotMatch(source, /index === keys\.length - 1 \? state\.models : null/);
   assert.match(source, /KEY · /);
   assert.doesNotMatch(source, /crb-key-total/);
   // 分组数据来自后端 payload.keys，并在 state 中维护
@@ -90,6 +95,43 @@ test("usage script renders one table per OpenOx KEY with a single shared total",
   assert.match(source, /formatRequestTime\(item\.requestTime\)/);
   // 旧的单表实现已移除
   assert.doesNotMatch(source, /openoxTableHtml\(/);
+});
+
+test("OpenOx header keeps metadata, refresh, and settings in a compact working order", () => {
+  assert.match(source, /function openoxActionsHtml\(rangeLabel\)/);
+  assert.match(source, /data-toolbar-meta>[\s\S]*\$\{refreshButtonHtml\(\)\}[\s\S]*data-action="settings"/);
+  assert.match(source, /data-action="settings" aria-expanded="\$\{state\.settingsOpen\}"/);
+  assert.match(source, /if \(action === "refresh"\) void refresh\(true\)/);
+  assert.match(source, /if \(action === "settings"\) setState\(\{ settingsOpen: !state\.settingsOpen \}\)/);
+  assert.match(source, /refreshButton\.disabled = Boolean\(state\.refreshing\)/);
+  assert.match(source, /crb-summary crb-summary-openox/);
+  assert.match(source, /\.crb-table-wrap\{overflow-x:auto;overflow-y:hidden\}/);
+});
+
+test("usage panel title bar supports bounded pointer dragging without hijacking controls", () => {
+  assert.match(source, /panel\.addEventListener\("pointerdown", onPanelPointerDown\)/);
+  assert.match(source, /panel\.addEventListener\("pointermove", onPanelPointerMove\)/);
+  assert.match(source, /function clampPanelPosition\(left, top\)/);
+  assert.match(source, /event\.target\?\.closest\?\.\('button,input,select,textarea,a,\[data-action\]'\)/);
+  assert.match(source, /panel\.setPointerCapture\?\.\(event\.pointerId\)/);
+  assert.match(source, /panel\.style\.right = "auto"/);
+  assert.match(source, /window\.addEventListener\("resize", applyPanelPosition\)/);
+  assert.match(source, /window\.removeEventListener\("resize", applyPanelPosition\)/);
+  assert.match(source, /cursor:grab;touch-action:none;user-select:none/);
+});
+
+test("usage rows can be toggled out of totals with double click or keyboard", () => {
+  assert.match(source, /const excludedRows = new Set\(\)/);
+  assert.match(source, /panel\.addEventListener\("dblclick", onPanelDoubleClick\)/);
+  assert.match(source, /panel\.addEventListener\("keydown", onPanelKeyDown\)/);
+  assert.match(source, /function toggleUsageRow\(row\)/);
+  assert.match(source, /tr\[data-usage-row-key\]/);
+  assert.match(source, /activeModels\(key\.models, "openox", key\.keyName\)/);
+  assert.match(source, /totals\(activeModels\(models, "generic"\)\)/);
+  assert.match(source, /function openoxTodayUsed\(\)/);
+  assert.match(source, /formatMoney\(openoxTodayUsed\(\), state\.unit\)/);
+  assert.match(source, /已停止计入合计，双击恢复/);
+  assert.match(source, /crb-row-muted/);
 });
 
 test("usage script keeps the expiry label on one line by folding days into the label", () => {

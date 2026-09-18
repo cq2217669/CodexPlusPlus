@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v19";
+  const REVISION = "builtin-2026-09-18-v23";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -26,6 +26,9 @@
   let observer = null;
   let requestPromise = null;
   let previousSnapshot = null;
+  let panelPosition = null;
+  let panelDrag = null;
+  const excludedRows = new Set();
   let configRevision = 0;
   let bridgeWaitStartedAt = Date.now();
   let config = loadConfig();
@@ -55,6 +58,7 @@
     openoxKeys: [],
     openoxKeyCount: 0,
     tokenConfigured: false,
+    refreshing: false,
   };
 
   function safeText(value) {
@@ -277,16 +281,18 @@
       #${ROOT_ID}[data-state="failed"]{color:#dc2626}#${ROOT_ID}[data-state="loading"]{opacity:.72}
       #${PANEL_ID}{position:fixed;z-index:2147482401;top:50px;right:16px;width:min(720px,calc(100vw - 24px));max-width:calc(100vw - 24px);border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;background:Canvas;color:CanvasText;box-shadow:0 18px 54px rgba(0,0,0,.24);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
       #${PANEL_ID}[hidden]{display:none}#${PANEL_ID} *{box-sizing:border-box}
-      .crb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 14%,transparent);background:Canvas}
-      .crb-title{font-size:15px;font-weight:700}.crb-sub{margin-top:2px;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:12px}.crb-actions{display:flex;gap:6px}
-      .crb-button,.crb-select,.crb-input{height:30px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:5px;background:Canvas;color:CanvasText;font:inherit}.crb-button{padding:0 10px;cursor:pointer}.crb-button:hover{background:color-mix(in srgb,CanvasText 8%,Canvas)}.crb-icon{width:30px;padding:0;font-size:18px}
+      .crb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid color-mix(in srgb,currentColor 14%,transparent);background:Canvas;cursor:grab;touch-action:none;user-select:none}.crb-head :is(button,input,select,textarea,a){user-select:auto}#${PANEL_ID}[data-dragging="true"] .crb-head{cursor:grabbing}
+      .crb-title{font-size:15px;font-weight:700}.crb-sub{margin-top:2px;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:12px}.crb-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;min-width:0}.crb-head-meta{margin-right:2px;white-space:nowrap}
+      .crb-button,.crb-select,.crb-input{height:30px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:5px;background:Canvas;color:CanvasText;font:inherit}.crb-button{padding:0 10px;cursor:pointer}.crb-button:hover{background:color-mix(in srgb,CanvasText 8%,Canvas)}.crb-button:disabled{cursor:wait;opacity:.62}.crb-button[aria-expanded="true"]{background:color-mix(in srgb,CanvasText 8%,Canvas)}.crb-refresh{min-width:58px}.crb-icon{width:30px;padding:0;font-size:18px}
       .crb-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-select{padding:0 26px 0 8px}.crb-muted{color:color-mix(in srgb,CanvasText 58%,transparent);font-size:12px}
-      .crb-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:color-mix(in srgb,currentColor 12%,transparent);border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-stat{min-width:0;padding:12px 14px;background:Canvas}.crb-stat span{display:block;color:color-mix(in srgb,CanvasText 58%,transparent);font-size:11px}.crb-stat strong{display:block;margin-top:3px;font-size:15px;overflow-wrap:anywhere}
-      .crb-message{padding:18px 16px;color:color-mix(in srgb,CanvasText 66%,transparent)}.crb-error{color:#dc2626}.crb-table-wrap{overflow:visible}.crb-table{width:100%;border-collapse:collapse;white-space:nowrap}.crb-table th,.crb-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 10%,transparent);text-align:right}.crb-table th{background:Canvas;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px;font-weight:600}.crb-table th:first-child,.crb-table td:first-child{text-align:left;max-width:190px;overflow:hidden;text-overflow:ellipsis}.crb-total td{font-weight:700;background:color-mix(in srgb,CanvasText 4%,Canvas)}
+      .crb-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:color-mix(in srgb,currentColor 12%,transparent);border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-stat{min-width:0;padding:12px 14px;background:Canvas}.crb-stat span{display:block;color:color-mix(in srgb,CanvasText 58%,transparent);font-size:11px}.crb-stat strong{display:block;margin-top:3px;font-size:15px;overflow-wrap:anywhere}.crb-summary-openox{grid-template-columns:repeat(3,minmax(0,1fr))}.crb-summary-openox .crb-stat{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:9px 14px}.crb-summary-openox .crb-stat span,.crb-summary-openox .crb-stat strong{display:block;margin:0;white-space:nowrap}.crb-summary-openox .crb-stat strong{font-size:14px}
+      .crb-message{padding:18px 16px;color:color-mix(in srgb,CanvasText 66%,transparent)}.crb-error{color:#dc2626}.crb-table-wrap{overflow-x:auto;overflow-y:hidden}.crb-table{width:100%;border-collapse:collapse;white-space:nowrap}.crb-table th,.crb-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 10%,transparent);text-align:right}.crb-table th{background:Canvas;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px;font-weight:600}.crb-table th:first-child,.crb-table td:first-child{text-align:left;max-width:190px;overflow:hidden;text-overflow:ellipsis}.crb-total td{font-weight:700;background:color-mix(in srgb,CanvasText 4%,Canvas)}
+      .crb-table tr[data-usage-row-key]{cursor:pointer;user-select:none}.crb-row-muted td{color:color-mix(in srgb,CanvasText 38%,Canvas)}
       .crb-settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-field{display:grid;gap:5px}.crb-field-wide{grid-column:1/-1}.crb-field span{font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.crb-input{width:100%;padding:0 9px}.crb-settings-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px}
       .crb-head>div:first-child{min-width:0;overflow-wrap:anywhere}.crb-actions{flex-shrink:0}.crb-today{padding:16px}.crb-today strong{font-size:20px}
       .crb-keys{display:grid;gap:16px;padding:14px 16px}.crb-key{min-width:0}.crb-key-title{margin-bottom:6px;font-size:12px;font-weight:600;color:color-mix(in srgb,CanvasText 70%,transparent)}
-      @media(max-width:720px){#${ROOT_ID}{top:8px}.crb-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}}
+      @media(max-width:720px){#${ROOT_ID}{top:8px}.crb-summary:not(.crb-summary-openox){grid-template-columns:repeat(2,minmax(0,1fr))}.crb-head-openox{align-items:flex-start;flex-direction:column}.crb-head-openox .crb-actions{width:100%;justify-content:flex-start;flex-wrap:wrap}.crb-head-openox .crb-head-meta{margin-right:auto}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}}
+      @media(max-width:520px){.crb-summary-openox{grid-template-columns:1fr}.crb-summary-openox .crb-stat{padding-block:7px}}
     `;
     document.documentElement.appendChild(style);
   }
@@ -313,6 +319,12 @@
       panel.hidden = true;
       panel.addEventListener("click", onPanelClick);
       panel.addEventListener("change", onPanelChange);
+      panel.addEventListener("dblclick", onPanelDoubleClick);
+      panel.addEventListener("keydown", onPanelKeyDown);
+      panel.addEventListener("pointerdown", onPanelPointerDown);
+      panel.addEventListener("pointermove", onPanelPointerMove);
+      panel.addEventListener("pointerup", onPanelPointerEnd);
+      panel.addEventListener("pointercancel", onPanelPointerEnd);
       document.body.appendChild(panel);
     }
     const header = document.querySelector('[class*="ApplicationMenuTopBar"], .app-header-tint, header');
@@ -334,8 +346,66 @@
     return `余额 ${formatMoney(remaining, state.unit)}`;
   }
 
+  function clampPanelPosition(left, top) {
+    if (!panel) return { left, top };
+    const rect = panel.getBoundingClientRect();
+    const margin = 8;
+    const headerHeight = panel.querySelector(".crb-head")?.getBoundingClientRect().height || 48;
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = rect.height <= window.innerHeight - margin * 2
+      ? Math.max(margin, window.innerHeight - rect.height - margin)
+      : Math.max(margin, window.innerHeight - headerHeight - margin);
+    return {
+      left: Math.min(maxLeft, Math.max(margin, left)),
+      top: Math.min(maxTop, Math.max(margin, top)),
+    };
+  }
+
+  function applyPanelPosition() {
+    if (!panelPosition || !panel?.isConnected) return;
+    panelPosition = clampPanelPosition(panelPosition.left, panelPosition.top);
+    panel.style.left = `${panelPosition.left}px`;
+    panel.style.top = `${panelPosition.top}px`;
+    panel.style.right = "auto";
+  }
+
+  function onPanelPointerDown(event) {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    const header = event.target?.closest?.(".crb-head");
+    if (!header || event.target?.closest?.('button,input,select,textarea,a,[data-action]')) return;
+    const rect = panel.getBoundingClientRect();
+    panelPosition = { left: rect.left, top: rect.top };
+    panelDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+    };
+    panel.dataset.dragging = "true";
+    panel.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  function onPanelPointerMove(event) {
+    if (!panelDrag || event.pointerId !== panelDrag.pointerId) return;
+    panelPosition = clampPanelPosition(
+      panelDrag.startLeft + event.clientX - panelDrag.startX,
+      panelDrag.startTop + event.clientY - panelDrag.startY,
+    );
+    applyPanelPosition();
+    event.preventDefault();
+  }
+
+  function onPanelPointerEnd(event) {
+    if (!panelDrag || event.pointerId !== panelDrag.pointerId) return;
+    if (panel.hasPointerCapture?.(event.pointerId)) panel.releasePointerCapture(event.pointerId);
+    panelDrag = null;
+    delete panel.dataset.dragging;
+  }
+
   function summaryHtml(models) {
-    const sum = totals(models);
+    const sum = totals(activeModels(models, "generic"));
     const multiplier = sum.cost > 0 ? sum.actualCost / sum.cost : null;
     const speed = state.speedPerHour == null ? "等待下次刷新" : `${formatMoney(state.speedPerHour, state.unit)}/小时`;
     return `
@@ -349,68 +419,88 @@
 
   function openoxSummaryHtml() {
     return `
-      <div class="crb-summary">
-        <div class="crb-stat"><span>今日可用</span><strong data-summary="todayRemaining">${escapeHtml(formatMoney(state.todayRemaining, state.unit))}</strong></div>
-        <div class="crb-stat"><span>今日已用</span><strong data-summary="todayUsed">${escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>
+      <div class="crb-summary crb-summary-openox">
+        <div class="crb-stat"><span>今日已用</span><strong data-summary="todayUsed">${escapeHtml(formatMoney(openoxTodayUsed(), state.unit))}</strong></div>
         <div class="crb-stat"><span>周期剩余</span><strong data-summary="periodRemaining">${escapeHtml(formatMoney(state.periodRemaining, state.unit))}</strong></div>
         <div class="crb-stat"><span data-summary="expiryLabel">${escapeHtml(expiryLabel(state.periodEnd))}</span><strong data-summary="periodEnd">${escapeHtml(formatDate(state.periodEnd))}</strong></div>
       </div>`;
   }
 
+  function usageRowKey(provider, keyName, modelName) {
+    return JSON.stringify([provider, safeText(state.profileName), safeText(keyName), safeText(modelName)]);
+  }
+
+  function isRowExcluded(rowKey) {
+    return excludedRows.has(rowKey);
+  }
+
+  function usageRowAttributes(rowKey) {
+    if (!rowKey) return "";
+    const excluded = isRowExcluded(rowKey);
+    const hint = excluded ? "已停止计入合计，双击恢复" : "双击停止计入合计";
+    return ` data-usage-row-key="${escapeHtml(rowKey)}" tabindex="0" title="${hint}" aria-label="${hint}"`;
+  }
+
+  function activeModels(models, provider, keyName = "") {
+    return models.filter((item) => !isRowExcluded(usageRowKey(provider, keyName, item.model)));
+  }
+
+  function openoxTodayUsed() {
+    if (state.todayUsed == null) return null;
+    const excludedCost = (state.openoxKeys || []).reduce((keyTotal, key) => keyTotal
+      + (key.models || []).reduce((modelTotal, model) => modelTotal
+        + (isRowExcluded(usageRowKey("openox", key.keyName, model.model)) ? numeric(model.cost) : 0), 0), 0);
+    return Math.max(0, numeric(state.todayUsed) - excludedCost);
+  }
+
   function tableHtml(models) {
     if (!models.length) return '<div class="crb-message">接口未提供模型用量明细。</div>';
-    const sum = totals(models);
-    const row = (item, className = "") => `<tr class="${className}">
+    const sum = totals(activeModels(models, "generic"));
+    const row = (item, className = "", rowKey = "") => `<tr class="${className}${isRowExcluded(rowKey) ? " crb-row-muted" : ""}"${usageRowAttributes(rowKey)}>
       <td title="${escapeHtml(item.model || "合计")}">${escapeHtml(item.model || "合计")}</td>
       <td>${Math.round(item.requests)}</td><td>${formatTokens(item.inputTokens)}</td><td>${formatTokens(item.cacheCreationTokens)}</td><td>${formatTokens(item.cacheReadTokens)}</td><td>${formatTokens(item.outputTokens)}</td><td>${formatTokens(item.totalTokens)}</td><td>${escapeHtml(formatMoney(item.cost, state.unit))}</td><td>${escapeHtml(formatMoney(item.actualCost, state.unit))}</td><td>${item.multiplier == null ? "--" : `${item.multiplier.toFixed(2)}×`}</td>
     </tr>`;
-    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>输入</th><th>缓存写入</th><th>缓存读取</th><th>输出</th><th>总 Token</th><th>标价</th><th>实际扣费</th><th>倍率</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${row({ ...sum, model: "合计", multiplier: sum.cost > 0 ? sum.actualCost / sum.cost : null }, "crb-total")}</tbody></table></div>`;
+    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>输入</th><th>缓存写入</th><th>缓存读取</th><th>输出</th><th>总 Token</th><th>标价</th><th>实际扣费</th><th>倍率</th></tr></thead><tbody>${models.map((item) => row(item, "", usageRowKey("generic", "", item.model))).join("")}${row({ ...sum, model: "合计", multiplier: sum.cost > 0 ? sum.actualCost / sum.cost : null }, "crb-total")}</tbody></table></div>`;
   }
 
-  function openoxRowsHtml(models, totalModels = null) {
-    const row = (item, className = "") => {
+  function openoxRowsHtml(models, keyName = "") {
+    const row = (item, className = "", rowKey = "") => {
       const requests = numeric(item.requests);
       const cacheTokenRate = item.cacheTokenRate == null
         ? (numeric(item.inputTokens) + numeric(item.cacheReadTokens) > 0
           ? numeric(item.cacheReadTokens) / (numeric(item.inputTokens) + numeric(item.cacheReadTokens)) : 0)
         : item.cacheTokenRate;
-      return `<tr class="${className}">
+      return `<tr class="${className}${isRowExcluded(rowKey) ? " crb-row-muted" : ""}"${usageRowAttributes(rowKey)}>
         <td title="${escapeHtml(item.model || "合计")}">${escapeHtml(item.model || "合计")}</td>
         <td data-field="requests">${Math.round(requests)}</td><td data-field="requestTime">${escapeHtml(formatRequestTime(item.requestTime))}</td><td data-field="inputTokens">${formatTokens(item.inputTokens)}</td><td data-field="cacheTokenRate">${formatPercent(cacheTokenRate)}</td><td data-field="outputTokens">${formatTokens(item.outputTokens)}</td><td data-field="cost">${escapeHtml(formatMoney(item.cost, state.unit))}</td>
       </tr>`;
     };
-    const sum = Array.isArray(totalModels) && totalModels.length ? totals(totalModels) : null;
-    const totalRow = sum
-      ? row({ ...sum, model: "全部 KEY 合计" }, "crb-total")
-      : "";
-    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>Token 命中率</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${totalRow}</tbody></table></div>`;
+    const sum = totals(activeModels(models, "openox", keyName));
+    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>Token 命中率</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item, "", usageRowKey("openox", keyName, item.model))).join("")}${row({ ...sum, model: "合计" }, "crb-total")}</tbody></table></div>`;
   }
 
-  // OpenOx：每个 KEY 一张明细表；仅在最后一张表底部追加所有 KEY 的共享合计行
+  // OpenOx：每个 KEY 一张明细表，并在各自表格底部展示独立合计。
   function openoxTablesHtml() {
     const keys = state.openoxKeys || [];
     if (!keys.length) return '<div class="crb-message">当前没有活跃 KEY。</div>';
     const sections = keys.map((item, index) => `
       <div class="crb-key" data-key-section="${index}">
         <div class="crb-key-title">KEY · ${escapeHtml(item.keyName || "未知 KEY")}</div>
-        ${item.models?.length || (index === keys.length - 1 && state.models.length)
-          ? openoxRowsHtml(item.models || [], index === keys.length - 1 ? state.models : null)
+        ${item.models?.length
+          ? openoxRowsHtml(item.models || [], item.keyName || "")
           : '<div class="crb-message">今天没有调用记录。</div>'}
       </div>`).join("");
     return `<div class="crb-keys">${sections}</div>`;
   }
 
   function openoxStructureSignature() {
-    return JSON.stringify([
-      (state.openoxKeys || []).map((item) => [item.keyName, (item.models || []).map((model) => model.model), Boolean(item.models?.length)]),
-      Boolean(state.models.length),
-    ]);
+    return JSON.stringify((state.openoxKeys || [])
+      .map((item) => [item.keyName, (item.models || []).map((model) => [model.model, isRowExcluded(usageRowKey("openox", item.keyName, model.model))]), Boolean(item.models?.length)]));
   }
 
   function updateOpenoxValues(content) {
     const fields = {
-      todayRemaining: formatMoney(state.todayRemaining, state.unit),
-      todayUsed: formatMoney(state.todayUsed, state.unit),
+      todayUsed: formatMoney(openoxTodayUsed(), state.unit),
       periodRemaining: formatMoney(state.periodRemaining, state.unit),
       expiryLabel: expiryLabel(state.periodEnd),
       periodEnd: formatDate(state.periodEnd),
@@ -425,7 +515,7 @@
       if (!section) return;
       const rows = section.querySelectorAll("tbody tr");
       (key.models || []).forEach((model, modelIndex) => updateOpenoxRow(rows[modelIndex], model));
-      if (keyIndex === (state.openoxKeys || []).length - 1 && state.models.length) updateOpenoxRow(rows[rows.length - 1], totals(state.models), true);
+      if (key.models?.length) updateOpenoxRow(rows[rows.length - 1], totals(activeModels(key.models, "openox", key.keyName)));
     });
   }
 
@@ -452,12 +542,33 @@
     return `<div class="crb-stat crb-today"><span>今日已用</span><strong>${state.todayUsed == null ? "暂无数据" : escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>`;
   }
 
+  function refreshButtonHtml() {
+    return `<button type="button" class="crb-button crb-refresh" data-action="refresh" ${state.refreshing ? 'disabled aria-busy="true"' : ""}>${state.refreshing ? "刷新中" : "刷新"}</button>`;
+  }
+
   function toolbarHtml(isToday, rangeLabel) {
-    return `${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}<button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted" data-toolbar-meta>${toolbarMeta(rangeLabel)}</span>`;
+    return `${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}${refreshButtonHtml()}<span class="crb-muted" data-toolbar-meta>${toolbarMeta(rangeLabel)}</span>`;
+  }
+
+  function openoxActionsHtml(rangeLabel) {
+    return `<span class="crb-muted crb-head-meta" data-toolbar-meta>${toolbarMeta(rangeLabel)}</span>${refreshButtonHtml()}<button type="button" class="crb-button" data-action="settings" aria-expanded="${state.settingsOpen}">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button>`;
   }
 
   function toolbarMeta(rangeLabel) {
     return state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel;
+  }
+
+  function syncPanelControls(rangeLabel) {
+    const toolbarMetaElement = panel.querySelector("[data-toolbar-meta]");
+    if (toolbarMetaElement) toolbarMetaElement.textContent = toolbarMeta(rangeLabel);
+    const refreshButton = panel.querySelector('[data-action="refresh"]');
+    if (refreshButton) {
+      refreshButton.disabled = Boolean(state.refreshing);
+      refreshButton.toggleAttribute("aria-busy", Boolean(state.refreshing));
+      refreshButton.textContent = state.refreshing ? "刷新中" : "刷新";
+    }
+    const settingsButton = panel.querySelector('[data-action="settings"]');
+    if (settingsButton) settingsButton.setAttribute("aria-expanded", String(state.settingsOpen));
   }
 
   function settingsHtml() {
@@ -485,6 +596,7 @@
     const rangeLabel = state.provider === "openox"
       ? "今天（OpenOx 限定当天）"
       : isToday ? "今天（站点时区）" : `${config.rangeDays} 天`;
+    const isOpenOx = state.provider === "openox";
     const body = state.status === "loading" && !state.bridgeReady
       ? '<div class="crb-message">正在连接用量插件…</div>'
       : state.status === "loading"
@@ -493,27 +605,35 @@
           ? state.provider === "openox" ? `${openoxSummaryHtml()}${openoxTablesHtml()}` : isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
           : `<div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(state.message || "暂无数据")}</div>`;
     const existingContent = panel.querySelector("[data-crb-content]");
-    if (state.status === "ok" && state.provider === "openox" && existingContent
+    const settingsDomMatches = Boolean(panel.querySelector(".crb-settings")) === state.settingsOpen;
+    if (state.status === "ok" && isOpenOx && existingContent && settingsDomMatches
       && existingContent.dataset.openoxStructure === openoxStructureSignature()) {
       updateOpenoxValues(existingContent);
-      const toolbarMetaElement = panel.querySelector("[data-toolbar-meta]");
-      if (toolbarMetaElement) toolbarMetaElement.textContent = toolbarMeta(rangeLabel);
+      syncPanelControls(rangeLabel);
+      applyPanelPosition();
       return;
     }
     if (state.settingsOpen && panel.querySelector(".crb-settings")) {
       const toolbar = panel.querySelector("[data-crb-toolbar]");
       const content = panel.querySelector("[data-crb-content]");
       if (toolbar) toolbar.innerHTML = toolbarHtml(isToday, rangeLabel);
-      if (content) content.innerHTML = body;
+      if (content) {
+        content.innerHTML = body;
+        if (isOpenOx && state.status === "ok") content.dataset.openoxStructure = openoxStructureSignature();
+        else delete content.dataset.openoxStructure;
+      }
+      syncPanelControls(rangeLabel);
+      applyPanelPosition();
       return;
     }
     panel.innerHTML = `
-      <div class="crb-head"><div><div class="crb-title">当前供应商用量</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${state.provider === "openox" ? ` · <span data-summary="keyCount">${numeric(state.openoxKeyCount)}</span> 个 KEY` : isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
+      <div class="crb-head ${isOpenOx ? "crb-head-openox" : ""}"><div><div class="crb-title">当前供应商用量</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${isOpenOx ? ` · <span data-summary="keyCount">${numeric(state.openoxKeyCount)}</span> 个 KEY` : isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions">${isOpenOx ? openoxActionsHtml(rangeLabel) : `<button type="button" class="crb-button" data-action="settings" aria-expanded="${state.settingsOpen}">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button>`}</div></div>
       ${settingsHtml()}
-      <div class="crb-toolbar" data-crb-toolbar>${toolbarHtml(isToday, rangeLabel)}</div>
+      ${isOpenOx ? "" : `<div class="crb-toolbar" data-crb-toolbar>${toolbarHtml(isToday, rangeLabel)}</div>`}
       <div data-crb-content>${body}</div>`;
     const content = panel.querySelector("[data-crb-content]");
-    if (content && state.provider === "openox" && state.status === "ok") content.dataset.openoxStructure = openoxStructureSignature();
+    if (content && isOpenOx && state.status === "ok") content.dataset.openoxStructure = openoxStructureSignature();
+    applyPanelPosition();
   }
 
   function render() {
@@ -696,7 +816,9 @@
     if (destroyed) return null;
     if (requestPromise) return requestPromise;
     const revision = configRevision;
-    if (state.status !== "ok") setState({ status: "loading", message: "正在读取用量" });
+    setState(state.status === "ok"
+      ? { refreshing: true }
+      : { refreshing: true, status: "loading", message: "正在读取用量" });
     // 默认按配置间隔；桥未就绪 / 失败 / 禁用时由本次结果自适应收缩
     let nextRetryMs = config.refreshMinutes * 60_000;
     const request = fetchUsage()
@@ -716,6 +838,7 @@
       })
       .finally(() => {
         if (requestPromise === request) requestPromise = null;
+        if (!destroyed) setState({ refreshing: false });
         if (!destroyed && revision !== configRevision) {
           previousSnapshot = null;
           void refresh(true);
@@ -758,6 +881,29 @@
     }
   }
 
+  function toggleUsageRow(row) {
+    const rowKey = row?.dataset?.usageRowKey;
+    if (!rowKey) return;
+    if (excludedRows.has(rowKey)) excludedRows.delete(rowKey);
+    else excludedRows.add(rowKey);
+    render();
+  }
+
+  function onPanelDoubleClick(event) {
+    const row = event.target?.closest?.("tr[data-usage-row-key]");
+    if (!row || !panel.contains(row)) return;
+    toggleUsageRow(row);
+    event.preventDefault();
+  }
+
+  function onPanelKeyDown(event) {
+    if (!["Enter", " "].includes(event.key)) return;
+    const row = event.target?.closest?.("tr[data-usage-row-key]");
+    if (!row || !panel.contains(row)) return;
+    toggleUsageRow(row);
+    event.preventDefault();
+  }
+
   async function saveOpenOxSettings() {
     // KEY 名称已废弃（所有 KEY 统一统计），只需保存 Token
     const token = panel.querySelector('[data-openox="token"]')?.value?.trim() || "";
@@ -794,6 +940,7 @@
   function destroy() {
     destroyed = true;
     document.removeEventListener("DOMContentLoaded", start);
+    window.removeEventListener("resize", applyPanelPosition);
     window.clearTimeout(timer);
     observer?.disconnect();
     root?.remove();
@@ -806,6 +953,7 @@
   const start = () => {
     if (destroyed) return;
     ensure();
+    window.addEventListener("resize", applyPanelPosition);
     observer = new MutationObserver(() => ensure());
     observer.observe(document.documentElement, { childList: true, subtree: true });
     void refresh(true);
