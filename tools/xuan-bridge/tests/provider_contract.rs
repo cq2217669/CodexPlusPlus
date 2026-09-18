@@ -297,7 +297,7 @@ fn openox_settings_are_scoped_to_the_active_relay_without_returning_the_token() 
 }
 
 #[test]
-fn openox_usage_filters_the_named_key_and_aggregates_cache_hits_by_model() {
+fn openox_usage_groups_every_key_and_aggregates_cache_hits_by_model() {
     let home = tempfile::tempdir().unwrap();
     let (address, requests) = serve_json_sequence(vec![
         json!({
@@ -316,23 +316,36 @@ fn openox_usage_filters_the_named_key_and_aggregates_cache_hits_by_model() {
         }),
         json!({
             "success": true,
+            "data": [
+                { "name": "codex-main", "status": "active", "hidden": false },
+                { "name": "another-key", "status": "active", "hidden": false },
+                { "name": "idle-key", "status": "active", "hidden": false },
+                { "name": "revoked-key", "status": "revoked", "hidden": false },
+                { "name": "hidden-key", "status": "active", "hidden": true }
+            ]
+        }),
+        json!({
+            "success": true,
             "data": {
                 "total": 3,
                 "items": [
                     {
                         "api_key_name": "codex-main", "model_id": "gpt-6-astra",
+                        "created_at": "2026-09-18T08:00:00Z",
                         "input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 900,
                         "cache_creation_tokens": 0, "cache_write_tokens": 0,
                         "total_tokens": 1020, "cost": "0.12"
                     },
                     {
                         "api_key_name": "codex-main", "model_id": "gpt-6-astra",
+                        "created_at": "2026-09-18T08:05:00Z",
                         "input_tokens": 400, "output_tokens": 30, "cache_read_tokens": 0,
                         "cache_creation_tokens": 50, "cache_write_tokens": 0,
                         "total_tokens": 480, "cost": "0.08"
                     },
                     {
                         "api_key_name": "another-key", "model_id": "gpt-5.6-terra",
+                        "created_at": "2026-09-18T07:55:00Z",
                         "input_tokens": 999, "output_tokens": 99, "cache_read_tokens": 999,
                         "total_tokens": 2097, "cost": "9.99"
                     }
@@ -356,6 +369,7 @@ fn openox_usage_filters_the_named_key_and_aggregates_cache_hits_by_model() {
         .unwrap(),
     )
     .unwrap();
+    // 只配置 Token：KEY 名称已不再参与过滤，面板按 KEY 分组展示全部调用
     write_config(
         &home,
         json!({
@@ -364,7 +378,6 @@ fn openox_usage_filters_the_named_key_and_aggregates_cache_hits_by_model() {
                 "xuan-usage": {
                     "openox": {
                         "openox-primary": {
-                            "keyName": "codex-main",
                             "token": "dashboard-token"
                         }
                     }
@@ -383,30 +396,55 @@ fn openox_usage_filters_the_named_key_and_aggregates_cache_hits_by_model() {
     );
     assert_eq!(response["result"]["provider"], "openox");
     assert_eq!(response["result"]["data"]["today"]["remaining"], 32.5);
-    assert_eq!(
-        response["result"]["data"]["models"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    let model = &response["result"]["data"]["models"][0];
-    assert_eq!(model["model"], "gpt-6-astra");
-    assert_eq!(model["requests"], 2);
-    assert_eq!(model["hitRequests"], 1);
-    assert_eq!(model["inputTokens"], 500);
-    assert_eq!(model["cacheReadTokens"], 900);
-    assert_eq!(model["cost"], 0.2);
-    assert!((model["hitRate"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
-    assert!((model["cacheTokenRate"].as_f64().unwrap() - (900.0 / 1400.0)).abs() < 1e-9);
+
+    // 每个 KEY 一组：BTreeMap 保证按 KEY 名稳定排序
+    assert_eq!(response["result"]["data"]["keyCount"], 3);
+    let keys = response["result"]["data"]["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 3);
+    assert_eq!(keys[0]["keyName"], "another-key");
+    assert_eq!(keys[1]["keyName"], "codex-main");
+    assert_eq!(keys[2]["keyName"], "idle-key");
+    assert!(keys[2]["models"].as_array().unwrap().is_empty());
+
+    let other = &keys[0]["models"][0];
+    assert_eq!(other["model"], "gpt-5.6-terra");
+    assert_eq!(other["requests"], 1);
+    assert_eq!(other["hitRequests"], 1);
+    assert_eq!(other["inputTokens"], 999);
+    assert_eq!(other["cacheReadTokens"], 999);
+    assert_eq!(other["cost"], 9.99);
+    assert_eq!(other["requestTime"], "2026-09-18T07:55:00Z");
+
+    let main = &keys[1]["models"][0];
+    assert_eq!(main["model"], "gpt-6-astra");
+    assert_eq!(main["requests"], 2);
+    assert_eq!(main["hitRequests"], 1);
+    assert_eq!(main["inputTokens"], 500);
+    assert_eq!(main["cacheReadTokens"], 900);
+    assert_eq!(main["cost"], 0.2);
+    assert_eq!(main["requestTime"], "2026-09-18T08:05:00Z");
+    assert!((main["hitRate"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
+    assert!((main["cacheTokenRate"].as_f64().unwrap() - (900.0 / 1400.0)).abs() < 1e-9);
+
+    // models 是所有 KEY 合并后的汇总，用于面板底部唯一的总合计表
+    let models = response["result"]["data"]["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["model"], "gpt-5.6-terra");
+    assert_eq!(models[1]["model"], "gpt-6-astra");
+    let total_requests = models
+        .iter()
+        .map(|row| row["requests"].as_u64().unwrap())
+        .sum::<u64>();
+    assert_eq!(total_requests, 3);
     assert!(!response.to_string().contains("dashboard-token"));
 
     let requests = requests.recv().unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0].starts_with("GET /api/v1/subscriptions/current "));
-    assert!(requests[1].starts_with("GET /api/v1/usage?"));
-    assert!(requests[1].contains("start_date=2026-09-18"));
-    assert!(requests[1].contains("end_date=2026-09-18"));
+    assert!(requests[1].starts_with("GET /api/v1/keys "));
+    assert!(requests[2].starts_with("GET /api/v1/usage?"));
+    assert!(requests[2].contains("start_date=2026-09-18"));
+    assert!(requests[2].contains("end_date=2026-09-18"));
     for request in requests {
         assert!(
             request

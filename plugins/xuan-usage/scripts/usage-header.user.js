@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v14";
+  const REVISION = "builtin-2026-09-18-v18";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -27,6 +27,7 @@
   let requestPromise = null;
   let previousSnapshot = null;
   let configRevision = 0;
+  let bridgeWaitStartedAt = Date.now();
   let config = loadConfig();
   let state = {
     status: "loading",
@@ -51,6 +52,8 @@
     periodRemaining: null,
     periodEnd: "",
     openoxKeyName: "",
+    openoxKeys: [],
+    openoxKeyCount: 0,
     tokenConfigured: false,
   };
 
@@ -144,6 +147,25 @@
     return Number.isNaN(date.getTime()) ? safeText(value) : date.toLocaleDateString();
   }
 
+  function formatRequestTime(value) {
+    if (!value) return "--";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return safeText(value);
+    return date.toLocaleString(undefined, {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  }
+
+  function latestRequestTime(left, right) {
+    if (!left) return safeText(right);
+    if (!right) return safeText(left);
+    const leftTime = Date.parse(left);
+    const rightTime = Date.parse(right);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return rightTime > leftTime ? safeText(right) : safeText(left);
+    return safeText(right) > safeText(left) ? safeText(right) : safeText(left);
+  }
+
   function daysUntil(endValue) {
     if (!endValue) return null;
     const end = new Date(endValue);
@@ -211,7 +233,7 @@
   }
 
   function totals(models) {
-    return models.reduce(
+    const result = models.reduce(
       (sum, item) => ({
         requests: sum.requests + item.requests,
         hitRequests: sum.hitRequests + numeric(item.hitRequests),
@@ -223,9 +245,11 @@
         totalTokens: sum.totalTokens + item.totalTokens,
         cost: sum.cost + item.cost,
         actualCost: sum.actualCost + item.actualCost,
+        requestTime: latestRequestTime(sum.requestTime, item.requestTime),
       }),
-      { requests: 0, hitRequests: 0, inputTokens: 0, cacheCreationTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, actualCost: 0 },
+      { requests: 0, hitRequests: 0, inputTokens: 0, cacheCreationTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0, actualCost: 0, requestTime: "" },
     );
+    return result;
   }
 
   function calculateSpeed(models, observedAt, context) {
@@ -261,6 +285,7 @@
       .crb-message{padding:18px 16px;color:color-mix(in srgb,CanvasText 66%,transparent)}.crb-error{color:#dc2626}.crb-table-wrap{overflow:visible}.crb-table{width:100%;border-collapse:collapse;white-space:nowrap}.crb-table th,.crb-table td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 10%,transparent);text-align:right}.crb-table th{background:Canvas;color:color-mix(in srgb,CanvasText 62%,transparent);font-size:11px;font-weight:600}.crb-table th:first-child,.crb-table td:first-child{text-align:left;max-width:190px;overflow:hidden;text-overflow:ellipsis}.crb-total td{font-weight:700;background:color-mix(in srgb,CanvasText 4%,Canvas)}
       .crb-settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 16px;border-bottom:1px solid color-mix(in srgb,currentColor 12%,transparent)}.crb-field{display:grid;gap:5px}.crb-field-wide{grid-column:1/-1}.crb-field span{font-size:12px;color:color-mix(in srgb,CanvasText 62%,transparent)}.crb-input{width:100%;padding:0 9px}.crb-settings-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px}
       .crb-head>div:first-child{min-width:0;overflow-wrap:anywhere}.crb-actions{flex-shrink:0}.crb-today{padding:16px}.crb-today strong{font-size:20px}
+      .crb-keys{display:grid;gap:16px;padding:14px 16px}.crb-key{min-width:0}.crb-key-title{margin-bottom:6px;font-size:12px;font-weight:600;color:color-mix(in srgb,CanvasText 70%,transparent)}
       @media(max-width:720px){#${ROOT_ID}{top:8px}.crb-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.crb-settings{grid-template-columns:1fr}.crb-field-wide,.crb-settings-actions{grid-column:auto}}
     `;
     document.documentElement.appendChild(style);
@@ -325,10 +350,10 @@
   function openoxSummaryHtml() {
     return `
       <div class="crb-summary">
-        <div class="crb-stat"><span>今日可用</span><strong>${escapeHtml(formatMoney(state.todayRemaining, state.unit))}</strong></div>
-        <div class="crb-stat"><span>今日已用</span><strong>${escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>
-        <div class="crb-stat"><span>周期剩余</span><strong>${escapeHtml(formatMoney(state.periodRemaining, state.unit))}</strong></div>
-        <div class="crb-stat"><span>${escapeHtml(expiryLabel(state.periodEnd))}</span><strong>${escapeHtml(formatDate(state.periodEnd))}</strong></div>
+        <div class="crb-stat"><span>今日可用</span><strong data-summary="todayRemaining">${escapeHtml(formatMoney(state.todayRemaining, state.unit))}</strong></div>
+        <div class="crb-stat"><span>今日已用</span><strong data-summary="todayUsed">${escapeHtml(formatMoney(state.todayUsed, state.unit))}</strong></div>
+        <div class="crb-stat"><span>周期剩余</span><strong data-summary="periodRemaining">${escapeHtml(formatMoney(state.periodRemaining, state.unit))}</strong></div>
+        <div class="crb-stat"><span data-summary="expiryLabel">${escapeHtml(expiryLabel(state.periodEnd))}</span><strong data-summary="periodEnd">${escapeHtml(formatDate(state.periodEnd))}</strong></div>
       </div>`;
   }
 
@@ -342,23 +367,78 @@
     return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>输入</th><th>缓存写入</th><th>缓存读取</th><th>输出</th><th>总 Token</th><th>标价</th><th>实际扣费</th><th>倍率</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${row({ ...sum, model: "合计", multiplier: sum.cost > 0 ? sum.actualCost / sum.cost : null }, "crb-total")}</tbody></table></div>`;
   }
 
-  function openoxTableHtml(models) {
-    if (!models.length) return `<div class="crb-message">统计范围内没有 KEY「${escapeHtml(state.openoxKeyName)}」的调用记录。</div>`;
-    const sum = totals(models);
-    const promptTokens = sum.inputTokens + sum.cacheReadTokens;
+  function openoxRowsHtml(models, totalModels = null) {
     const row = (item, className = "") => {
       const requests = numeric(item.requests);
-      const hitRequests = numeric(item.hitRequests);
-      const cacheTokenRate = item.cacheTokenRate == null
-        ? (numeric(item.inputTokens) + numeric(item.cacheReadTokens) > 0
-          ? numeric(item.cacheReadTokens) / (numeric(item.inputTokens) + numeric(item.cacheReadTokens)) : 0)
-        : item.cacheTokenRate;
       return `<tr class="${className}">
         <td title="${escapeHtml(item.model || "合计")}">${escapeHtml(item.model || "合计")}</td>
-        <td>${Math.round(requests)}</td><td>${Math.round(hitRequests)} / ${formatPercent(requests > 0 ? hitRequests / requests : 0)}</td><td>${formatTokens(item.inputTokens)}</td><td>${formatTokens(item.cacheReadTokens)}</td><td>${formatPercent(cacheTokenRate)}</td><td>${formatTokens(item.outputTokens)}</td><td>${escapeHtml(formatMoney(item.cost, state.unit))}</td>
+        <td data-field="requests">${Math.round(requests)}</td><td data-field="requestTime">${escapeHtml(formatRequestTime(item.requestTime))}</td><td data-field="inputTokens">${formatTokens(item.inputTokens)}</td><td data-field="cacheReadTokens">${formatTokens(item.cacheReadTokens)}</td><td data-field="outputTokens">${formatTokens(item.outputTokens)}</td><td data-field="cost">${escapeHtml(formatMoney(item.cost, state.unit))}</td>
       </tr>`;
     };
-    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>命中请求 / 比例</th><th>输入</th><th>缓存读取</th><th>Token 命中率</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${row({ ...sum, model: "合计", cacheTokenRate: promptTokens > 0 ? sum.cacheReadTokens / promptTokens : 0 }, "crb-total")}</tbody></table></div>`;
+    const sum = Array.isArray(totalModels) && totalModels.length ? totals(totalModels) : null;
+    const totalRow = sum
+      ? row({ ...sum, model: "全部 KEY 合计" }, "crb-total")
+      : "";
+    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>缓存读取</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${totalRow}</tbody></table></div>`;
+  }
+
+  // OpenOx：每个 KEY 一张明细表；仅在最后一张表底部追加所有 KEY 的共享合计行
+  function openoxTablesHtml() {
+    const keys = state.openoxKeys || [];
+    if (!keys.length) return '<div class="crb-message">当前没有活跃 KEY。</div>';
+    const sections = keys.map((item, index) => `
+      <div class="crb-key" data-key-section="${index}">
+        <div class="crb-key-title">KEY · ${escapeHtml(item.keyName || "未知 KEY")}</div>
+        ${item.models?.length || (index === keys.length - 1 && state.models.length)
+          ? openoxRowsHtml(item.models || [], index === keys.length - 1 ? state.models : null)
+          : '<div class="crb-message">今天没有调用记录。</div>'}
+      </div>`).join("");
+    return `<div class="crb-keys">${sections}</div>`;
+  }
+
+  function openoxStructureSignature() {
+    return JSON.stringify([
+      (state.openoxKeys || []).map((item) => [item.keyName, (item.models || []).map((model) => model.model), Boolean(item.models?.length)]),
+      Boolean(state.models.length),
+    ]);
+  }
+
+  function updateOpenoxValues(content) {
+    const fields = {
+      todayRemaining: formatMoney(state.todayRemaining, state.unit),
+      todayUsed: formatMoney(state.todayUsed, state.unit),
+      periodRemaining: formatMoney(state.periodRemaining, state.unit),
+      expiryLabel: expiryLabel(state.periodEnd),
+      periodEnd: formatDate(state.periodEnd),
+      keyCount: String(numeric(state.openoxKeyCount)),
+    };
+    Object.entries(fields).forEach(([name, value]) => {
+      const element = panel.querySelector(`[data-summary="${name}"]`);
+      if (element) element.textContent = value;
+    });
+    (state.openoxKeys || []).forEach((key, keyIndex) => {
+      const section = content.querySelector(`[data-key-section="${keyIndex}"]`);
+      if (!section) return;
+      const rows = section.querySelectorAll("tbody tr");
+      (key.models || []).forEach((model, modelIndex) => updateOpenoxRow(rows[modelIndex], model));
+      if (keyIndex === (state.openoxKeys || []).length - 1 && state.models.length) updateOpenoxRow(rows[rows.length - 1], totals(state.models), true);
+    });
+  }
+
+  function updateOpenoxRow(row, item) {
+    if (!row) return;
+    const values = {
+      requests: String(Math.round(numeric(item.requests))),
+      requestTime: formatRequestTime(item.requestTime),
+      inputTokens: formatTokens(item.inputTokens),
+      cacheReadTokens: formatTokens(item.cacheReadTokens),
+      outputTokens: formatTokens(item.outputTokens),
+      cost: formatMoney(item.cost, state.unit),
+    };
+    Object.entries(values).forEach(([field, value]) => {
+      const cell = row.querySelector(`[data-field="${field}"]`);
+      if (cell) cell.textContent = value;
+    });
   }
 
   function todayHtml() {
@@ -366,7 +446,11 @@
   }
 
   function toolbarHtml(isToday, rangeLabel) {
-    return `${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}<button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted">${state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel}</span>`;
+    return `${isToday ? "" : `<select class="crb-select" data-action="range" aria-label="统计范围"><option value="1" ${config.rangeDays === 1 ? "selected" : ""}>今天</option><option value="7" ${config.rangeDays === 7 ? "selected" : ""}>最近 7 天</option><option value="30" ${config.rangeDays === 30 ? "selected" : ""}>最近 30 天</option><option value="90" ${config.rangeDays === 90 ? "selected" : ""}>最近 90 天</option></select>`}<button type="button" class="crb-button" data-action="refresh">刷新</button><span class="crb-muted" data-toolbar-meta>${toolbarMeta(rangeLabel)}</span>`;
+  }
+
+  function toolbarMeta(rangeLabel) {
+    return state.updatedAt ? `更新于 ${state.updatedAt.toLocaleTimeString()} · ${rangeLabel}` : rangeLabel;
   }
 
   function settingsHtml() {
@@ -378,8 +462,7 @@
       return `<div class="crb-settings"><div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(message)}</div></div>`;
     }
     return `<div class="crb-settings">
-      ${state.provider === "openox" ? `<label class="crb-field"><span>KEY 名称</span><input class="crb-input" data-openox="keyName" value="${escapeHtml(state.openoxKeyName)}" placeholder="OpenOx 令牌名称"></label>
-      <label class="crb-field"><span>Token</span><input class="crb-input" data-openox="token" type="password" value="" placeholder="${state.tokenConfigured ? "已配置，留空不修改" : "登录 Token"}" autocomplete="off"></label>` : state.provider === "owlai" ? "" : `<label class="crb-field crb-field-wide"><span>余额接口路径</span><input class="crb-input" data-config="usagePath" value="${escapeHtml(config.usagePath)}" placeholder="/v1/usage"></label>
+      ${state.provider === "openox" ? `<label class="crb-field crb-field-wide"><span>Token</span><input class="crb-input" data-openox="token" type="password" value="" placeholder="${state.tokenConfigured ? "已配置，留空不修改" : "登录 Token"}" autocomplete="off"></label>` : state.provider === "owlai" ? "" : `<label class="crb-field crb-field-wide"><span>余额接口路径</span><input class="crb-input" data-config="usagePath" value="${escapeHtml(config.usagePath)}" placeholder="/v1/usage"></label>
       <label class="crb-field"><span>统计时区</span><input class="crb-input" data-config="timezone" value="${escapeHtml(config.timezone)}"></label>`}
       <label class="crb-field"><span>刷新间隔（分钟）</span><input class="crb-input" data-config="refreshMinutes" type="number" min="1" max="60" value="${config.refreshMinutes}"></label>
       <div class="crb-settings-actions">${state.provider === "openox" ? "" : `<button type="button" class="crb-button" data-action="reset">恢复默认</button>`}<button type="button" class="crb-button" data-action="save">保存并刷新</button></div>
@@ -400,8 +483,16 @@
       : state.status === "loading"
         ? '<div class="crb-message">正在读取用量…</div>'
         : state.status === "ok"
-          ? state.provider === "openox" ? `${openoxSummaryHtml()}${openoxTableHtml(state.models)}` : isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
+          ? state.provider === "openox" ? `${openoxSummaryHtml()}${openoxTablesHtml()}` : isToday ? todayHtml() : `${summaryHtml(state.models)}${tableHtml(state.models)}`
           : `<div class="crb-message ${state.status === "failed" ? "crb-error" : ""}">${escapeHtml(state.message || "暂无数据")}</div>`;
+    const existingContent = panel.querySelector("[data-crb-content]");
+    if (state.status === "ok" && state.provider === "openox" && existingContent
+      && existingContent.dataset.openoxStructure === openoxStructureSignature()) {
+      updateOpenoxValues(existingContent);
+      const toolbarMetaElement = panel.querySelector("[data-toolbar-meta]");
+      if (toolbarMetaElement) toolbarMetaElement.textContent = toolbarMeta(rangeLabel);
+      return;
+    }
     if (state.settingsOpen && panel.querySelector(".crb-settings")) {
       const toolbar = panel.querySelector("[data-crb-toolbar]");
       const content = panel.querySelector("[data-crb-content]");
@@ -410,10 +501,12 @@
       return;
     }
     panel.innerHTML = `
-      <div class="crb-head"><div><div class="crb-title">当前供应商用量</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${state.provider === "openox" ? ` · KEY ${escapeHtml(state.openoxKeyName || "未配置")}` : isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
+      <div class="crb-head"><div><div class="crb-title">当前供应商用量</div><div class="crb-sub">${escapeHtml(state.profileName || "当前激活中转")}${state.provider === "openox" ? ` · <span data-summary="keyCount">${numeric(state.openoxKeyCount)}</span> 个 KEY` : isToday ? " · 当前密钥" : state.planName ? ` · ${escapeHtml(state.planName)}` : ""}</div></div><div class="crb-actions"><button type="button" class="crb-button" data-action="settings">设置</button><button type="button" class="crb-button crb-icon" data-action="close" title="关闭" aria-label="关闭">×</button></div></div>
       ${settingsHtml()}
       <div class="crb-toolbar" data-crb-toolbar>${toolbarHtml(isToday, rangeLabel)}</div>
       <div data-crb-content>${body}</div>`;
+    const content = panel.querySelector("[data-crb-content]");
+    if (content && state.provider === "openox" && state.status === "ok") content.dataset.openoxStructure = openoxStructureSignature();
   }
 
   function render() {
@@ -455,37 +548,26 @@
     }).finally(() => clearTimeout(timeout));
   }
 
-  // 桥握手探针：用最轻的 settings 调用确认桥适配器和 native 通道都就绪。
-  // settings 端只读本地 JSON，几乎瞬时返回；超时即视为桥不可用，避免卡住 UI。
-  async function probeBridge(timeoutMs = 1500) {
-    const api = window.__xuanPluginBridge?.["xuan-usage"];
-    if (typeof api !== "function") return false;
-    let timer;
-    try {
-      const result = await Promise.race([
-        Promise.resolve().then(() => api("/v1/usage/settings", {})),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error("probe-timeout")), timeoutMs);
-        }),
-      ]);
-      return Boolean(result && result.status !== "failed");
-    } catch (_) {
-      return false;
-    } finally {
-      if (timer) clearTimeout(timer);
+  // 等待宿主把桥函数注入页面，不额外发送 settings 探针，避免冷启动重复 RPC。
+  async function waitForBridge(timeoutMs = 2500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (typeof window.__xuanPluginBridge?.["xuan-usage"] === "function") return true;
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
     }
+    return typeof window.__xuanPluginBridge?.["xuan-usage"] === "function";
   }
 
   async function fetchUsage() {
-    // 1) 桥握手：未就绪直接停留在 "正在连接用量插件…" 状态，避免对未在线的桥发起业务请求
-    const ready = await probeBridge(1500);
+    const ready = await waitForBridge(2500);
     if (!ready) {
       previousSnapshot = null;
+      const timedOut = Date.now() - bridgeWaitStartedAt >= 15_000;
       return {
-        status: "loading",
+        status: timedOut ? "failed" : "loading",
         provider: "unknown",
         bridgeReady: false,
-        message: "正在连接用量插件…",
+        message: timedOut ? "用量插件连接超时；仍会自动重试，也可重新打开任务" : "正在连接用量插件…",
         profileName: state.profileName || "",
         balance: null,
         unit: state.unit,
@@ -502,10 +584,12 @@
         periodRemaining: null,
         periodEnd: "",
         openoxKeyName: "",
+        openoxKeys: [],
+        openoxKeyCount: 0,
         tokenConfigured: false,
       };
     }
-    // 2) 桥已就绪：在本次结果合并到 state 时保留 bridgeReady=true
+    bridgeWaitStartedAt = Date.now();
     state.bridgeReady = true;
     // 旧的自定义时区不应阻止 OwlAI 查询；通用方案仍在收到响应后校验。
     let range;
@@ -514,12 +598,12 @@
     const settings = await callBridge("/relay-balance/settings", {});
     if (!settings || settings.status === "failed") throw new Error(settings?.message || "读取用量设置失败");
     if (settings.disabled) return { status: "disabled", message: settings.message || "当前中转不支持余额查询", profileName: settings.profileName || "", provider: settings.provider || "generic", bridgeReady: true };
-    if (settings.provider === "openox" && (!settings.keyName || !settings.tokenConfigured)) {
+    if (settings.provider === "openox" && !settings.tokenConfigured) {
       previousSnapshot = null;
       return {
         status: "disabled", provider: "openox", profileName: settings.profileName || "",
-        openoxKeyName: settings.keyName || "", tokenConfigured: Boolean(settings.tokenConfigured),
-        message: "请在设置中填写 OpenOx KEY 名称和 Token",
+        openoxKeyName: settings.keyName || "", openoxKeys: [], openoxKeyCount: 0, tokenConfigured: Boolean(settings.tokenConfigured),
+        message: "请在设置中填写 OpenOx Token",
       };
     }
     // OpenOx 站点只允许按天聚合，强制按当天查询，给后端 start_date=end_date=今天
@@ -533,7 +617,7 @@
     });
     if (result?.status === "failed" && ["owlai", "openox"].includes(result.provider)) {
       previousSnapshot = null;
-      return { status: "failed", provider: result.provider, openoxKeyName: settings.keyName || "", tokenConfigured: Boolean(settings.tokenConfigured), todayUsed: null, balance: null, planName: "", models: [], speedPerHour: null, updatedAt: null, profileName: result.profileName || "", message: result.message || "今日用量查询失败" };
+      return { status: "failed", provider: result.provider, openoxKeyName: settings.keyName || "", openoxKeys: [], openoxKeyCount: 0, tokenConfigured: Boolean(settings.tokenConfigured), todayUsed: null, balance: null, planName: "", models: [], speedPerHour: null, updatedAt: null, profileName: result.profileName || "", message: result.message || "今日用量查询失败" };
     }
     if (!result || result.status === "failed") throw new Error(result?.message || "用量请求失败");
     if (result.disabled) return { status: "disabled", message: result.message || "当前中转不支持余额查询", profileName: result.profileName || "", provider: result.provider || "generic" };
@@ -554,28 +638,32 @@
     if (result.provider === "openox") {
       previousSnapshot = null;
       const payload = result.data || {};
-      const models = Array.isArray(payload.models) ? payload.models.map((item) => ({
+      const toModels = (list) => Array.isArray(list) ? list.map((item) => ({
         model: safeText(item?.model || "未知模型"),
         requests: numeric(item?.requests),
-        hitRequests: numeric(item?.hitRequests),
-        hitRate: numeric(item?.hitRate),
+        requestTime: safeText(item?.requestTime),
         inputTokens: numeric(item?.inputTokens),
         outputTokens: numeric(item?.outputTokens),
         cacheCreationTokens: numeric(item?.cacheCreationTokens),
         cacheWriteTokens: numeric(item?.cacheWriteTokens),
         cacheReadTokens: numeric(item?.cacheReadTokens),
-        cacheTokenRate: numeric(item?.cacheTokenRate),
         totalTokens: numeric(item?.totalTokens),
         cost: numeric(item?.cost),
         actualCost: numeric(item?.actualCost ?? item?.cost),
       })) : [];
+      // 每个 KEY 一组明细；models 是后端合并后的总合计（所有 KEY 共用额度）
+      const openoxKeys = Array.isArray(payload.keys)
+        ? payload.keys.map((item) => ({ keyName: safeText(item?.keyName || "未知 KEY"), models: toModels(item?.models) }))
+        : [];
       return {
         status: "ok", provider: "openox", message: "已更新",
         profileName: result.profileName || "", planName: safeText(payload.planName), unit: payload.unit || "USD",
         openoxKeyName: safeText(payload.keyName || settings.keyName), tokenConfigured: true,
         todayLimit: payload.today?.limit, todayUsed: payload.today?.used, todayRemaining: payload.today?.remaining,
         periodLimit: payload.period?.limit, periodUsed: payload.period?.used, periodRemaining: payload.period?.remaining,
-        periodEnd: safeText(payload.period?.end), models, speedPerHour: null, updatedAt: new Date(),
+        periodEnd: safeText(payload.period?.end),
+        models: toModels(payload.models), openoxKeys, openoxKeyCount: numeric(payload.keyCount ?? openoxKeys.length),
+        speedPerHour: null, updatedAt: new Date(),
       };
     }
     if (rangeError) throw rangeError;
@@ -601,13 +689,13 @@
     if (destroyed) return null;
     if (requestPromise) return requestPromise;
     const revision = configRevision;
-    setState({ status: "loading", message: "正在读取用量" });
+    if (state.status !== "ok") setState({ status: "loading", message: "正在读取用量" });
     // 默认按配置间隔；桥未就绪 / 失败 / 禁用时由本次结果自适应收缩
     let nextRetryMs = config.refreshMinutes * 60_000;
     const request = fetchUsage()
       .then((next) => {
         if (!destroyed && revision === configRevision) setState(next);
-        if (next?.bridgeReady === false) nextRetryMs = 3000;
+        if (next?.bridgeReady === false) nextRetryMs = 500;
         else if (next?.status === "ok") nextRetryMs = config.refreshMinutes * 60_000;
         else if (next?.status === "failed" || next?.status === "disabled") nextRetryMs = 30_000;
         else nextRetryMs = config.refreshMinutes * 60_000;
@@ -664,21 +752,16 @@
   }
 
   async function saveOpenOxSettings() {
-    const keyName = panel.querySelector('[data-openox="keyName"]')?.value?.trim() || "";
+    // KEY 名称已废弃（所有 KEY 统一统计），只需保存 Token
     const token = panel.querySelector('[data-openox="token"]')?.value?.trim() || "";
-    if (!keyName) {
-      setState({ status: "failed", message: "请填写 OpenOx KEY 名称" });
-      return;
-    }
     setState({ status: "loading", message: "正在保存 OpenOx 设置" });
     try {
-      const result = await callBridge("/relay-balance/settings/set", { keyName, token });
+      const result = await callBridge("/relay-balance/settings/set", { token });
       if (!result || result.status === "failed") throw new Error(result?.message || "OpenOx 设置保存失败");
       previousSnapshot = null;
       setState({
         settingsOpen: false,
         provider: "openox",
-        openoxKeyName: result.keyName || keyName,
         tokenConfigured: Boolean(result.tokenConfigured),
       });
       void refresh(true);

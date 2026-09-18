@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -606,6 +606,7 @@ struct UsageConnection {
 #[derive(Debug, Default)]
 struct OpenOxModelUsage {
     requests: u64,
+    latest_request_at: String,
     hit_requests: u64,
     input_tokens: u64,
     output_tokens: u64,
@@ -783,14 +784,16 @@ fn update_usage_settings(params: &Value) -> Result<Value, RpcError> {
             "只有当前中转为 OpenOx 时才能保存该设置",
         ));
     }
+    // KEY 名称已不再用于过滤（所有 KEY 统一统计），仅作可选备注保留
     let key_name = params
         .get("keyName")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or_default();
-    if key_name.is_empty() || key_name.chars().count() > 120 {
-        return Err(error("invalid_request", "请填写有效的 OpenOx KEY 名称"));
+    if key_name.chars().count() > 120 {
+        return Err(error("invalid_request", "OpenOx KEY 名称过长"));
     }
+    // Token 留空表示保持已配置的值不变，仅在提供时校验格式
     let token = params
         .get("token")
         .and_then(Value::as_str)
@@ -979,14 +982,87 @@ fn usage_f64(value: Option<&Value>) -> f64 {
         .unwrap_or_default()
 }
 
-fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, RpcError> {
-    let key_name = connection.openox_key_name.trim();
-    if key_name.is_empty() {
-        return Err(error(
-            "configuration_error",
-            "请先在用量设置中填写 OpenOx KEY 名称",
-        ));
+fn openox_usage_row(model: String, usage: OpenOxModelUsage) -> Value {
+    let prompt_tokens = usage.input_tokens.saturating_add(usage.cache_read_tokens);
+    json!({
+        "model": model,
+        "requests": usage.requests,
+        "requestTime": usage.latest_request_at,
+        "hitRequests": usage.hit_requests,
+        "hitRate": if usage.requests > 0 { usage.hit_requests as f64 / usage.requests as f64 } else { 0.0 },
+        "inputTokens": usage.input_tokens,
+        "outputTokens": usage.output_tokens,
+        "cacheCreationTokens": usage.cache_creation_tokens,
+        "cacheWriteTokens": usage.cache_write_tokens,
+        "cacheReadTokens": usage.cache_read_tokens,
+        "cacheTokenRate": if prompt_tokens > 0 { usage.cache_read_tokens as f64 / prompt_tokens as f64 } else { 0.0 },
+        "totalTokens": usage.total_tokens,
+        "cost": usage.cost,
+        "actualCost": usage.cost,
+    })
+}
+
+fn openox_model_rows(models: HashMap<String, OpenOxModelUsage>) -> Vec<Value> {
+    let mut rows = models
+        .into_iter()
+        .map(|(model, usage)| openox_usage_row(model, usage))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        usage_f64(right.get("cost"))
+            .total_cmp(&usage_f64(left.get("cost")))
+            .then_with(|| {
+                usage_u64(right.get("totalTokens")).cmp(&usage_u64(left.get("totalTokens")))
+            })
+    });
+    rows
+}
+
+fn accumulate_openox_usage(usage: &mut OpenOxModelUsage, item: &Value, cache_read_tokens: u64) {
+    usage.requests += 1;
+    if let Some(created_at) = item
+        .get("created_at")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && created_at > usage.latest_request_at.as_str()
+    {
+        usage.latest_request_at = created_at.to_string();
     }
+    usage.hit_requests += u64::from(cache_read_tokens > 0);
+    usage.input_tokens += usage_u64(item.get("input_tokens"));
+    usage.output_tokens += usage_u64(item.get("output_tokens"));
+    usage.cache_creation_tokens += usage_u64(item.get("cache_creation_tokens"));
+    usage.cache_write_tokens += usage_u64(item.get("cache_write_tokens"));
+    usage.cache_read_tokens += cache_read_tokens;
+    usage.total_tokens += usage_u64(item.get("total_tokens"));
+    usage.cost += usage_f64(item.get("cost"));
+}
+
+fn openox_active_key_names(payload: &Value) -> Result<Vec<String>, RpcError> {
+    let keys = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| error("invalid_response", "OpenOx KEY 列表缺少 data"))?;
+    Ok(keys
+        .iter()
+        .filter(|item| item.get("hidden").and_then(Value::as_bool) != Some(true))
+        .filter(|item| {
+            item.get("status")
+                .and_then(Value::as_str)
+                .is_none_or(|status| status.eq_ignore_ascii_case("active"))
+        })
+        .filter_map(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+        })
+        .collect())
+}
+
+fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, RpcError> {
+    // 同一个套餐下的所有 KEY 共用额度，因此不再按单个 KEY 名称过滤，改为按 KEY 分组统计。
     let token = connection.openox_token.trim();
     if !valid_header_secret(token) {
         return Err(error(
@@ -1006,8 +1082,22 @@ fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, R
         openox_url("/api/v1/subscriptions/current"),
         &[],
     )?;
+    let key_names = openox_active_key_names(&openox_get_json(
+        &client,
+        token,
+        openox_url("/api/v1/keys"),
+        &[],
+    )?)?;
+    let active_key_names = key_names.iter().cloned().collect::<HashSet<_>>();
 
-    let mut models: HashMap<String, OpenOxModelUsage> = HashMap::new();
+    // KEY 名 -> 模型 -> 用量；BTreeMap 保证 KEY 顺序稳定
+    let mut per_key = key_names
+        .iter()
+        .cloned()
+        .map(|name| (name, HashMap::new()))
+        .collect::<BTreeMap<String, HashMap<String, OpenOxModelUsage>>>();
+    // 所有 KEY 合并后的模型用量，用于面板底部的总合计表
+    let mut totals: HashMap<String, OpenOxModelUsage> = HashMap::new();
     let mut page = 1_u64;
     let mut seen = 0_u64;
     loop {
@@ -1032,7 +1122,14 @@ fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, R
             .ok_or_else(|| error("invalid_response", "OpenOx 用量明细缺少 items"))?;
         let total = usage_u64(payload.pointer("/data/total"));
         for item in items {
-            if item.get("api_key_name").and_then(Value::as_str) != Some(key_name) {
+            let key = item
+                .get("api_key_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("未知 KEY")
+                .to_string();
+            if !active_key_names.contains(&key) {
                 continue;
             }
             let model = item
@@ -1043,16 +1140,18 @@ fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, R
                 .unwrap_or("未知模型")
                 .to_string();
             let cache_read_tokens = usage_u64(item.get("cache_read_tokens"));
-            let usage = models.entry(model).or_default();
-            usage.requests += 1;
-            usage.hit_requests += u64::from(cache_read_tokens > 0);
-            usage.input_tokens += usage_u64(item.get("input_tokens"));
-            usage.output_tokens += usage_u64(item.get("output_tokens"));
-            usage.cache_creation_tokens += usage_u64(item.get("cache_creation_tokens"));
-            usage.cache_write_tokens += usage_u64(item.get("cache_write_tokens"));
-            usage.cache_read_tokens += cache_read_tokens;
-            usage.total_tokens += usage_u64(item.get("total_tokens"));
-            usage.cost += usage_f64(item.get("cost"));
+            // 该 KEY 的模型明细
+            accumulate_openox_usage(
+                per_key
+                    .entry(key)
+                    .or_default()
+                    .entry(model.clone())
+                    .or_default(),
+                item,
+                cache_read_tokens,
+            );
+            // 所有 KEY 合并后的同模型汇总
+            accumulate_openox_usage(totals.entry(model).or_default(), item, cache_read_tokens);
         }
         seen = seen.saturating_add(items.len() as u64);
         if items.is_empty() || seen >= total {
@@ -1067,34 +1166,16 @@ fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, R
         }
     }
 
-    let mut model_rows = models
+    // 每个 KEY 一组模型明细（供面板按 KEY 分表展示）
+    let key_rows = per_key
         .into_iter()
-        .map(|(model, usage)| {
-            let prompt_tokens = usage.input_tokens.saturating_add(usage.cache_read_tokens);
+        .map(|(name, models)| {
             json!({
-                "model": model,
-                "requests": usage.requests,
-                "hitRequests": usage.hit_requests,
-                "hitRate": if usage.requests > 0 { usage.hit_requests as f64 / usage.requests as f64 } else { 0.0 },
-                "inputTokens": usage.input_tokens,
-                "outputTokens": usage.output_tokens,
-                "cacheCreationTokens": usage.cache_creation_tokens,
-                "cacheWriteTokens": usage.cache_write_tokens,
-                "cacheReadTokens": usage.cache_read_tokens,
-                "cacheTokenRate": if prompt_tokens > 0 { usage.cache_read_tokens as f64 / prompt_tokens as f64 } else { 0.0 },
-                "totalTokens": usage.total_tokens,
-                "cost": usage.cost,
-                "actualCost": usage.cost,
+                "keyName": name,
+                "models": openox_model_rows(models),
             })
         })
         .collect::<Vec<_>>();
-    model_rows.sort_by(|left, right| {
-        usage_f64(right.get("cost"))
-            .total_cmp(&usage_f64(left.get("cost")))
-            .then_with(|| {
-                usage_u64(right.get("totalTokens")).cmp(&usage_u64(left.get("totalTokens")))
-            })
-    });
 
     let subscription_data = subscription
         .pointer("/data/subscription")
@@ -1106,7 +1187,8 @@ fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, R
         .unwrap_or(&Value::Null);
     Ok(json!({
         "unit": "USD",
-        "keyName": key_name,
+        "keyName": connection.openox_key_name.trim(),
+        "keyCount": key_names.len(),
         "planName": subscription_data.get("plan_name").and_then(Value::as_str).unwrap_or_default(),
         "status": subscription_data.get("status").and_then(Value::as_str).unwrap_or_default(),
         "today": {
@@ -1120,7 +1202,9 @@ fn query_openox(connection: &UsageConnection, params: &Value) -> Result<Value, R
             "remaining": quota_number(subscription_data.get("period_remaining")),
             "end": subscription_data.get("period_end").and_then(Value::as_str).unwrap_or_default(),
         },
-        "models": model_rows,
+        // 所有 KEY 合并后的模型汇总，用于面板底部唯一的总合计表
+        "models": openox_model_rows(totals),
+        "keys": key_rows,
     }))
 }
 
