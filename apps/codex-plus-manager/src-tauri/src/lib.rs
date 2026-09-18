@@ -71,6 +71,7 @@ pub fn run() {
             commands::launch_codex_plus,
             commands::restart_codex_plus,
             commands::load_settings,
+            commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
             commands::test_vlm,
@@ -409,7 +410,7 @@ async fn apply_dream_skin_from_tray() -> anyhow::Result<()> {
     )?;
     codex_plus_core::dream_skin_runtime::apply_dream_skin_live(
         DREAM_SKIN_DEBUG_PORT,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
     )
     .await?;
     Ok(())

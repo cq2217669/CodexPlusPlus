@@ -83,6 +83,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
+import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   clearModelMetadataForSlug,
@@ -113,7 +114,12 @@ import {
 } from "./model-windows";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
-import { resolveProviderSyncCompletion } from "./provider-sync-flow";
+import { resolveProviderName } from "./provider-name";
+import {
+  providerSyncStreamPercent,
+  resolveProviderSyncCompletion,
+  type ProviderSyncStreamProgress,
+} from "./provider-sync-flow";
 import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus } from "./launch-status";
 import {
@@ -184,6 +190,7 @@ type LaunchStatus = {
   debug_port: number | null;
   helper_port: number | null;
   codex_app: string | null;
+  aumid: string | null;
 };
 
 type OverviewResult = CommandResult<{
@@ -252,6 +259,7 @@ type BackendSettings = {
   codexAppUpstreamWorktreeCreate: boolean;
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeMenuLocalization: boolean;
+  codexAppNativeBrowserRequireIdentification: boolean;
   codexAppServiceTierControls: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppStepwiseEnabled: boolean;
@@ -366,7 +374,9 @@ export type RelayProfile = {
   userAgent: string;
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
+  noAuth: boolean;
   modelRoutes?: RelayModelRoute[];
+  standardOpenaiProtocol: boolean;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -1010,6 +1020,7 @@ const defaultSettings: BackendSettings = {
   codexAppUpstreamWorktreeCreate: true,
   codexAppNativeMenuPlacement: true,
   codexAppNativeMenuLocalization: true,
+  codexAppNativeBrowserRequireIdentification: false,
   codexAppServiceTierControls: false,
   codexAppPetRealMouseLook: false,
   codexAppStepwiseEnabled: false,
@@ -1078,7 +1089,9 @@ const defaultSettings: BackendSettings = {
       vlmBaseUrl: "",
       userAgent: "",
       sub2apiEnabled: false,
+      noAuth: false,
       sub2apiMultiplier: "",
+      standardOpenaiProtocol: false,
     },
   ],
   relayCommonConfigContents: "",
@@ -2464,10 +2477,11 @@ export function App() {
         title: kind === "workDir" ? t("选择微信连接工作目录") : t("选择 Codex CLI"),
       });
       if (typeof selected !== "string" || !selected.trim()) return;
-      setSettingsForm((current) => ({
-        ...current,
-        [kind === "workDir" ? "weixinConnectWorkDir" : "weixinConnectCodexPath"]: selected.trim(),
-      }));
+      if (kind === "codexPath") {
+        await saveSettingsValue({ ...settingsForm, weixinConnectCodexPath: selected.trim() }, false);
+      } else {
+        setSettingsForm((current) => ({ ...current, weixinConnectWorkDir: selected.trim() }));
+      }
     } catch (error) {
       showNotice(t("微信连接"), stringifyError(error), "failed");
     }
@@ -2478,10 +2492,8 @@ export function App() {
     if (!result) return;
     const path = result.path?.trim();
     if (isSuccessStatus(result.status) && path) {
-      setSettingsForm((current) => ({
-        ...current,
-        weixinConnectCodexPath: path,
-      }));
+      const saved = await saveSettingsValue({ ...settingsForm, weixinConnectCodexPath: path }, false);
+      if (!saved) return;
     }
     showResultNotice(t("Codex CLI 路径"), result);
   };
@@ -2529,21 +2541,41 @@ export function App() {
     if (providerSyncProgress.active) return;
     setProviderSyncProgress({
       active: true,
-      percent: 12,
-      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
+      percent: 0,
+      message: t("正在扫描历史会话与索引…"),
       result: null,
     });
-    const progressTimer = window.setInterval(() => {
-      setProviderSyncProgress((current) => {
-        if (!current.active) return current;
-        return {
-          ...current,
-          percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
-        };
-      });
-    }, 350);
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await listen<ProviderSyncStreamProgress>("provider-sync-progress", (event) => {
+        const progress = event.payload;
+        const message = (() => {
+          switch (progress.phase) {
+            case "scanning":
+              return t("正在扫描历史会话与索引…");
+            case "planning":
+              return t("正在检查会话 provider 标记…");
+            case "backing_up":
+              return t("正在创建修复备份…");
+            case "rewriting":
+              return t("正在写入会话修复…");
+            case "updating_indexes":
+              return t("正在更新会话索引…");
+            case "rolling_back":
+              return t("正在回滚已写入的会话…");
+            case "complete":
+              return t("正在完成历史会话修复…");
+          }
+        })();
+        setProviderSyncProgress((current) => {
+          if (!current.active) return current;
+          return {
+            ...current,
+            percent: Math.max(current.percent, providerSyncStreamPercent(progress)),
+            message,
+          };
+        });
+      });
       const targetProvider = selectedProviderSyncTarget || undefined;
       const result = await run(() =>
         call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
@@ -2630,8 +2662,17 @@ export function App() {
           result: null,
         });
       }
+    } catch (error) {
+      const message = stringifyError(error);
+      setProviderSyncProgress({
+        active: false,
+        percent: 100,
+        message,
+        result: null,
+      });
+      showNotice(t("历史会话修复"), message, "failed");
     } finally {
-      window.clearInterval(progressTimer);
+      unlisten?.();
     }
   };
 
@@ -4770,6 +4811,19 @@ function EnhanceScreen({
           </div>
           <div className="enhance-feature-groups">
             <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
+              {isWindowsPlatform ? <>
+                <FeatureToggle
+                  title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
+                  detail={t("仅 Windows Edge / Chrome；下次启动 Codex++ 时应用。扩展可能持久保留请求标识。")}
+                  checked={form.codexAppNativeBrowserRequireIdentification}
+                  disabled={!masterEnabled}
+                  onChange={(value) => {
+                    if (value && !window.confirm(nativeBrowserConsent)) return;
+                    setEnhanceFlag("codexAppNativeBrowserRequireIdentification", value);
+                  }}
+                />
+                <NativeBrowserStatusView />
+              </> : null}
               <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
               <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
               <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
@@ -7812,7 +7866,7 @@ function RelayProfileEditor({
                   Chat Completions
                 </button>
               </div>
-            </Field>
+              </Field>
             <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
               <AppSelect
                 value={sessionProvider}
@@ -8107,6 +8161,24 @@ function RelayProfileEditor({
               {t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
             </p>
           </section>
+        ) : null}
+        {showApiFields ? (
+          <label className="switch-row compact relay-switch-row relay-field-standard">
+            <input
+              checked={profile.standardOpenaiProtocol}
+              onChange={(event) =>
+                updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
+              }
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("纯标准协议")}</strong>
+              <small>
+                {t("强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。")}
+              </small>
+            </span>
+            <ToggleVisual />
+          </label>
         ) : null}
         {showApiFields ? (
           <section className="relay-config-section relay-field-model-routes">
@@ -10113,6 +10185,7 @@ function LatestLaunch({ status }: { status: LaunchStatus | null }) {
       <Metric label="Debug" value={String(status.debug_port ?? "-")} />
       <Metric label="Helper" value={String(status.helper_port ?? "-")} />
       <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
+      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
     </div>
   );
 }
@@ -10936,7 +11009,9 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmBaseUrl: "",
             userAgent: "",
             sub2apiEnabled: false,
+            noAuth: false,
             sub2apiMultiplier: "",
+            standardOpenaiProtocol: false,
           },
         ];
   const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
@@ -11035,7 +11110,9 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         modelMetadata: "",
         modelRoutes: [],
         sub2apiEnabled: false,
+        noAuth: false,
         sub2apiMultiplier: "",
+        standardOpenaiProtocol: false,
       },
       null,
     );
@@ -11069,9 +11146,9 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelMetadata: profile.modelMetadata || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
-    sub2apiEnabled: profile.sub2apiEnabled === true,
-    sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
-    aggregate: null,
+    sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
+    sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
+    standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -11876,8 +11953,10 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmBaseUrl: "",
     userAgent: "",
     sub2apiEnabled: false,
+    noAuth: false,
     sub2apiMultiplier: "",
     modelRoutes: [],
+    standardOpenaiProtocol: false,
   };
   return withGeneratedRelayFiles(next);
 }
@@ -11917,8 +11996,10 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       vlmBaseUrl: "",
       userAgent: "",
       sub2apiEnabled: false,
+      noAuth: false,
       sub2apiMultiplier: "",
       modelRoutes: [],
+      standardOpenaiProtocol: false,
       aggregate: {
         strategy: "failover",
         members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
@@ -12046,7 +12127,9 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     configContents: "",
     authContents: "",
     sub2apiEnabled: false,
+    noAuth: false,
     sub2apiMultiplier: "",
+    standardOpenaiProtocol: false,
     aggregate,
   };
 }

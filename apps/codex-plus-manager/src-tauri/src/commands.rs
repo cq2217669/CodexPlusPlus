@@ -18,6 +18,7 @@ use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tauri::Emitter;
 
 use crate::install::{self, InstallActionResult, InstallOptions};
 
@@ -84,6 +85,7 @@ struct WeixinQrSession {
 
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
+    codex_path: codex_plus_core::connect::WeixinCodexPath,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -840,8 +842,27 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
+    #[cfg(windows)]
+    let launchers = match codex_plus_core::watcher::LauncherExitSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
+    };
+    if let Err(error) = stop_codex_plus_for_restart(
+        || codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port),
+        || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
+        || {
+            #[cfg(windows)]
+            launchers.wait_for_exit(std::time::Duration::from_secs(10))?;
+            #[cfg(not(windows))]
+            codex_plus_core::watcher::stop_launcher_processes_and_wait();
+            Ok(())
+        },
+    ) {
+        return failed(
+            &format!("Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"),
+            json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+        );
+    }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.restart_requested",
@@ -894,6 +915,18 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             )
         }
     }
+}
+
+fn stop_codex_plus_for_restart(
+    stop_codex: impl FnOnce(),
+    wait_native: impl FnOnce() -> anyhow::Result<()>,
+    stop_launcher: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // The launcher owns native recovery; terminating it first skips that cleanup.
+    stop_codex();
+    wait_native()?;
+    stop_launcher()?;
+    Ok(())
 }
 
 fn restart_codex_plus_after_stop<F>(
@@ -989,11 +1022,11 @@ fn sync_active_relay_to_home(
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-                codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                codex_plus_core::protocol_proxy::protocol_proxy_port(),
             ),
             "codex-plus-aggregate",
             codex_plus_core::settings::RelayProtocol::Responses,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             aggregate.session_provider,
         );
     }
@@ -1019,7 +1052,7 @@ fn sync_active_relay_to_home(
     let mut protocol = relay.protocol;
     if relay.has_model_routes() {
         base_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         );
         protocol = codex_plus_core::settings::RelayProtocol::Responses;
     }
@@ -1029,7 +1062,7 @@ fn sync_active_relay_to_home(
             &base_url,
             &relay.api_key,
             protocol,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             codex_plus_core::relay_config::relay_session_provider_from_config(
                 &relay.config_contents,
             ),
@@ -1045,7 +1078,7 @@ fn sync_active_relay_to_home(
         &base_url,
         &relay.api_key,
         protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     )
 }
@@ -1146,6 +1179,7 @@ fn requested_launch_status(
         helper_port: Some(request.helper_port),
         codex_app: (!request.app_path.trim().is_empty())
             .then(|| request.app_path.trim().to_string()),
+        aumid: None,
     }
 }
 
@@ -1453,8 +1487,10 @@ fn spawn_weixin_connect(
     if runtime.is_some() {
         anyhow::bail!("微信连接已在运行或正在停止");
     }
+    let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
+        codex_path: codex_path.clone(),
     });
     drop(runtime);
     let status = weixin_status();
@@ -1467,9 +1503,13 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            codex_plus_core::connect::run_weixin_connect(config, stop, Arc::clone(&task_status))
-                .await
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_codex_path(
+            config,
+            stop,
+            Arc::clone(&task_status),
+            codex_path,
+        )
+        .await
             && let Ok(mut current) = task_status.lock()
         {
             current.state = "error".to_string();
@@ -1521,6 +1561,11 @@ fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
 }
 
 #[tauri::command]
+pub fn native_browser_status() -> codex_plus_core::native_browser::BrowserStatus {
+    codex_plus_core::native_browser::read_status()
+}
+
+#[tauri::command]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
     settings_payload("设置已加载。", "设置读取失败")
 }
@@ -1559,7 +1604,14 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
         );
     }
     match store.save(&settings) {
-        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
+        Ok(()) => {
+            if let Ok(runtime) = weixin_runtime().lock()
+                && let Some(runtime) = runtime.as_ref()
+            {
+                runtime.codex_path.set(&settings.weixin_connect_codex_path);
+            }
+            settings_payload("设置已保存。", "设置保存后重新读取失败")
+        }
         Err(error) => {
             let _ = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
                 previous.enhancements_enabled && previous.codex_app_dream_skin_enabled,
@@ -2276,7 +2328,7 @@ fn empty_dream_skin_community_payload() -> DreamSkinCommunityPayload {
 }
 
 fn default_dream_skin_helper_port() -> u16 {
-    codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT
+    codex_plus_core::protocol_proxy::protocol_proxy_port()
 }
 
 fn current_dream_skin_library(
@@ -3233,8 +3285,13 @@ pub async fn apply_session_index_cleanup(
     }
 }
 
+const PROVIDER_SYNC_PROGRESS_EVENT: &str = "provider-sync-progress";
+
 #[tauri::command]
-pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
+pub async fn sync_providers_now(
+    window: tauri::WebviewWindow,
+    target_provider: Option<String>,
+) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -3256,8 +3313,19 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
+    let progress_window = window.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
+        codex_plus_data::run_provider_sync_with_target_and_progress(
+            None,
+            target_provider.as_deref(),
+            |progress| {
+                let _ = progress_window.emit_to(
+                    progress_window.label(),
+                    PROVIDER_SYNC_PROGRESS_EVENT,
+                    progress,
+                );
+            },
+        )
     })
     .await
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
@@ -5356,7 +5424,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
@@ -5401,11 +5469,11 @@ fn apply_aggregate_relay_injection_to_home(
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         ),
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         session_provider,
     ) {
         Ok(result) => {
@@ -5501,7 +5569,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
@@ -7062,6 +7130,31 @@ base_url = "https://example.invalid/v1"
             std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
             "{\"old\":true}\n"
         );
+    }
+
+    #[test]
+    fn restart_stops_codex_then_waits_for_native_cleanup_before_launcher() {
+        let events = std::cell::RefCell::new(Vec::new());
+        stop_codex_plus_for_restart(
+            || events.borrow_mut().push("codex"),
+            || { events.borrow_mut().push("cleanup"); Ok(()) },
+            || { events.borrow_mut().push("launcher"); Ok(()) },
+        ).unwrap();
+        assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+    }
+
+    #[test]
+    fn restart_does_not_kill_launcher_when_native_cleanup_is_still_running() {
+        let stopped = std::cell::Cell::new(false);
+        let killed = std::cell::Cell::new(false);
+        let result = stop_codex_plus_for_restart(
+            || stopped.set(true),
+            || anyhow::bail!("cleanup still running"),
+            || { killed.set(true); Ok(()) },
+        );
+        assert!(result.is_err());
+        assert!(stopped.get());
+        assert!(!killed.get());
     }
 
     #[test]
