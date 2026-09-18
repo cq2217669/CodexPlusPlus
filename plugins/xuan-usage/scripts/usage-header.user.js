@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v18";
+  const REVISION = "builtin-2026-09-18-v19";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -370,16 +370,20 @@
   function openoxRowsHtml(models, totalModels = null) {
     const row = (item, className = "") => {
       const requests = numeric(item.requests);
+      const cacheTokenRate = item.cacheTokenRate == null
+        ? (numeric(item.inputTokens) + numeric(item.cacheReadTokens) > 0
+          ? numeric(item.cacheReadTokens) / (numeric(item.inputTokens) + numeric(item.cacheReadTokens)) : 0)
+        : item.cacheTokenRate;
       return `<tr class="${className}">
         <td title="${escapeHtml(item.model || "合计")}">${escapeHtml(item.model || "合计")}</td>
-        <td data-field="requests">${Math.round(requests)}</td><td data-field="requestTime">${escapeHtml(formatRequestTime(item.requestTime))}</td><td data-field="inputTokens">${formatTokens(item.inputTokens)}</td><td data-field="cacheReadTokens">${formatTokens(item.cacheReadTokens)}</td><td data-field="outputTokens">${formatTokens(item.outputTokens)}</td><td data-field="cost">${escapeHtml(formatMoney(item.cost, state.unit))}</td>
+        <td data-field="requests">${Math.round(requests)}</td><td data-field="requestTime">${escapeHtml(formatRequestTime(item.requestTime))}</td><td data-field="inputTokens">${formatTokens(item.inputTokens)}</td><td data-field="cacheTokenRate">${formatPercent(cacheTokenRate)}</td><td data-field="outputTokens">${formatTokens(item.outputTokens)}</td><td data-field="cost">${escapeHtml(formatMoney(item.cost, state.unit))}</td>
       </tr>`;
     };
     const sum = Array.isArray(totalModels) && totalModels.length ? totals(totalModels) : null;
     const totalRow = sum
       ? row({ ...sum, model: "全部 KEY 合计" }, "crb-total")
       : "";
-    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>缓存读取</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${totalRow}</tbody></table></div>`;
+    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>Token 命中率</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item)).join("")}${totalRow}</tbody></table></div>`;
   }
 
   // OpenOx：每个 KEY 一张明细表；仅在最后一张表底部追加所有 KEY 的共享合计行
@@ -431,7 +435,10 @@
       requests: String(Math.round(numeric(item.requests))),
       requestTime: formatRequestTime(item.requestTime),
       inputTokens: formatTokens(item.inputTokens),
-      cacheReadTokens: formatTokens(item.cacheReadTokens),
+      cacheTokenRate: formatPercent(item.cacheTokenRate == null
+        ? (numeric(item.inputTokens) + numeric(item.cacheReadTokens) > 0
+          ? numeric(item.cacheReadTokens) / (numeric(item.inputTokens) + numeric(item.cacheReadTokens)) : 0)
+        : item.cacheTokenRate),
       outputTokens: formatTokens(item.outputTokens),
       cost: formatMoney(item.cost, state.unit),
     };
