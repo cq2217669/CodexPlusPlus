@@ -6,7 +6,7 @@ import path from "node:path";
 const source = fs.readFileSync(path.join(import.meta.dirname, "usage-header.user.js"), "utf8");
 
 test("usage script renders the current provider usage panel", () => {
-  assert.match(source, /builtin-2026-09-18-v23/);
+  assert.match(source, /builtin-2026-09-18-v24/);
   assert.match(source, /\/v1\/usage/);
   assert.match(source, /provider === "owlai"/);
   assert.match(source, /provider === "openox"/);
@@ -93,6 +93,10 @@ test("usage script renders one table and one independent total per OpenOx KEY", 
   assert.match(source, /payload\.keys/);
   assert.match(source, /requestTime: safeText\(item\?\.requestTime\)/);
   assert.match(source, /formatRequestTime\(item\.requestTime\)/);
+  assert.match(source, /function sortModelsByRequestTime\(models\)/);
+  assert.match(source, /const sortedModels = sortModelsByRequestTime\(models\)/);
+  assert.match(source, /sortModelsByRequestTime\(item\.models \|\| \[\]\)/);
+  assert.match(source, /sortModelsByRequestTime\(key\.models \|\| \[\]\)/);
   // 旧的单表实现已移除
   assert.doesNotMatch(source, /openoxTableHtml\(/);
 });

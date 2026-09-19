@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v23";
+  const REVISION = "builtin-2026-09-18-v24";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -445,6 +445,19 @@
     return models.filter((item) => !isRowExcluded(usageRowKey(provider, keyName, item.model)));
   }
 
+  function sortModelsByRequestTime(models) {
+    return models
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const leftTime = Date.parse(safeText(left.item.requestTime));
+        const rightTime = Date.parse(safeText(right.item.requestTime));
+        const normalizedLeft = Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY;
+        const normalizedRight = Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY;
+        return normalizedRight - normalizedLeft || left.index - right.index;
+      })
+      .map(({ item }) => item);
+  }
+
   function openoxTodayUsed() {
     if (state.todayUsed == null) return null;
     const excludedCost = (state.openoxKeys || []).reduce((keyTotal, key) => keyTotal
@@ -475,8 +488,9 @@
         <td data-field="requests">${Math.round(requests)}</td><td data-field="requestTime">${escapeHtml(formatRequestTime(item.requestTime))}</td><td data-field="inputTokens">${formatTokens(item.inputTokens)}</td><td data-field="cacheTokenRate">${formatPercent(cacheTokenRate)}</td><td data-field="outputTokens">${formatTokens(item.outputTokens)}</td><td data-field="cost">${escapeHtml(formatMoney(item.cost, state.unit))}</td>
       </tr>`;
     };
+    const sortedModels = sortModelsByRequestTime(models);
     const sum = totals(activeModels(models, "openox", keyName));
-    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>Token 命中率</th><th>输出</th><th>费用</th></tr></thead><tbody>${models.map((item) => row(item, "", usageRowKey("openox", keyName, item.model))).join("")}${row({ ...sum, model: "合计" }, "crb-total")}</tbody></table></div>`;
+    return `<div class="crb-table-wrap"><table class="crb-table"><thead><tr><th>模型</th><th>请求</th><th>请求时间</th><th>输入</th><th>Token 命中率</th><th>输出</th><th>费用</th></tr></thead><tbody>${sortedModels.map((item) => row(item, "", usageRowKey("openox", keyName, item.model))).join("")}${row({ ...sum, model: "合计" }, "crb-total")}</tbody></table></div>`;
   }
 
   // OpenOx：每个 KEY 一张明细表，并在各自表格底部展示独立合计。
@@ -495,7 +509,7 @@
 
   function openoxStructureSignature() {
     return JSON.stringify((state.openoxKeys || [])
-      .map((item) => [item.keyName, (item.models || []).map((model) => [model.model, isRowExcluded(usageRowKey("openox", item.keyName, model.model))]), Boolean(item.models?.length)]));
+      .map((item) => [item.keyName, sortModelsByRequestTime(item.models || []).map((model) => [model.model, model.requestTime, isRowExcluded(usageRowKey("openox", item.keyName, model.model))]), Boolean(item.models?.length)]));
   }
 
   function updateOpenoxValues(content) {
@@ -514,7 +528,7 @@
       const section = content.querySelector(`[data-key-section="${keyIndex}"]`);
       if (!section) return;
       const rows = section.querySelectorAll("tbody tr");
-      (key.models || []).forEach((model, modelIndex) => updateOpenoxRow(rows[modelIndex], model));
+      sortModelsByRequestTime(key.models || []).forEach((model, modelIndex) => updateOpenoxRow(rows[modelIndex], model));
       if (key.models?.length) updateOpenoxRow(rows[rows.length - 1], totals(activeModels(key.models, "openox", key.keyName)));
     });
   }

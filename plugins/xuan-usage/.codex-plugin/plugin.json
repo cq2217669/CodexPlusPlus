@@ -1,6 +1,6 @@
 {
   "name": "xuan-usage",
-  "version": "0.1.2+codex.20260918130756",
+  "version": "0.1.2+codex.20260918142954",
   "description": "Query relay usage through a provider-neutral local bridge.",
   "author": {
     "name": "XuanPlusPlus"
