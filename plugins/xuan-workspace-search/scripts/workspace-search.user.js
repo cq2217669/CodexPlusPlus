@@ -35,6 +35,9 @@
     pollTimer: 0,
     observer: null,
     previousFocus: null,
+    disposed: false,
+    chromeTimer: 0,
+    contextRequest: null,
   };
 
   function bridgeCall(path, payload = {}) {
@@ -303,6 +306,7 @@
     const response = await bridgeCall("/workspace-search/projects", {
       threadId: threadIdFromRow(activeThreadRow()),
     });
+    if (state.disposed) return { selectedProjectId: "", currentProjectId: "" };
     if (response?.status !== "ok") {
       state.projects = [];
       renderProjectOptions();
@@ -345,6 +349,7 @@
   }
 
   async function setSelectedProject(projectId, { resetOnChange = false } = {}) {
+    if (state.disposed) return "";
     const project = projectById(projectId);
     const nextProjectId = project?.id || "";
     const nextRoot = project?.root || "";
@@ -751,6 +756,7 @@
   }
 
   async function syncCurrentWorkspace({ resetOnChange = false } = {}) {
+    if (state.disposed) return "";
     const context = await loadProjects();
     const manuallySelected = state.selectionMode === "manual"
       && Boolean(projectById(state.selectedProjectId));
@@ -811,11 +817,28 @@
   }
 
   function refreshChromeContext() {
+    if (state.disposed) return;
     ensureHeaderButton();
     syncTheme();
     if (!state.root || state.root.hidden) return;
-    window.clearTimeout(state.contextTimer);
-    state.contextTimer = window.setTimeout(() => syncCurrentWorkspace({ resetOnChange: true }), 80);
+    if (state.contextTimer || state.contextRequest) return;
+    state.contextTimer = window.setTimeout(() => {
+      state.contextTimer = 0;
+      if (state.disposed || !state.root || state.root.hidden) return;
+      state.contextRequest = syncCurrentWorkspace({ resetOnChange: true })
+        .catch(() => {})
+        .finally(() => { state.contextRequest = null; });
+    }, 250);
+  }
+
+  function scheduleChromeContext(records) {
+    if (state.disposed || state.chromeTimer) return;
+    const own = `#${ROOT_ID},#${STYLE_ID},.${BUTTON_CLASS}`;
+    if (!records.some((record) => !(record.target instanceof Element && record.target.closest(own)))) return;
+    state.chromeTimer = window.setTimeout(() => {
+      state.chromeTimer = 0;
+      try { refreshChromeContext(); } catch (_) { cleanup(); }
+    }, 250);
   }
 
   function onKeyDown(event) {
@@ -832,10 +855,13 @@
   }
 
   function cleanup() {
+    state.disposed = true;
+    state.searchRevision += 1;
     document.removeEventListener("keydown", onKeyDown, true);
     state.observer?.disconnect();
     window.clearTimeout(state.debounceTimer);
     window.clearTimeout(state.contextTimer);
+    window.clearTimeout(state.chromeTimer);
     window.clearTimeout(state.pollTimer);
     cancelActiveSearch();
     document.getElementById(ROOT_ID)?.remove();
@@ -845,8 +871,9 @@
   }
 
   document.addEventListener("keydown", onKeyDown, true);
-  state.observer = new MutationObserver(refreshChromeContext);
+  state.observer = new MutationObserver(scheduleChromeContext);
   state.observer.observe(document.documentElement, { childList: true, subtree: true });
   ensureHeaderButton();
   window[API_KEY] = { open, close, toggle, cleanup };
+  if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(cleanup);
 })();

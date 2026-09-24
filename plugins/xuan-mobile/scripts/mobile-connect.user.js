@@ -2,6 +2,20 @@
   const adapterVersion = "1.0.0";
   const requestTimeoutMs = 30000;
   const nameTimeoutMs = 8000;
+  let disposed = false;
+  let retry = 0;
+  let commandAdapter = null;
+  const pendingCalls = new Set();
+  window.__xuanPlusRemoteCommandCleanup?.();
+  const cleanup = () => {
+    disposed = true;
+    window.clearInterval(retry);
+    for (const cancel of [...pendingCalls]) cancel();
+    if (window.__codexPlusMobileRemoteCommand === commandAdapter) delete window.__codexPlusMobileRemoteCommand;
+    if (window.__xuanPlusRemoteCommandCleanup === cleanup) delete window.__xuanPlusRemoteCommandCleanup;
+  };
+  window.__xuanPlusRemoteCommandCleanup = cleanup;
+  if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(cleanup);
 
   function requestError(method, error) {
     const message = String(error?.message || error || `Codex ${method} failed`);
@@ -9,6 +23,7 @@
   }
 
   function callCodex(method, params, timeoutMs = requestTimeoutMs) {
+    if (disposed) return Promise.reject(new Error("手机插件已停用"));
     const bridge = window.electronBridge;
     if (!bridge || typeof bridge.sendMessageFromView !== "function") {
       return Promise.reject(new Error("Codex renderer command bridge unavailable"));
@@ -21,7 +36,10 @@
       const cleanup = () => {
         window.clearTimeout(timeout);
         window.removeEventListener("message", onMessage);
+        pendingCalls.delete(cancel);
       };
+      const cancel = () => { cleanup(); reject(new Error("手机插件已停用")); };
+      pendingCalls.add(cancel);
       const onMessage = (event) => {
         const message = event?.data;
         if (!message || message.type !== "mcp-response" || message.hostId !== "local"
@@ -54,10 +72,11 @@
   }
 
   function install() {
+    if (disposed) return false;
     const bridge = window.electronBridge;
     if (!bridge || typeof bridge.sendMessageFromView !== "function") return false;
     window.__xuanPlusRemoteCommandAdapterVersion = adapterVersion;
-    window.__codexPlusMobileRemoteCommand = async (request) => {
+    commandAdapter = async (request) => {
       const commandType = String(request?.commandType || "");
       const threadId = String(request?.threadId || "");
       const turnId = String(request?.turnId || "");
@@ -107,12 +126,13 @@
       }
       return { status: "rejected", errorCode: "unsupported_operation" };
     };
+    window.__codexPlusMobileRemoteCommand = commandAdapter;
     return true;
   }
 
   if (install()) return;
   let attempts = 0;
-  const retry = window.setInterval(() => {
+  retry = window.setInterval(() => {
     attempts += 1;
     if (install() || attempts >= 60) window.clearInterval(retry);
   }, 500);
@@ -134,6 +154,7 @@
     open: false,
     timer: 0,
     clock: Date.now(),
+    disposed: false,
   };
 
   function escapeHtml(value) {
@@ -226,6 +247,7 @@
   }
 
   function render() {
+    if (state.disposed) return;
     const { button, panel } = ensureRoot();
     const status = state.status || {};
     const selected = new Set(Array.isArray(status.selected) ? status.selected : []);
@@ -284,6 +306,7 @@
   }
 
   async function refreshStatus() {
+    if (state.disposed) return;
     try {
       state.status = await request("/v1/mobile/status", null, "GET");
       state.error = "";
@@ -295,6 +318,7 @@
   }
 
   async function refreshTasks() {
+    if (state.disposed) return;
     try {
       const result = await request("/v1/mobile/tasks", {});
       state.tasks = Array.isArray(result.tasks) ? result.tasks : [];
@@ -310,6 +334,7 @@
 
   function schedule() {
     window.clearTimeout(state.timer);
+    if (state.disposed) return;
     state.timer = window.setTimeout(async () => {
       await refreshStatus();
       schedule();
@@ -317,6 +342,8 @@
   }
 
   function destroy() {
+    state.disposed = true;
+    window.removeEventListener("keydown", onKeyDown);
     window.clearTimeout(state.timer);
     document.getElementById(ROOT_ID)?.remove();
     document.getElementById(PANEL_ID)?.remove();
@@ -324,13 +351,15 @@
     if (window[API_KEY]?.destroy === destroy) window[API_KEY] = undefined;
   }
 
-  window.addEventListener("keydown", (event) => {
+  function onKeyDown(event) {
     if (event.key === "Escape" && state.open) {
       state.open = false;
       render();
     }
-  });
+  }
+  window.addEventListener("keydown", onKeyDown);
   window[API_KEY] = { destroy, open: () => { state.open = true; render(); void refreshAll(); } };
+  if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(destroy);
   render();
   void refreshAll();
   schedule();

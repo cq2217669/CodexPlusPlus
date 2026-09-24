@@ -272,11 +272,10 @@ pub async fn add_script_to_new_documents(
 /// 渲染层扫描无法触达，直接改写 dispatcher 又会撞上不可写的 RPC stub。
 /// 分两段接管：渲染层用纯文本定位算出 sendRequest 的断点坐标并放到
 /// `window.__codexPlusAppServerClientCapture`；这里用独立 CDP 会话按坐标下
-/// 条件断点（`!window.__codexPlusAppServerClientClass`），命中时把类构造器挂到
-/// `window.__codexPlusAppServerClientClass`，渲染层再对原型套用与旧版实例补丁
-/// 一致的请求逻辑。条件断点保证页面重载后自动重新捕获、正常路径零暂停。
+/// 条件表达式只尝试保存类构造器，始终返回 false，禁止暂停客户端请求线程。
+/// 旧方案暂停后等待桥接恢复，客户端更新或桥接异常时可能阻断消息发送。
 pub fn app_server_client_capture_condition() -> &'static str {
-    "!window.__codexPlusAppServerClientClass"
+    "(()=>{try{if(!window.__codexPlusAppServerClientClass&&typeof this?.constructor==='function'&&typeof this.constructor.prototype?.sendRequest==='function'){window.__codexPlusAppServerClientClass=this.constructor}}catch{}return false})()"
 }
 
 pub fn app_server_client_capture_probe_script() -> &'static str {
@@ -301,8 +300,6 @@ pub fn parse_app_server_client_capture_location(value: &Value) -> Option<(String
 const APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT: Duration = Duration::from_secs(90);
 const APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL: Duration = Duration::from_secs(2);
 const APP_SERVER_CLIENT_CAPTURE_WATCH_CAP: Duration = Duration::from_secs(8 * 60 * 60);
-const APP_SERVER_CLIENT_CAPTURE_ON_CALL_FRAME: &str =
-    "try{window.__codexPlusAppServerClientClass=this.constructor}catch(e){};1";
 
 fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGeneration) {
     let websocket_url = websocket_url.to_string();
@@ -400,12 +397,14 @@ async fn run_app_server_client_capture(
         }),
     );
     let watch_deadline = tokio::time::Instant::now() + APP_SERVER_CLIENT_CAPTURE_WATCH_CAP;
-    let mut captured_once = false;
     loop {
         if !bridge_generation_is_current(&generation) {
             break;
         }
-        let message = tokio::time::timeout_at(watch_deadline, session.next_message()).await;
+        let message = tokio::select! {
+            message = tokio::time::timeout_at(watch_deadline, session.next_message()) => message,
+            _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => continue,
+        };
         let Ok(message) = message else {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.app_server_client_capture_watch_expired",
@@ -413,39 +412,9 @@ async fn run_app_server_client_capture(
             );
             break;
         };
-        let Ok(Some(message)) = message else {
+        let Ok(Some(_)) = message else {
             break;
         };
-        if message.get("method").and_then(Value::as_str) != Some("Debugger.paused") {
-            continue;
-        }
-        if let Some(call_frame_id) = message
-            .pointer("/params/callFrames/0/callFrameId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        {
-            let _ = session
-                .send_command(
-                    next_message_id(),
-                    "Debugger.evaluateOnCallFrame",
-                    json!({
-                        "callFrameId": call_frame_id,
-                        "expression": APP_SERVER_CLIENT_CAPTURE_ON_CALL_FRAME,
-                        "returnByValue": true,
-                    }),
-                )
-                .await;
-        }
-        let _ = session
-            .send_command(next_message_id(), "Debugger.resume", json!({}))
-            .await;
-        if !captured_once {
-            captured_once = true;
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "bridge.app_server_client_captured",
-                json!({}),
-            );
-        }
     }
     let _ = session
         .send_command(
@@ -454,6 +423,7 @@ async fn run_app_server_client_capture(
             json!({ "breakpointId": breakpoint_id }),
         )
         .await;
+    session.close().await;
     Ok(())
 }
 

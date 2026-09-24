@@ -1,6 +1,116 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+
+describe("客户端请求与插件故障隔离", () => {
+  async function harness(prototype = false) {
+    const source = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const timers = new Map<number, () => void>();
+    let sequence = 0;
+    const calls: unknown[][] = [];
+    const result = Promise.resolve({ ok: true });
+    class Client {
+      sendRequest(...args: unknown[]) { calls.push([this, ...args]); return result; }
+    }
+    const context = vm.createContext({
+      window: { __codexSessionDeleteBridge() {}, __codexPlusAppServerClientClass: Client },
+      codexAppServerModelRequestPatchVersion: "test",
+      codexPlusBackendSettingsLoaded: true,
+      codexPlusModelUnlockEnabled: () => true,
+      codexPlusSettings: () => ({ serviceTierControls: true }),
+      codexRemoteSessionProviderRequestMethod: (method: string) => ["thread/start", "turn/start"].includes(method),
+      codexRemoteSessionProviderPatchEnabled: () => true,
+      codexRemoteSessionProviderOverrideEnabled: () => false,
+      appServerModelRequestMethod: (method: string, params?: { method?: string }) => method === "send-cli-request-for-host" ? params?.method : method,
+      loadBackendSettingsState: () => new Promise(() => {}),
+      loadCodexModelCatalog: () => new Promise(() => {}),
+      applyCodexRemoteSessionProviderOverride: (_method: string, params: unknown) => params,
+      applyCodexServiceTierRequestOnly: (_method: string, params: unknown) => params,
+      refreshCodexThreadModelBeforeTurn: async () => null,
+      codexThreadModelRequestState: () => ({}),
+      codexPlusModelNames: () => [],
+      patchAppServerModelResult: (_method: string, value: unknown) => value,
+      sendCodexPlusDiagnostic() {},
+      setTimeout(callback: () => void, ms: number) {
+        assert.equal(ms, 2000);
+        timers.set(++sequence, callback);
+        return sequence;
+      },
+      clearTimeout(id: number) { timers.delete(id); },
+    });
+    const start = source.indexOf("  function patchAppServerModelRequestClient(");
+    const end = source.indexOf("  // issue #2177", start);
+    const protoStart = source.indexOf("function installCodexAppServerClientPrototypePatch(");
+    const protoEnd = source.indexOf("  const appServerModelRequestPatchMaxMisses", protoStart);
+    assert.ok(start >= 0 && end > start && protoStart >= 0 && protoEnd > protoStart);
+    vm.runInContext(source.slice(start, end) + source.slice(protoStart, protoEnd), context);
+    const client = new Client();
+    assert.equal(prototype ? context.installCodexAppServerClientPrototypePatch() : context.patchAppServerModelRequestClient(client), true);
+    return { client, context, calls, result, timers, source };
+  }
+
+  for (const prototype of [false, true]) {
+    it(`${prototype ? "原型" : "实例"}补丁在插件挂起时直接放行追发、停止和未知请求`, async () => {
+      const { client, calls, result, timers } = await harness(prototype);
+      for (const method of ["turn/steer", "turn/interrupt", "thread/read", "future/request", "send-cli-request-for-host"]) {
+        const params = { method: "turn/steer" };
+        const options = { timeoutMs: 30000 };
+        assert.equal(client.sendRequest(method, params, options), result);
+        assert.deepEqual(calls.at(-1), [client, method, params, options]);
+      }
+      assert.equal(calls.length, 5);
+      assert.equal(timers.size, 0);
+    });
+
+    it(`${prototype ? "原型" : "实例"}补丁的设置读取超时后只发送一次并保留官方结果`, async () => {
+      const { client, calls, timers } = await harness(prototype);
+      const params = { model: "test" };
+      const pending = client.sendRequest("turn/start", params);
+      assert.equal(calls.length, 0);
+      assert.equal(timers.size, 1);
+      [...timers.values()][0]();
+      assert.deepEqual(await pending, { ok: true });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0][2], params);
+      assert.equal(timers.size, 0);
+    });
+
+    it(`${prototype ? "原型" : "实例"}增强抛错不吞消息，官方拒绝也不重发`, async () => {
+      const { client, context, calls } = await harness(prototype);
+      context.loadBackendSettingsState = async () => true;
+      context.applyCodexServiceTierRequestOnly = () => { throw new Error("synthetic"); };
+      const params = { model: "test" };
+      assert.deepEqual(await client.sendRequest("turn/start", params), { ok: true });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0][2], params);
+      let rejectedCalls = 0;
+      const failure = new Error("native failure");
+      const rejected = { sendRequest(..._args: unknown[]) { rejectedCalls++; return Promise.reject(failure); } };
+      context.patchAppServerModelRequestClient(rejected);
+      await assert.rejects(rejected.sendRequest("turn/start", params), (error: unknown) => error === failure);
+      assert.equal(rejectedCalls, 1);
+    });
+  }
+
+  it("普通 JSON 响应不等待模型目录，模型响应读取超时后正常返回", async () => {
+    const { context, timers, source } = await harness();
+    context.modelJsonResponseLooksPatchable = (payload: { models?: unknown }) => Boolean(payload.models);
+    context.patchModelContainer = () => {};
+    const start = source.indexOf("  async function patchModelJsonResponse(");
+    const end = source.indexOf("  function installModelJsonResponsePatch(", start);
+    vm.runInContext(source.slice(start, end), context);
+    const payload = { status: "completed" };
+    assert.equal(await context.patchModelJsonResponse(payload), payload);
+    assert.equal(timers.size, 0);
+    const models = { models: [] };
+    const pending = context.patchModelJsonResponse(models);
+    assert.equal(timers.size, 1);
+    [...timers.values()][0]();
+    assert.equal(await pending, models);
+    assert.equal(timers.size, 0);
+  });
+});
 
 const STEPWISE_FRAGMENT_PATHS = [
   "floating-panel/runtime/state.js",

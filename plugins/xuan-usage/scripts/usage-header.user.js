@@ -1,7 +1,7 @@
 /* Built-in relay usage monitor, adapted from Codex Relay Balance in CodexPlusPlusScriptMarket. */
 (() => {
   const API_KEY = "__codexPlusRelayBalance";
-  const REVISION = "builtin-2026-09-18-v24";
+  const REVISION = "builtin-2026-09-24-v25";
   const ROOT_ID = "codex-plus-relay-balance";
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
@@ -24,6 +24,7 @@
   let panel = null;
   let timer = 0;
   let observer = null;
+  let ensureTimer = 0;
   let requestPromise = null;
   let previousSnapshot = null;
   let panelPosition = null;
@@ -956,6 +957,7 @@
     document.removeEventListener("DOMContentLoaded", start);
     window.removeEventListener("resize", applyPanelPosition);
     window.clearTimeout(timer);
+    window.clearTimeout(ensureTimer);
     observer?.disconnect();
     root?.remove();
     panel?.remove();
@@ -964,11 +966,20 @@
   }
 
   window[API_KEY] = { revision: REVISION, ensure, refresh, destroy };
+  if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(destroy);
   const start = () => {
     if (destroyed) return;
     ensure();
     window.addEventListener("resize", applyPanelPosition);
-    observer = new MutationObserver(() => ensure());
+    observer = new MutationObserver((records) => {
+      if (destroyed || ensureTimer) return;
+      const own = `#${ROOT_ID},#${PANEL_ID},#${STYLE_ID}`;
+      if (!records.some((record) => !(record.target instanceof Element && record.target.closest(own)))) return;
+      ensureTimer = window.setTimeout(() => {
+        ensureTimer = 0;
+        try { ensure(); } catch (_) { destroy(); }
+      }, 250);
+    });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     void refresh(true);
   };

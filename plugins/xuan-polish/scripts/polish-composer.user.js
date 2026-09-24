@@ -4,7 +4,7 @@
  */
 (() => {
   const SCRIPT_VERSION = "1.2.1";
-  const INSTANCE_REVISION = "official-2026-09-v25";
+  const INSTANCE_REVISION = "official-2026-09-v26";
   const API_KEY = "__codexPlusPromptOptimize";
   const BRIDGE_KEY = "__xuanPluginBridge";
   const STYLE_ID = `codex-plus-prompt-optimize-style-${INSTANCE_REVISION}`;
@@ -783,7 +783,7 @@
       current.disabled = false;
       current.setAttribute("aria-busy", state === "loading" ? "true" : "false");
       current.setAttribute("aria-label", BUTTON_LABELS[state]);
-      current.textContent = BUTTON_LABELS[state];
+      if (current.textContent !== BUTTON_LABELS[state]) current.textContent = BUTTON_LABELS[state];
       current.title =
         state === "loading"
           ? "停止当前润色"
@@ -914,7 +914,7 @@
       button.style.setProperty("font-size", anchor.fontSize, "important");
     }
     const before = anchor.before?.parentNode === anchor.node ? anchor.before : null;
-    if (host.parentElement !== anchor.node || host.nextSibling !== before) {
+    if (before !== host && (host.parentElement !== anchor.node || host.nextSibling !== before)) {
       anchor.node.insertBefore(host, before);
     }
     refreshButtonAppearance(button);
@@ -926,6 +926,7 @@
   }
 
   function destroyAll() {
+    runtime.disposed = true;
     runtime.optimizeToken += 1;
     runtime.loading = false;
     runtime.optimizePhase = "idle";
@@ -1343,7 +1344,7 @@
 
   function scheduleEnsure() {
     if (runtime.disposed) return;
-    if (runtime.mutationTimer) window.clearTimeout(runtime.mutationTimer);
+    if (runtime.mutationTimer) return;
     runtime.mutationTimer = window.setTimeout(() => {
       runtime.mutationTimer = 0;
       try {
@@ -1355,8 +1356,12 @@
   }
 
   async function startObservers() {
+    if (runtime.disposed) return;
     if (runtime.observer) runtime.observer.disconnect();
-    runtime.observer = new MutationObserver(() => scheduleEnsure());
+    runtime.observer = new MutationObserver((records) => {
+      const own = `[data-cpo-composer-${INSTANCE_REVISION}],[${PANEL_ATTR}],#${STYLE_ID}`;
+      if (records.some((record) => !(record.target instanceof Element && record.target.closest(own)))) scheduleEnsure();
+    });
     runtime.observer.observe(document.documentElement, { childList: true, subtree: true });
     if (!runtime.resizeHandler) {
       runtime.resizeHandler = () => scheduleEnsure();
@@ -1396,6 +1401,7 @@
     destroy: destroyAll,
   };
   window[API_KEY] = api;
+  if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(destroyAll);
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => ensure(), { once: true });
   } else {

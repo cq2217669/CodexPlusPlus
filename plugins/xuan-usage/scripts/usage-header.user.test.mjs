@@ -6,7 +6,7 @@ import path from "node:path";
 const source = fs.readFileSync(path.join(import.meta.dirname, "usage-header.user.js"), "utf8");
 
 test("usage script renders the current provider usage panel", () => {
-  assert.match(source, /builtin-2026-09-18-v24/);
+  assert.match(source, /builtin-2026-09-24-v25/);
   assert.match(source, /\/v1\/usage/);
   assert.match(source, /provider === "owlai"/);
   assert.match(source, /provider === "openox"/);

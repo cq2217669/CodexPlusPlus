@@ -258,6 +258,34 @@ function optimizeAdapter(generate) {
   };
 }
 
+test("润色按钮已经紧邻权限控件时不再次插入自身", () => {
+  class Element {
+    isConnected = true;
+    hasAttribute() { return true; }
+  }
+  const input = new Element();
+  const parent = new Element();
+  const host = new Element();
+  const button = new Element();
+  let moves = 0;
+  parent.insertBefore = () => { moves++; };
+  host.parentElement = parent;
+  host.parentNode = parent;
+  host.nextSibling = new Element();
+  button.parentElement = host;
+  const context = vm.createContext({
+    Element, HTMLElement: Element, runtime: { disposed: false },
+    BUTTON_ATTR: "test", INSTANCE_REVISION: "test",
+    findComposerInput: () => input,
+    document: { querySelector: () => button },
+    composerInsertAnchor: () => ({ node: parent, before: host }),
+    refreshButtonAppearance() {},
+  });
+  vm.runInContext(functionSource("ensureButton"), context);
+  for (let i = 0; i < 100; i++) context.ensureButton();
+  assert.equal(moves, 0);
+});
+
 test("polish script keeps the original composer workflow in an independent bridge adapter", () => {
   assert.match(source, /MutationObserver/);
   assert.match(source, /\/v1\/polish/);

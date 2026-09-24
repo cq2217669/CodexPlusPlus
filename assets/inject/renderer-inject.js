@@ -476,7 +476,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "9";
+  const codexAppServerModelRequestPatchVersion = "10";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
@@ -6889,10 +6889,9 @@
   }
 
   async function patchModelJsonResponse(payload) {
-    if (!codexPlusModelUnlockEnabled()) return payload;
-    if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-    if (!modelJsonResponseLooksPatchable(payload)) return payload;
     try {
+      if (!codexPlusModelUnlockEnabled() || !modelJsonResponseLooksPatchable(payload)) return payload;
+      if (!codexPlusModelNames().length) await readCodexRequestDependency(loadCodexModelCatalog);
       patchModelContainer(payload);
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
@@ -7108,42 +7107,9 @@
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
-    client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      let providerRefreshFailed = false;
-      if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderPatchEnabled()
-          && window.__codexSessionDeleteBridge) {
-        const settingsLoaded = await loadBackendSettingsState();
-        providerRefreshFailed = !settingsLoaded;
-        if (providerRefreshFailed) {
-          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
-        }
-      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderOverrideEnabled()
-          && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
-      }
-      const providerParams = providerRefreshFailed
-        ? params
-        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
-      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
-        client,
-        originalSendRequest,
-        method,
-        nextParams,
-        options
-      );
-      const result = await originalSendRequest(method, nextParams, options);
-      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
-      if (modelContextRefresh !== false && threadState.threadId && threadState.model
-          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
-        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
-      }
-      if (!codexPlusModelUnlockEnabled()) return result;
-      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result);
+    client.sendRequest = function codexPlusModelPatchedSendRequest(method, params, options) {
+      if (!codexAppServerRequestNeedsPatch(method, params)) return originalSendRequest(method, params, options);
+      return sendPatchedCodexAppServerRequest(client, originalSendRequest, method, params, options);
     };
     if (typeof client.prewarmThreadStart === "function"
         && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
@@ -7158,13 +7124,84 @@
     return true;
   }
 
+  function codexAppServerRequestNeedsPatch(method, params) {
+    const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+    // 追发、停止及未来新增请求直接保留官方调用和返回值，不进入插件异步链。
+    return codexRemoteSessionProviderRequestMethod(requestMethod)
+      || requestMethod === "thread/resume"
+      || requestMethod === "list-models-for-host";
+  }
+
+  async function readCodexRequestDependency(read) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(read),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), 2000); }),
+      ]);
+    } catch (_) {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function sendPatchedCodexAppServerRequest(client, originalSendRequest, method, params, options) {
+    const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+    let nextParams = params;
+    let modelContextRefresh = false;
+    try {
+      let providerRefreshFailed = false;
+      if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderPatchEnabled()
+          && window.__codexSessionDeleteBridge) {
+        const settingsLoaded = await readCodexRequestDependency(loadBackendSettingsState);
+        providerRefreshFailed = !settingsLoaded;
+        if (providerRefreshFailed) {
+          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
+        }
+      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderOverrideEnabled()
+          && !codexRemoteSessionTargetProvider()) {
+        await readCodexRequestDependency(loadCodexModelCatalog);
+      }
+      const providerParams = providerRefreshFailed
+        ? params
+        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
+      modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
+        client,
+        originalSendRequest,
+        method,
+        nextParams,
+        options
+      );
+    } catch (_) {
+      // 只隔离增强逻辑；官方请求失败不能重发，否则可能重复提交消息。
+      nextParams = params;
+      sendCodexPlusDiagnostic("app_server_request_enhancement_skipped", {});
+    }
+    const result = await originalSendRequest(method, nextParams, options);
+    try {
+      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      if (modelContextRefresh !== false && threadState.threadId && threadState.model
+          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
+        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
+      }
+      if (requestMethod !== "list-models-for-host" || !codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelNames().length) await readCodexRequestDependency(loadCodexModelCatalog);
+      return patchAppServerModelResult(requestMethod, result);
+    } catch (_) {
+      return result;
+    }
+  }
+
   // issue #2177：Codex 26.908 把 AppServerRequestClient 类藏进模块闭包且不再导出，
   // 渲染层扫描在新版上永远 not_found，直接改写 dispatcher 又会撞上不可写的 RPC stub。
   // 改为两段式接管：这里先用纯文本定位算出 sendRequest 的断点坐标（按 UTF-16 计数，
   // 与 V8 断点坐标语义一致），launcher 侧 bridge.rs 再用 CDP Debugger 按坐标下条件断点，
   // 命中时把类构造器挂到 window.__codexPlusAppServerClientClass，随后对原型套用与
-  // 实例版完全一致的请求补丁。断点条件 `!window.__codexPlusAppServerClientClass`
-  // 保证页面重载后自动重新捕获，且每次页面生命周期内只暂停一次。
+  // 实例版完全一致的请求补丁。条件表达式始终返回 false，不暂停官方消息线程。
     function locateCodexAppServerClientBreakpoint(text) {
     if (typeof text !== "string" || !text) return null;
     const markerIdx = text.indexOf(codexAppServerClientCaptureMarker);
@@ -7244,43 +7281,9 @@
     const originalSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
     proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
     proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
-    proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      const client = this;
-      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      let providerRefreshFailed = false;
-      if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderPatchEnabled()
-          && window.__codexSessionDeleteBridge) {
-        const settingsLoaded = await loadBackendSettingsState();
-        providerRefreshFailed = !settingsLoaded;
-        if (providerRefreshFailed) {
-          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
-        }
-      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderOverrideEnabled()
-          && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
-      }
-      const providerParams = providerRefreshFailed
-        ? params
-        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
-      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
-        client,
-        originalSendRequest.bind(client),
-        method,
-        nextParams,
-        options
-      );
-      const result = await originalSendRequest.call(client, method, nextParams, options);
-      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
-      if (modelContextRefresh !== false && threadState.threadId && threadState.model
-          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
-        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
-      }
-      if (!codexPlusModelUnlockEnabled()) return result;
-      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result);
+    proto.sendRequest = function codexPlusModelPatchedSendRequest(method, params, options) {
+      if (!codexAppServerRequestNeedsPatch(method, params)) return originalSendRequest.call(this, method, params, options);
+      return sendPatchedCodexAppServerRequest(this, originalSendRequest.bind(this), method, params, options);
     };
     if (typeof proto.prewarmThreadStart === "function"
         && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {

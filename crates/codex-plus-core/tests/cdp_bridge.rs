@@ -2893,7 +2893,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"9\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"10\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -5800,9 +5800,32 @@ fn noop_handler() -> bridge::BridgeHandler {
 
 #[test]
 fn app_server_client_capture_condition_targets_class_handle() {
-    assert_eq!(
-        bridge::app_server_client_capture_condition(),
-        "!window.__codexPlusAppServerClientClass"
+    let condition = serde_json::to_string(bridge::app_server_client_capture_condition()).unwrap();
+    let script = format!(
+        r#"
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const expression = {condition};
+class Client {{ sendRequest() {{}} }}
+const run = (window, client) => vm.runInNewContext(`(function(){{return ${{expression}}}}).call(client)`, {{ window, client }});
+const window = {{}};
+assert.equal(run(window, new Client()), false);
+assert.equal(window.__codexPlusAppServerClientClass, Client);
+assert.equal(run(window, new Client()), false);
+assert.equal(run(Object.freeze({{}}), new Client()), false);
+assert.equal(run({{}}, {{}}), false);
+assert.equal(run({{}}, null), false);
+assert.equal(run({{}}, new Proxy({{}}, {{ get() {{ throw new Error('changed host'); }} }})), false);
+"#
+    );
+    let output = std::process::Command::new("node")
+        .args(["-e", &script])
+        .output()
+        .expect("node should run capture condition harness");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
