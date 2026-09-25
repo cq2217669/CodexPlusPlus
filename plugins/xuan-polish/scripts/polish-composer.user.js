@@ -246,7 +246,8 @@
     const message = error?.error?.message || error?.message || error?.error || "";
     if (/Unknown bridge path/i.test(message)) return "润色插件接口不匹配，请更新插件后重新打开任务";
     if (/HTTP 429|too many requests|rate.?limit/i.test(message)) return "润色请求过于频繁或额度受限，请稍后重试";
-    if (/HTTP (?:401|403)|unauthorized|forbidden/i.test(message)) return "API Key 无效或无权访问当前模型，请检查润色设置";
+    if (/HTTP 403|forbidden/i.test(message)) return "当前 Key 有效，但供应商拒绝了这次润色请求（HTTP 403），请检查润色模型或接口权限";
+    if (/HTTP 401|unauthorized/i.test(message)) return "润色 API Key 无效或已过期，请检查当前供应商 Key";
     if (/timed out|timeout/i.test(message)) return "润色请求超时，请稍后重试";
     if (/failed to fetch|networkerror|econnrefused/i.test(message)) return "无法连接润色插件，请重新打开任务后重试";
     return typeof message === "string" && /\p{Script=Han}/u.test(message)

@@ -555,6 +555,11 @@ fn polish_profile_calls_responses_and_preserves_context_boundaries() {
             .to_ascii_lowercase()
             .contains("accept: text/event-stream")
     );
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("user-agent: codexplusplus/protocolproxy")
+    );
     assert_eq!(
         request
             .lines()
@@ -571,6 +576,11 @@ fn polish_profile_calls_responses_and_preserves_context_boundaries() {
     assert_eq!(body["input"][0]["type"], "message");
     assert_eq!(body["input"][0]["role"], "user");
     assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    assert_eq!(body["reasoning"]["effort"], "none");
+    assert_eq!(body["text"]["format"]["type"], "text");
+    assert_eq!(body["tools"], json!([]));
+    assert_eq!(body["tool_choice"], "none");
+    assert_eq!(body["parallel_tool_calls"], false);
     assert!(
         body["input"][0]["content"][0]["text"]
             .as_str()

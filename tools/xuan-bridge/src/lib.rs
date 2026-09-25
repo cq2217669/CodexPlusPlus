@@ -25,6 +25,8 @@ const OPENOX_API_BASE_URL: &str = "https://openox.tech";
 const OPENOX_USAGE_PAGE_SIZE: u64 = 100;
 const OPENOX_USAGE_MAX_PAGES: u64 = 500;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+// 润色请求与核心协议代理使用同一上游身份，避免供应商把它当成另一类客户端。
+const CODEX_USER_AGENT: &str = "CodexPlusPlus/ProtocolProxy";
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_RESULTS: usize = 2_000;
 const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
@@ -143,6 +145,7 @@ struct CodexRelayConnection {
     protocol: String,
     base_url: String,
     api_key: String,
+    account_id: Option<String>,
     user_agent: String,
 }
 
@@ -198,6 +201,14 @@ fn relay_profile_api_key(profile: &Value, settings: &Value) -> String {
         .or_else(|| relay_config_string(profile, "experimental_bearer_token"))
         .or_else(|| configured_string(settings, "relayApiKey"))
         .unwrap_or_default()
+}
+
+fn relay_profile_account_id(profile: &Value) -> Option<String> {
+    profile
+        .get("authContents")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|auth| configured_string(auth.get("tokens")?, "account_id"))
 }
 
 fn relay_config_string(profile: &Value, key: &str) -> Option<String> {
@@ -291,7 +302,8 @@ fn relay_connection_from_settings(
             protocol: "responses".into(),
             base_url,
             api_key: configured_string(settings, "relayApiKey").unwrap_or_default(),
-            user_agent: format!("XuanBridge/{BRIDGE_VERSION}"),
+            account_id: None,
+            user_agent: CODEX_USER_AGENT.into(),
         }));
     };
     if !reusable_relay_profile(profile) {
@@ -310,8 +322,9 @@ fn relay_connection_from_settings(
         .into(),
         base_url: relay_profile_base_url(profile, settings),
         api_key: relay_profile_api_key(profile, settings),
+        account_id: relay_profile_account_id(profile),
         user_agent: configured_string(profile, "userAgent")
-            .unwrap_or_else(|| format!("XuanBridge/{BRIDGE_VERSION}")),
+            .unwrap_or_else(|| CODEX_USER_AGENT.into()),
     }))
 }
 
@@ -1361,6 +1374,7 @@ struct PolishConnection {
     protocol: PolishProtocol,
     base_url: String,
     api_key: String,
+    account_id: Option<String>,
     model: String,
     style: String,
     max_input_chars: usize,
@@ -1565,15 +1579,24 @@ fn generate_polish(params: &Value) -> Result<Value, RpcError> {
                     }]
                 }],
                 "max_output_tokens": connection.max_output_tokens,
+                "reasoning": { "effort": "none" },
+                "text": { "format": { "type": "text" } },
+                "tools": [],
+                "tool_choice": "none",
+                "parallel_tool_calls": false,
                 "store": false,
                 "stream": true
             });
-            let request = client
+            let mut request = client
                 .post(url)
                 .bearer_auth(connection.api_key.trim())
                 .header("Accept", "text/event-stream")
                 .header("Cache-Control", "no-cache")
+                .header("Content-Type", "application/json")
                 .json(&body);
+            if let Some(account_id) = connection.account_id.as_deref() {
+                request = request.header("chatgpt-account-id", account_id);
+            }
             (body, request)
         }
         PolishProtocol::Anthropic => {
@@ -1709,15 +1732,31 @@ fn polish_remote_error(status: u16, payload: &Value) -> String {
         .pointer("/error/message")
         .and_then(Value::as_str)
         .or_else(|| payload.get("message").and_then(Value::as_str))
+        .or_else(|| payload.get("detail").and_then(Value::as_str))
         .or_else(|| payload.get("error").and_then(Value::as_str))
         .map(|message| message.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|message| !message.is_empty())
         .map(|message| message.chars().take(240).collect::<String>());
+    if status == 403
+        && detail.as_deref().is_some_and(|message| {
+            let message = message.to_ascii_lowercase();
+            message.contains("only allows codex official clients")
+                || message.contains("official clients only")
+        })
+    {
+        return "当前供应商只允许官方 Codex 客户端访问，润色请求被拒绝；这不代表当前 Key 无效"
+            .into();
+    }
     match status {
         400 => detail
             .map(|message| format!("润色请求被接口拒绝（HTTP 400）：{message}"))
             .unwrap_or_else(|| "润色请求参数与当前接口不兼容（HTTP 400）".into()),
-        401 | 403 => "润色 API Key 无效，或当前账号无权访问所选模型".into(),
+        401 => "润色 API Key 无效或已过期，请检查当前供应商 Key".into(),
+        403 => detail
+            .map(|message| format!("供应商拒绝润色请求（HTTP 403）：{message}"))
+            .unwrap_or_else(|| {
+                "当前 Key 已沿用消息发送所用 Key，但供应商拒绝了这次润色请求（HTTP 403）；请检查润色模型或接口权限".into()
+            }),
         404 => "润色接口或模型不存在，请检查供应商地址和模型名称".into(),
         429 => "润色请求过于频繁或额度受限，请稍后重试".into(),
         _ => detail
@@ -1786,6 +1825,7 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
         protocol: PolishProtocol::parse(&protocol)?,
         base_url,
         api_key,
+        account_id: relay.as_ref().and_then(|relay| relay.account_id.clone()),
         model,
         style: configured_string(&settings, "style")
             .filter(|value| matches!(value.as_str(), "structured" | "concise" | "coding"))
@@ -1803,7 +1843,7 @@ fn resolve_polish_connection(params: &Value) -> Result<PolishConnection, RpcErro
         user_agent: relay
             .map(|relay| relay.user_agent)
             .or_else(|| configured_string(&settings, "userAgent"))
-            .unwrap_or_else(|| format!("XuanBridge/{BRIDGE_VERSION}")),
+            .unwrap_or_else(|| CODEX_USER_AGENT.into()),
     })
 }
 
@@ -2943,6 +2983,21 @@ mod tests {
         assert_eq!(
             polish_remote_error(429, &json!({ "error": { "message": "rate limited" } })),
             "润色请求过于频繁或额度受限，请稍后重试"
+        );
+        assert_eq!(
+            polish_remote_error(
+                403,
+                &json!({ "error": { "message": "This account only allows Codex official clients" } }),
+            ),
+            "当前供应商只允许官方 Codex 客户端访问，润色请求被拒绝；这不代表当前 Key 无效"
+        );
+        assert_eq!(
+            polish_remote_error(401, &json!({})),
+            "润色 API Key 无效或已过期，请检查当前供应商 Key"
+        );
+        assert_eq!(
+            polish_remote_error(403, &json!({})),
+            "当前 Key 已沿用消息发送所用 Key，但供应商拒绝了这次润色请求（HTTP 403）；请检查润色模型或接口权限"
         );
     }
 

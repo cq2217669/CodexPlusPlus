@@ -99,6 +99,7 @@ test("润色生成请求等待后端超时完成，并将常见限制转换为�
   assert.match(pluginUiErrorMessage("xuan-polish", new Error("xuan-bridge request timed out: polish.generate")), /润色请求超时/);
   assert.match(pluginUiErrorMessage("xuan-polish", new Error("xuan-bridge request timed out: polish.settings.get")), /读取润色设置超时/);
   assert.match(pluginUiErrorMessage("xuan-polish", new Error("polish endpoint returned HTTP 401")), /API Key/);
+  assert.match(pluginUiErrorMessage("xuan-polish", new Error("polish endpoint returned HTTP 403")), /当前 Key 有效.*HTTP 403/);
 });
 
 test("重连撤销旧回调但不重放写请求，其他插件保持不变", async () => {
