@@ -6,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const bridgeBinary = process.env.XUAN_BRIDGE_BIN || path.join(
@@ -28,7 +29,23 @@ function startServer(pluginName, options = {}) {
     ...options.env
   };
   for (const key of options.unsetEnv || []) delete environment[key];
-  const child = spawn(process.execPath, ["server.mjs"], {
+  const args = ["server.mjs"];
+  const spawnLog = path.join(home, "bridge-spawns.log");
+  if (options.trackBridge) {
+    const preload = path.join(home, "track-spawn.mjs");
+    fs.writeFileSync(preload, `import childProcess from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const original = childProcess.spawn;
+childProcess.spawn = (...args) => {
+  fs.appendFileSync(${JSON.stringify(spawnLog)}, "spawn\\n");
+  return original(...args);
+};
+syncBuiltinESMExports();
+`);
+    args.unshift("--import", pathToFileURL(preload).href);
+  }
+  const child = spawn(process.execPath, args, {
     cwd: pluginRoot,
     env: environment,
     stdio: ["pipe", "pipe", "pipe"]
@@ -62,6 +79,7 @@ function startServer(pluginName, options = {}) {
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
     },
     unsolicited() { return unsolicited.slice(); },
+    bridgeSpawns() { return fs.existsSync(spawnLog) ? fs.readFileSync(spawnLog, "utf8").trim().split("\n").length : 0; },
     async close() {
       child.stdin.end();
       let timer;
@@ -129,6 +147,31 @@ test("mobile status MCP tool calls the bridge end to end", async () => {
     assert.ok("state" in payload || "paired" in payload || "error" in payload || "message" in payload);
   } finally {
     await server.close();
+  }
+});
+
+test("四个插件空闲初始化不启动 Bridge，首次工具请求才启动", async () => {
+  for (const pluginName of pluginNames) {
+    const server = startServer(pluginName, { trackBridge: true, env: {
+      XUAN_BRIDGE_BIN: path.join(repoRoot, "missing-test-bridge.exe"),
+      XUAN_UI_BRIDGE_DISABLE: "1",
+    } });
+    try {
+      const initialized = await server.request(1, "initialize");
+      assert.equal(initialized.result.serverInfo.name, pluginName);
+      const listed = await server.request(2, "tools/list");
+      assert.ok(listed.result.tools.length > 0);
+      assert.deepEqual((await server.request(3, "ping")).result, {});
+      assert.equal(server.bridgeSpawns(), 0);
+      const called = await server.request(4, "tools/call", {
+        name: listed.result.tools[0].name, arguments: {},
+      });
+      assert.equal(called.result.isError, true);
+      assert.match(called.result.content[0].text, /ENOENT/);
+      assert.equal(server.bridgeSpawns(), 1);
+    } finally {
+      await server.close();
+    }
   }
 });
 

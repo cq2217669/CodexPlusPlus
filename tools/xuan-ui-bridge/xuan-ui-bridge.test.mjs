@@ -42,6 +42,8 @@ test("插件路由拒绝跨插件操作、远程地址和超限请求", async ()
   await assert.rejects(dispatchUi("xuan-polish", "x".repeat(1_048_577), rejectDispatch), /过大/);
   await assert.rejects(dispatchUi("xuan-polish", "{}", rejectDispatch), /不受支持/);
   assert.equal(isAppPage({ type: "page", url: "app://-/index.html" }), true);
+  assert.equal(isAppPage({ type: "page", url: "app://-/index.html#thread" }), true);
+  assert.equal(isAppPage({ type: "page", url: "app://-/index.html?initialRoute=%2Favatar-overlay" }), false);
   for (const url of ["https://example.com", "app://-/browser.html", "app://-evil/index.html"]) {
     assert.equal(isAppPage({ type: "page", url }), false);
   }

@@ -128,7 +128,7 @@ export function pluginUiErrorMessage(name, error) {
 }
 
 export function isAppPage(target) {
-  return target?.type === "page" && /^app:\/\/-\/(?:index\.html)?(?:[?#]|$)/.test(target.url || "");
+  return target?.type === "page" && /^app:\/\/-\/index\.html(?:#.*)?$/.test(target.url || "");
 }
 
 export function validateSocket(raw, port) {
@@ -298,7 +298,7 @@ function portOpen(port) {
 }
 
 export function startPluginUi({ name, request, debugPort = Number(process.env.XUAN_CODEX_DEBUG_PORT || 9229),
-  lockPort = contracts[name]?.port, autoStartMobile = true, intervalMs = 2000, remoteBinary }) {
+  lockPort = contracts[name]?.port, autoStartMobile = true, intervalMs = 5000, remoteBinary }) {
   if (!Object.hasOwn(contracts, name) || !Number.isInteger(debugPort) || debugPort < 1 || debugPort > 65535) {
     throw new Error("插件调试端口配置无效");
   }

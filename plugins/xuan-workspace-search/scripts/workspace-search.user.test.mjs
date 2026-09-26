@@ -21,3 +21,10 @@ test("workspace search script calls only the independent bridge and never sends 
   assert.doesNotMatch(source, /Authorization\s*:/i);
   assert.doesNotMatch(source, /bearer\s+\$?\{/i);
 });
+
+test("workspace chrome observation stays local and avoids hidden-panel context work", () => {
+  assert.match(source, /if \(!state\.root \|\| state\.root\.hidden\)/);
+  assert.match(source, /只补回顶部按钮/);
+  assert.match(source, /existing\.parentElement !== header/);
+  assert.match(source, /window\.clearTimeout\(state\.contextTimer\)/);
+});

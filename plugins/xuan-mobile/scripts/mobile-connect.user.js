@@ -143,6 +143,8 @@
   const ROOT_ID = "xuan-mobile-connect";
   const PANEL_ID = "xuan-mobile-connect-panel";
   const STYLE_ID = "xuan-mobile-connect-style";
+  const closedRefreshMs = 30_000;
+  const openRefreshMs = 5_000;
 
   window[API_KEY]?.destroy?.();
   const state = {
@@ -232,6 +234,7 @@
         state.open = !state.open;
         render();
         if (state.open) void refreshAll();
+        else schedule();
       });
       document.body.appendChild(button);
     }
@@ -259,6 +262,7 @@
     button.dataset.open = String(state.open);
     button.dataset.bound = String(Boolean(status.bound));
     panel.hidden = !state.open;
+    if (!state.open) return;
     panel.innerHTML = `
       <div class="xmc-head"><div><div class="xmc-title">轩++远程</div><div class="xmc-status" role="status">${escapeHtml(status.message || "正在读取连接状态")}</div></div><button class="xmc-close" data-action="close" title="关闭" aria-label="关闭">×</button></div>
       <section class="xmc-section">
@@ -273,7 +277,7 @@
   }
 
   function bindPanel(panel, selected, pending) {
-    panel.querySelector('[data-action="close"]')?.addEventListener("click", () => { state.open = false; render(); });
+    panel.querySelector('[data-action="close"]')?.addEventListener("click", () => { state.open = false; render(); schedule(); });
     panel.querySelector('[data-action="pair"]')?.addEventListener("click", () => void action("/v1/mobile/pair", {}));
     panel.querySelector('[data-action="enable"]')?.addEventListener("change", (event) => void action("/v1/mobile/enable", { enabled: event.target.checked }));
     panel.querySelector('[data-action="auto-sync"]')?.addEventListener("change", (event) => void action("/v1/mobile/auto-sync", { enabled: event.target.checked }));
@@ -302,6 +306,7 @@
       state.busy = false;
       state.clock = Date.now();
       render();
+      schedule();
     }
   }
 
@@ -329,16 +334,20 @@
   }
 
   async function refreshAll() {
-    await Promise.all([refreshStatus(), refreshTasks()]);
+    try {
+      await Promise.all([refreshStatus(), refreshTasks()]);
+    } finally {
+      schedule();
+    }
   }
 
   function schedule() {
     window.clearTimeout(state.timer);
-    if (state.disposed) return;
+    if (state.disposed || (!state.open && !state.status?.enabled && !state.status?.autoSync && !state.status?.pending && !state.status?.qrImage)) return;
     state.timer = window.setTimeout(async () => {
       await refreshStatus();
       schedule();
-    }, 1500);
+    }, state.open ? openRefreshMs : closedRefreshMs);
   }
 
   function destroy() {
@@ -355,6 +364,7 @@
     if (event.key === "Escape" && state.open) {
       state.open = false;
       render();
+      schedule();
     }
   }
   window.addEventListener("keydown", onKeyDown);
@@ -362,5 +372,4 @@
   if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(destroy);
   render();
   void refreshAll();
-  schedule();
 })();

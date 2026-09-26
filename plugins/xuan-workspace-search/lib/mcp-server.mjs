@@ -20,10 +20,8 @@ function resolveBridgeBinary() {
 }
 
 const bridgeBinary = resolveBridgeBinary();
-const bridge = spawn(bridgeBinary, [], {
-  stdio: ["pipe", "pipe", "inherit"], windowsHide: true,
-  env: { ...process.env, XUAN_MOBILE_BRIDGE_URL: process.env.XUAN_MOBILE_BRIDGE_URL || "http://127.0.0.1:17421" },
-});
+let bridge = null;
+// 仅在真正收到工具请求后启动，避免空闲 MCP 主机各自常驻桥进程。
 const pending = new Map();
 let nextBridgeId = 1;
 let bridgeFailure = null;
@@ -36,29 +34,40 @@ function rejectPending(error) {
   pending.clear();
 }
 
-bridge.once("error", (error) => {
-  bridgeFailure = error;
-  rejectPending(error);
-});
-bridge.once("exit", (code) => {
-  bridgeFailure = new Error(`xuan-bridge exited with code ${code}`);
-  rejectPending(bridgeFailure);
-});
-process.once("exit", () => bridge.kill());
+function ensureBridge() {
+  if (bridge || bridgeFailure) return bridge;
+  bridge = spawn(bridgeBinary, [], {
+    stdio: ["pipe", "pipe", "inherit"], windowsHide: true,
+    env: { ...process.env, XUAN_MOBILE_BRIDGE_URL: process.env.XUAN_MOBILE_BRIDGE_URL || "http://127.0.0.1:17421" },
+  });
+  bridge.once("error", (error) => {
+    bridgeFailure = error;
+    rejectPending(error);
+  });
+  bridge.once("exit", (code) => {
+    bridgeFailure = new Error("xuan-bridge exited with code " + code);
+    rejectPending(bridgeFailure);
+  });
+  readline.createInterface({ input: bridge.stdout }).on("line", (line) => {
+    try {
+      const response = JSON.parse(line);
+      const item = pending.get(response.id);
+      if (!item) return;
+      pending.delete(response.id);
+      clearTimeout(item.timer);
+      if (response.error) item.reject(new Error(response.error.message));
+      else item.resolve(response.result);
+    } catch {}
+  });
+  return bridge;
+}
 
-readline.createInterface({ input: bridge.stdout }).on("line", (line) => {
-  try {
-    const response = JSON.parse(line);
-    const item = pending.get(response.id);
-    if (!item) return;
-    pending.delete(response.id);
-    clearTimeout(item.timer);
-    if (response.error) item.reject(new Error(response.error.message));
-    else item.resolve(response.result);
-  } catch {}
+process.once("exit", () => {
+  if (bridge && !bridge.killed) bridge.kill();
 });
 
 function callBridge(method, params) {
+  ensureBridge();
   if (bridgeFailure) return Promise.reject(bridgeFailure);
   return new Promise((resolve, reject) => {
     const id = `mcp-${nextBridgeId++}`;
@@ -100,8 +109,10 @@ export function createMcpServer({ name, version = "0.1.2", tools }) {
     rejectPending(new Error("MCP 客户端已关闭"));
     const ui = await uiStarting;
     await ui?.close();
-    if (!bridge.stdin.destroyed) bridge.stdin.end();
-    if (!bridge.killed) bridge.kill();
+    if (bridge) {
+      if (!bridge.stdin.destroyed) bridge.stdin.end();
+      if (!bridge.killed) bridge.kill();
+    }
   });
   input.on("line", async (line) => {
     let request;

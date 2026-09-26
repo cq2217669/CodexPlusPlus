@@ -63,7 +63,7 @@ test("润色扫描不因连续流式变更无限延后，销毁后不再调度",
   const timer = clock();
   const runtime = { disposed: false, mutationTimer: 0 };
   let scans = 0;
-  const context = vm.createContext({ runtime, window: timer, DEBOUNCE_MS: 120, ensureButton() { scans++; } });
+  const context = vm.createContext({ runtime, window: timer, DEBOUNCE_MS: 400, ensureButton() { scans++; }, updateComposerObserver() {} });
   const text = source("xuan-polish", "polish-composer");
   const start = text.indexOf("  function scheduleEnsure(");
   const end = text.indexOf("  async function startObservers(", start);
@@ -88,7 +88,8 @@ test("搜索面板自身重绘不触发项目查询，宿主变更合并且请�
   let release;
   const context = vm.createContext({
     state, Element, window: timer, ROOT_ID: "search", STYLE_ID: "style", BUTTON_CLASS: "button",
-    ensureHeaderButton() {}, syncTheme() {}, cleanup() { state.disposed = true; },
+    CHROME_DEBOUNCE_MS: 750,
+    ensureHeaderButton() {}, watchChrome() {}, syncTheme() {}, cleanup() { state.disposed = true; },
     syncCurrentWorkspace() { calls++; return new Promise(resolve => { release = resolve; }); },
   });
   const text = source("xuan-workspace-search", "workspace-search");
@@ -137,9 +138,11 @@ test("手机命令卸载会清除监听和超时，取消旧请求且拒绝后�
 
 test("手机状态请求在卸载后返回不会重建定时器", async () => {
   const timer = clock();
-  const state = { disposed: false, timer: 0 };
+  const state = { disposed: false, timer: 0, status: { enabled: true } };
   let release;
   const context = vm.createContext({ state, window: timer, refreshStatus: () => new Promise(resolve => { release = resolve; }) });
+  context.closedRefreshMs = 30_000;
+  context.openRefreshMs = 5_000;
   vm.runInContext(extract(source("xuan-mobile", "mobile-connect"), "schedule"), context);
   context.schedule();
   const tick = timer.tick();
@@ -147,4 +150,78 @@ test("手机状态请求在卸载后返回不会重建定时器", async () => {
   release();
   await tick;
   assert.equal(timer.pending.size, 0);
+  state.disposed = false;
+  state.status = { enabled: false };
+  context.schedule();
+  assert.equal(timer.pending.size, 0);
+});
+
+test("顶部栏延迟挂载和外壳替换后恢复局部监听", () => {
+  for (const [name, file, stateful] of [
+    ["xuan-usage", "usage-header", false],
+    ["xuan-workspace-search", "workspace-search", true],
+  ]) {
+    const observers = [];
+    class MutationObserver {
+      targets = [];
+      disconnected = false;
+      constructor(callback) { this.callback = callback; observers.push(this); }
+      observe(target, options) { this.targets.push({ target, options }); }
+      disconnect() { this.disconnected = true; }
+    }
+    const body = { parentElement: null };
+    const shell = { parentElement: body };
+    let header = null;
+    let scheduled = 0;
+    const fields = { observer: null, headerHostObserver: null, bootstrapObserver: null, observedHeader: null };
+    const context = vm.createContext({
+      ...fields, state: { ...fields }, document: { body }, MutationObserver,
+      findHeader: () => header,
+      scheduleEnsure: () => scheduled++, scheduleChromeWatch: () => scheduled++,
+      scheduleChromeContext() {},
+    });
+    vm.runInContext(extract(source(name, file), "watchChrome"), context);
+    context.watchChrome();
+    const bootstrap = observers[0];
+    assert.ok(bootstrap, `${name} 应在顶部栏缺失时等待挂载`);
+    assert.equal(bootstrap.targets[0].options.subtree, true);
+    context.watchChrome();
+    assert.equal(observers.length, 1);
+    header = { parentElement: shell };
+    bootstrap.callback([]);
+    assert.equal(scheduled, 1);
+    context.watchChrome();
+    assert.equal(bootstrap.disconnected, true);
+    const active = stateful ? context.state : context;
+    assert.equal(active.observer.targets[0].target, header);
+    assert.ok(active.headerHostObserver.targets.some(({ target }) => target === body));
+    assert.ok(active.headerHostObserver.targets.every(({ options }) => !options.subtree));
+    const oldObserver = active.observer;
+    header = { parentElement: { parentElement: body } };
+    active.headerHostObserver.callback([]);
+    context.watchChrome();
+    assert.equal(oldObserver.disconnected, true);
+    assert.equal(active.observer.targets[0].target, header);
+  }
+});
+
+test("手机界面在自身作用域按开关状态选择刷新间隔", () => {
+  const text = source("xuan-mobile", "mobile-connect");
+  const start = text.indexOf("\n(() => {", 1);
+  const delays = [];
+  const window = {
+    addEventListener() {}, clearTimeout() {},
+    setTimeout(_callback, delay) { delays.push(delay); return delays.length; },
+  };
+  const script = text.slice(start).replace(/  render\(\);\r?\n  void refreshAll\(\);/, "  window.testState = state; window.testSchedule = schedule;");
+  vm.runInNewContext(script, { window });
+  window.testSchedule();
+  assert.equal(delays.length, 0);
+  window.testState.open = true;
+  window.testSchedule();
+  assert.equal(delays.at(-1), 5_000);
+  window.testState.open = false;
+  window.testState.status = { enabled: true };
+  window.testSchedule();
+  assert.equal(delays.at(-1), 30_000);
 });

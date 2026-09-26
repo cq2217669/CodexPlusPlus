@@ -1,5 +1,5 @@
 (() => {
-  if (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href)) return;
+  if (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\/index\.html(?:#.*)?$/i.test(window.location.href)) return;
   if (window.__codexPlusUserScriptsBootstrap) return;
   window.__codexPlusUserScriptsBootstrap = true;
   const load = () => {

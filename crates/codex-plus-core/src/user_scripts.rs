@@ -445,7 +445,7 @@ fn wrap_script(script: &UserScriptFile, source: &str) -> String {
         r#"
 (() => {{
   const codexPlusIsNodeTestHarness = typeof process === "object" && !!process.versions?.node;
-  if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\//i.test(window.location.href))) return;
+  if (!codexPlusIsNodeTestHarness && (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\/index\.html(?:#.*)?$/i.test(window.location.href))) return;
   window.__codexPlusUserScripts = window.__codexPlusUserScripts || {{ scripts: {{}} }};
   const key = {key};
   window.__codexPlusUserScripts.currentKey = key;

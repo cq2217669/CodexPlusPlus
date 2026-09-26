@@ -16,8 +16,7 @@
     loading: "停止",
     restore: "恢复",
   };
-  const POLL_MS = 1800;
-  const DEBOUNCE_MS = 120;
+  const DEBOUNCE_MS = 400;
   const TOAST_MS = 2400;
   const SETTINGS_BRIDGE_TIMEOUT_MS = 40000;
   const GENERATE_BRIDGE_TIMEOUT_MS = 135000;
@@ -130,7 +129,9 @@
 
   const runtime = {
     observer: null,
-    pollId: 0,
+    observerRoot: null,
+    hostObserver: null,
+    bootstrapObserver: null,
     mutationTimer: 0,
     toastTimer: 0,
     resizeHandler: null,
@@ -138,6 +139,8 @@
     sendClickHandler: null,
     sendKeyHandler: null,
     sendSubmitHandler: null,
+    lifecycleFocusHandler: null,
+    lifecycleNavigationHandler: null,
     sendCleanupToken: 0,
     disposed: false,
     loading: false,
@@ -921,6 +924,108 @@
     refreshButtonAppearance(button);
   }
 
+  function isOwnComposerNode(node) {
+    if (!(node instanceof Element)) return false;
+    return Boolean(
+      node.matches?.(`[data-cpo-composer-${INSTANCE_REVISION}],[${PANEL_ATTR}],#${STYLE_ID}`) ||
+        node.closest?.(`[data-cpo-composer-${INSTANCE_REVISION}],[${PANEL_ATTR}],#${STYLE_ID}`),
+    );
+  }
+
+  function mutationContainsComposerControl(node) {
+    if (!(node instanceof Element) || isOwnComposerNode(node)) return false;
+    const selector =
+      `textarea,[contenteditable="true"],[role="textbox"],button,[role="button"],[role="combobox"],[aria-haspopup="menu"]`;
+    return Boolean(node.matches?.(selector) || node.querySelector?.(selector));
+  }
+
+  function mutationNeedsComposerRefresh(record) {
+    if (!record || isOwnComposerNode(record.target)) return false;
+    if (record.type === "characterData") return false;
+    if (record.type === "attributes") {
+      const element = record.target instanceof Element ? record.target : record.target?.parentElement;
+      return Boolean(
+        element &&
+          !isOwnComposerNode(element) &&
+          /^(aria-label|title|role|class|data-testid|disabled|hidden)$/.test(record.attributeName || ""),
+      );
+    }
+    if (mutationContainsComposerControl(record.target)) return true;
+    return Array.from(record.addedNodes || []).some(mutationContainsComposerControl) ||
+      Array.from(record.removedNodes || []).some(mutationContainsComposerControl);
+  }
+
+  function disconnectComposerObservers() {
+    if (runtime.observer) runtime.observer.disconnect();
+    runtime.observer = null;
+    runtime.observerRoot = null;
+    runtime.hostObserver?.disconnect();
+    runtime.hostObserver = null;
+    if (runtime.bootstrapObserver) runtime.bootstrapObserver.disconnect();
+    runtime.bootstrapObserver = null;
+  }
+
+  function updateComposerObserver(input = findComposerInput()) {
+    if (runtime.disposed) return;
+    const activeInput = input instanceof HTMLElement && input.isConnected ? input : null;
+    const composer = activeInput?.closest?.("form") || activeInput?.parentElement || null;
+    const root = composer?.parentElement || composer;
+    if (!(root instanceof Element)) {
+      if (runtime.observer || runtime.observerRoot) disconnectComposerObservers();
+      if (!runtime.bootstrapObserver && document.body) {
+        runtime.bootstrapObserver = new MutationObserver((records) => {
+          if (records.some(mutationNeedsComposerRefresh)) scheduleEnsure();
+        });
+        runtime.bootstrapObserver.observe(document.body, { childList: true, subtree: true });
+      }
+      return;
+    }
+    if (runtime.bootstrapObserver) {
+      runtime.bootstrapObserver.disconnect();
+      runtime.bootstrapObserver = null;
+    }
+    if (runtime.observerRoot === root && runtime.observer) return;
+    if (runtime.observer) runtime.observer.disconnect();
+    runtime.hostObserver?.disconnect();
+    runtime.observerRoot = root;
+    runtime.observer = new MutationObserver((records) => {
+      if (records.some(mutationNeedsComposerRefresh)) scheduleEnsure();
+    });
+    runtime.observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-label", "title", "role", "class", "data-testid", "disabled", "hidden"],
+    });
+    // 仅观察祖先的直接子节点，捕获整个输入区替换而不监听消息正文。
+    runtime.hostObserver = new MutationObserver(() => {
+      if (!root.isConnected) scheduleEnsure();
+    });
+    for (let ancestor = root.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      runtime.hostObserver.observe(ancestor, { childList: true });
+    }
+  }
+
+  function installLifecycleListeners() {
+    if (!runtime.lifecycleFocusHandler) {
+      runtime.lifecycleFocusHandler = (event) => {
+        if (runtime.disposed) return;
+        const target = event.target;
+        if (target instanceof Element && target.matches?.(`[contenteditable="true"],textarea,[role="textbox"]`)) {
+          scheduleEnsure();
+        } else if (!runtime.observerRoot?.isConnected) {
+          scheduleEnsure();
+        }
+      };
+      window.addEventListener("focusin", runtime.lifecycleFocusHandler, true);
+    }
+    if (!runtime.lifecycleNavigationHandler) {
+      runtime.lifecycleNavigationHandler = () => scheduleEnsure();
+      window.addEventListener("popstate", runtime.lifecycleNavigationHandler);
+      window.addEventListener("hashchange", runtime.lifecycleNavigationHandler);
+    }
+  }
+
   function destroyButton() {
     document.querySelectorAll(`[${BUTTON_ATTR}]`).forEach((node) => node.remove());
     document.querySelectorAll(`[data-cpo-composer-${INSTANCE_REVISION}]`).forEach((node) => node.remove());
@@ -938,8 +1043,7 @@
     document.querySelectorAll(`[${PANEL_ATTR}]`).forEach((node) => node.remove());
     document.querySelectorAll(`[${TOAST_ATTR}]`).forEach((node) => node.remove());
     removeStyle();
-    if (runtime.observer) runtime.observer.disconnect();
-    if (runtime.pollId) window.clearInterval(runtime.pollId);
+    disconnectComposerObservers();
     if (runtime.mutationTimer) window.clearTimeout(runtime.mutationTimer);
     if (runtime.toastTimer) window.clearTimeout(runtime.toastTimer);
     if (runtime.resizeHandler) window.removeEventListener("resize", runtime.resizeHandler);
@@ -947,10 +1051,17 @@
     if (runtime.sendClickHandler) window.removeEventListener("click", runtime.sendClickHandler, true);
     if (runtime.sendKeyHandler) window.removeEventListener("keydown", runtime.sendKeyHandler, true);
     if (runtime.sendSubmitHandler) window.removeEventListener("submit", runtime.sendSubmitHandler, true);
+    if (runtime.lifecycleFocusHandler) window.removeEventListener("focusin", runtime.lifecycleFocusHandler, true);
+    if (runtime.lifecycleNavigationHandler) {
+      window.removeEventListener("popstate", runtime.lifecycleNavigationHandler);
+      window.removeEventListener("hashchange", runtime.lifecycleNavigationHandler);
+    }
     runtime.shortcutHandler = null;
     runtime.sendClickHandler = null;
     runtime.sendKeyHandler = null;
     runtime.sendSubmitHandler = null;
+    runtime.lifecycleFocusHandler = null;
+    runtime.lifecycleNavigationHandler = null;
     runtime.disposed = true;
     if (window[API_KEY] === api) window[API_KEY] = undefined;
   }
@@ -1350,6 +1461,7 @@
       runtime.mutationTimer = 0;
       try {
         ensureButton();
+        updateComposerObserver();
       } catch (_) {
         /* ignore */
       }
@@ -1358,25 +1470,11 @@
 
   async function startObservers() {
     if (runtime.disposed) return;
-    if (runtime.observer) runtime.observer.disconnect();
-    runtime.observer = new MutationObserver((records) => {
-      const own = `[data-cpo-composer-${INSTANCE_REVISION}],[${PANEL_ATTR}],#${STYLE_ID}`;
-      if (records.some((record) => !(record.target instanceof Element && record.target.closest(own)))) scheduleEnsure();
-    });
-    runtime.observer.observe(document.documentElement, { childList: true, subtree: true });
     if (!runtime.resizeHandler) {
       runtime.resizeHandler = () => scheduleEnsure();
       window.addEventListener("resize", runtime.resizeHandler);
     }
-    if (runtime.pollId) window.clearInterval(runtime.pollId);
-    runtime.pollId = window.setInterval(() => {
-      if (runtime.disposed) return;
-      try {
-        ensureButton();
-      } catch (_) {
-        /* ignore */
-      }
-    }, POLL_MS);
+    installLifecycleListeners();
     installPromptOptimizeShortcut();
     installComposerSendCleanup();
     installStyle();
@@ -1384,6 +1482,7 @@
     void refreshSettings().then(() => {
       if (!runtime.disposed) refreshButtonAppearance();
     });
+    updateComposerObserver();
   }
 
   function ensure() {

@@ -5,11 +5,12 @@
   const BUTTON_CLASS = `${ROOT_ID}-button`;
   const POLL_INTERVAL_MS = 80;
   const SEARCH_DEBOUNCE_MS = 250;
+  const CHROME_DEBOUNCE_MS = 750;
 
   try {
     window[API_KEY]?.cleanup?.();
   } catch (_) {}
-  if (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/-\//i.test(window.location.href)) return;
+  if (window.top !== window || window.self !== window || !window.electronBridge || !/^app:\/\/\-\/index\.html(?:#.*)?$/i.test(window.location.href)) return;
 
   const state = {
     root: null,
@@ -34,6 +35,9 @@
     contextTimer: 0,
     pollTimer: 0,
     observer: null,
+    headerHostObserver: null,
+    bootstrapObserver: null,
+    observedHeader: null,
     previousFocus: null,
     disposed: false,
     chromeTimer: 0,
@@ -783,6 +787,8 @@
     if (!state.root || state.root.hidden) return;
     state.root.hidden = true;
     state.searchRevision += 1;
+    window.clearTimeout(state.contextTimer);
+    state.contextTimer = 0;
     cancelActiveSearch();
     if (state.previousFocus instanceof HTMLElement && state.previousFocus.isConnected) state.previousFocus.focus();
   }
@@ -794,7 +800,7 @@
 
   function ensureHeaderButton() {
     ensureStyles();
-    const header = document.querySelector('[class*="ApplicationMenuTopBar"], .app-header-tint, header');
+    const header = findHeader();
     if (!header) return;
     const nativeMenuClass = [...header.querySelectorAll("button")]
       .filter((candidate) => !candidate.classList.contains(BUTTON_CLASS))
@@ -802,9 +808,13 @@
       ?.className;
     const existing = document.querySelector(`.${BUTTON_CLASS}`);
     if (existing) {
-      existing.className = nativeMenuClass ? `${nativeMenuClass} ${BUTTON_CLASS}` : BUTTON_CLASS;
-      existing.dataset.nativeMenu = String(Boolean(nativeMenuClass));
-      return;
+      if (existing.parentElement !== header) {
+        existing.remove();
+      } else {
+        existing.className = nativeMenuClass ? `${nativeMenuClass} ${BUTTON_CLASS}` : BUTTON_CLASS;
+        existing.dataset.nativeMenu = String(Boolean(nativeMenuClass));
+        return;
+      }
     }
     const button = document.createElement("button");
     button.className = nativeMenuClass ? `${nativeMenuClass} ${BUTTON_CLASS}` : BUTTON_CLASS;
@@ -816,11 +826,16 @@
     header.appendChild(button);
   }
 
+  function findHeader() {
+    return document.querySelector('[class*="ApplicationMenuTopBar"], .app-header-tint, header');
+  }
+
   function refreshChromeContext() {
     if (state.disposed) return;
     ensureHeaderButton();
-    syncTheme();
+    watchChrome();
     if (!state.root || state.root.hidden) return;
+    syncTheme();
     if (state.contextTimer || state.contextRequest) return;
     state.contextTimer = window.setTimeout(() => {
       state.contextTimer = 0;
@@ -828,17 +843,65 @@
       state.contextRequest = syncCurrentWorkspace({ resetOnChange: true })
         .catch(() => {})
         .finally(() => { state.contextRequest = null; });
-    }, 250);
+    }, CHROME_DEBOUNCE_MS);
   }
 
   function scheduleChromeContext(records) {
     if (state.disposed || state.chromeTimer) return;
     const own = `#${ROOT_ID},#${STYLE_ID},.${BUTTON_CLASS}`;
     if (!records.some((record) => !(record.target instanceof Element && record.target.closest(own)))) return;
+    // 面板隐藏时只补回顶部按钮，不读取主题或同步工作区上下文。
+    if (!state.root || state.root.hidden) {
+      try { ensureHeaderButton(); } catch (_) { cleanup(); }
+      return;
+    }
     state.chromeTimer = window.setTimeout(() => {
       state.chromeTimer = 0;
       try { refreshChromeContext(); } catch (_) { cleanup(); }
-    }, 250);
+    }, CHROME_DEBOUNCE_MS);
+  }
+
+  function scheduleChromeWatch(delayMs = 0) {
+    if (state.disposed || state.chromeTimer) return;
+    state.chromeTimer = window.setTimeout(() => {
+      state.chromeTimer = 0;
+      try {
+        watchChrome();
+        refreshChromeContext();
+      } catch (_) { cleanup(); }
+    }, delayMs);
+  }
+
+  function watchChrome() {
+    const header = findHeader();
+    if (header === state.observedHeader && (state.observer || state.bootstrapObserver)) return;
+    state.observer?.disconnect();
+    state.headerHostObserver?.disconnect();
+    state.bootstrapObserver?.disconnect();
+    state.observer = null;
+    state.headerHostObserver = null;
+    state.bootstrapObserver = null;
+    state.observedHeader = header;
+    if (!header) {
+      const body = document.body;
+      if (body) {
+        state.bootstrapObserver = new MutationObserver(() => scheduleChromeWatch());
+        // 顶部栏可能稍后挂到已有外壳中；找到后立即切换到局部观察。
+        state.bootstrapObserver.observe(body, { childList: true, subtree: true });
+      }
+      return;
+    }
+    state.observer = new MutationObserver(scheduleChromeContext);
+    state.observer.observe(header, { childList: true, subtree: true });
+    const host = header.parentElement;
+    if (host) {
+      state.headerHostObserver = new MutationObserver(() => {
+        if (findHeader() !== state.observedHeader) scheduleChromeWatch();
+      });
+      for (let ancestor = host; ancestor; ancestor = ancestor.parentElement) {
+        state.headerHostObserver.observe(ancestor, { childList: true });
+      }
+    }
   }
 
   function onKeyDown(event) {
@@ -859,6 +922,9 @@
     state.searchRevision += 1;
     document.removeEventListener("keydown", onKeyDown, true);
     state.observer?.disconnect();
+    state.headerHostObserver?.disconnect();
+    state.bootstrapObserver?.disconnect();
+    state.observedHeader = null;
     window.clearTimeout(state.debounceTimer);
     window.clearTimeout(state.contextTimer);
     window.clearTimeout(state.chromeTimer);
@@ -871,9 +937,8 @@
   }
 
   document.addEventListener("keydown", onKeyDown, true);
-  state.observer = new MutationObserver(scheduleChromeContext);
-  state.observer.observe(document.documentElement, { childList: true, subtree: true });
   ensureHeaderButton();
+  watchChrome();
   window[API_KEY] = { open, close, toggle, cleanup };
   if (window.__codexPlusUserScripts?.currentKey) window.__codexPlusUserScripts.registerCleanup?.(cleanup);
 })();

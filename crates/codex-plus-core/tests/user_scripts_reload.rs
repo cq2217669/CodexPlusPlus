@@ -102,6 +102,24 @@ fresh.top = {};
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 1);
 
+// 辅助窗口不初始化用户脚本；主页面及其路由片段保持可用。
+for (const [href, allowed] of [
+  ['app://-/index.html', true],
+  ['app://-/index.html#thread', true],
+  ['app://-/index.html?initialRoute=%2Favatar-overlay', false],
+  ['app://-/index.html?initialRoute=%2Fquick-chat', false],
+]) {
+  let loads = 0;
+  const isolated = { location: { href }, electronBridge: {},
+    __codexSessionDeleteBridge() { loads++; return Promise.resolve({}); } };
+  isolated.top = isolated.self = isolated;
+  const isolatedContext = vm.createContext({ window: isolated, document: { readyState: 'complete' }, console });
+  vm.runInContext(bundles.bootstrap, isolatedContext);
+  vm.runInContext(bundles.initial, isolatedContext);
+  assert.equal(loads, allowed ? 1 : 0);
+  assert.equal(isolated.legacy, allowed ? 1 : undefined);
+}
+
 // 重复启动请求、桥接恢复及刷新后的新页面均不得再次刷新或叠加旧脚本。
 for (let page = 0; page < 3; page++) {
   let pageReloads = 0;

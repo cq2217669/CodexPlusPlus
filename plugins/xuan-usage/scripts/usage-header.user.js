@@ -6,6 +6,7 @@
   const PANEL_ID = "codex-plus-relay-balance-panel";
   const STYLE_ID = "codex-plus-relay-balance-style";
   const STORAGE_KEY = "codex-plus-relay-balance-config-v1";
+  const ENSURE_DEBOUNCE_MS = 750;
   const DEFAULT_CONFIG = {
     usagePath: "/v1/usage",
     timezone: "Asia/Shanghai",
@@ -24,6 +25,9 @@
   let panel = null;
   let timer = 0;
   let observer = null;
+  let headerHostObserver = null;
+  let bootstrapObserver = null;
+  let observedHeader = null;
   let ensureTimer = 0;
   let requestPromise = null;
   let previousSnapshot = null;
@@ -328,12 +332,16 @@
       panel.addEventListener("pointercancel", onPanelPointerEnd);
       document.body.appendChild(panel);
     }
-    const header = document.querySelector('[class*="ApplicationMenuTopBar"], .app-header-tint, header');
+    const header = findHeader();
     const nativeMenuClass = header && [...header.querySelectorAll("button")]
       .find((candidate) => /^(文件|编辑|视图|帮助|file|edit|view|help)$/i.test(candidate.textContent?.trim() || ""))
       ?.className;
     root.className = nativeMenuClass || "";
     root.dataset.nativeMenu = String(Boolean(nativeMenuClass));
+  }
+
+  function findHeader() {
+    return document.querySelector('[class*="ApplicationMenuTopBar"], .app-header-tint, header');
   }
 
   function badgeText() {
@@ -949,7 +957,48 @@
     if (destroyed) return;
     const missing = !root?.isConnected || !panel?.isConnected;
     ensureElements();
+    watchChrome();
     if (missing) render();
+  }
+
+  function scheduleEnsure(delayMs = ENSURE_DEBOUNCE_MS) {
+    if (destroyed || ensureTimer) return;
+    ensureTimer = window.setTimeout(() => {
+      ensureTimer = 0;
+      try { ensure(); } catch (_) { destroy(); }
+    }, delayMs);
+  }
+
+  function watchChrome() {
+    const header = findHeader();
+    if (header === observedHeader && (observer || bootstrapObserver)) return;
+    observer?.disconnect();
+    headerHostObserver?.disconnect();
+    bootstrapObserver?.disconnect();
+    observer = null;
+    headerHostObserver = null;
+    bootstrapObserver = null;
+    observedHeader = header;
+    if (!header) {
+      const body = document.body;
+      if (body) {
+        bootstrapObserver = new MutationObserver(() => scheduleEnsure(0));
+        // 顶部栏可能稍后挂到已有外壳中；找到后立即切换到局部观察。
+        bootstrapObserver.observe(body, { childList: true, subtree: true });
+      }
+      return;
+    }
+    observer = new MutationObserver(() => scheduleEnsure());
+    observer.observe(header, { childList: true, subtree: true });
+    const host = header.parentElement;
+    if (host) {
+      headerHostObserver = new MutationObserver(() => {
+        if (findHeader() !== observedHeader) scheduleEnsure(0);
+      });
+      for (let ancestor = host; ancestor; ancestor = ancestor.parentElement) {
+        headerHostObserver.observe(ancestor, { childList: true });
+      }
+    }
   }
 
   function destroy() {
@@ -959,6 +1008,9 @@
     window.clearTimeout(timer);
     window.clearTimeout(ensureTimer);
     observer?.disconnect();
+    headerHostObserver?.disconnect();
+    bootstrapObserver?.disconnect();
+    observedHeader = null;
     root?.remove();
     panel?.remove();
     document.getElementById(STYLE_ID)?.remove();
@@ -971,16 +1023,6 @@
     if (destroyed) return;
     ensure();
     window.addEventListener("resize", applyPanelPosition);
-    observer = new MutationObserver((records) => {
-      if (destroyed || ensureTimer) return;
-      const own = `#${ROOT_ID},#${PANEL_ID},#${STYLE_ID}`;
-      if (!records.some((record) => !(record.target instanceof Element && record.target.closest(own)))) return;
-      ensureTimer = window.setTimeout(() => {
-        ensureTimer = 0;
-        try { ensure(); } catch (_) { destroy(); }
-      }, 250);
-    });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
     void refresh(true);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
