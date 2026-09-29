@@ -847,7 +847,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         Ok(snapshot) => snapshot,
         Err(error) => return failed(&format!("无法确认旧启动器身份，未执行重启：{error}"), json!({})),
     };
-    if let Err(error) = stop_codex_plus_for_restart(
+    let native_browser_shutdown = match stop_codex_plus_for_restart(
         || codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port),
         || codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10)),
         || {
@@ -858,8 +858,27 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             Ok(())
         },
     ) {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            return failed(
+                &restart_stop_failure_message(&error),
+                json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+            );
+        }
+    };
+    let native_browser_restore_failed = matches!(
+        native_browser_shutdown,
+        codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+    );
+    if native_browser_restore_failed {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "native_browser.cleanup_not_restored",
+            json!({"state": "blocked"}),
+        );
+    }
+    if let Err(error) = prepare_fixed_helper_port_for_restart(settings.as_ref()) {
         return failed(
-            &format!("Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"),
+            &format!("重启 Codex++ 失败：{error}"),
             json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
         );
     }
@@ -897,7 +916,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port,
                 "syncActiveRelay": request.sync_active_relay,
-                "launchStartedAtMs": launch_started_at_ms
+                "launchStartedAtMs": launch_started_at_ms,
+                "nativeBrowserRestoreFailed": native_browser_restore_failed
             }),
         },
         Err(error) => {
@@ -910,7 +930,8 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
                     "debugPort": request.debug_port,
                     "helperPort": request.helper_port,
                     "syncActiveRelay": request.sync_active_relay,
-                    "launchStartedAtMs": launch_started_at_ms
+                    "launchStartedAtMs": launch_started_at_ms,
+                    "nativeBrowserRestoreFailed": native_browser_restore_failed
                 }),
             )
         }
@@ -919,13 +940,68 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 
 fn stop_codex_plus_for_restart(
     stop_codex: impl FnOnce(),
-    wait_native: impl FnOnce() -> anyhow::Result<()>,
+    wait_native: impl FnOnce() -> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown>,
     stop_launcher: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+) -> Result<codex_plus_core::native_browser::NativeBrowserShutdown, RestartStopError> {
     // The launcher owns native recovery; terminating it first skips that cleanup.
     stop_codex();
-    wait_native()?;
-    stop_launcher()?;
+    let shutdown = wait_native().map_err(RestartStopError::NativeBrowser)?;
+    stop_launcher().map_err(RestartStopError::Launcher)?;
+    Ok(shutdown)
+}
+
+#[derive(Debug)]
+enum RestartStopError {
+    NativeBrowser(anyhow::Error),
+    Launcher(anyhow::Error),
+}
+
+fn restart_stop_failure_message(error: &RestartStopError) -> String {
+    match error {
+        RestartStopError::NativeBrowser(error) => {
+            let summary = if error
+                .downcast_ref::<codex_plus_core::native_browser::NativeBrowserCleanupStillRunning>()
+                .is_some()
+            {
+                "仍在恢复"
+            } else {
+                "恢复失败"
+            };
+            format!("Codex 已请求停止，但原生浏览器文件{summary}，未启动新实例：{error}")
+        }
+        RestartStopError::Launcher(error) => format!(
+            "Codex 已请求停止，但旧启动器尚未退出，未启动新实例：{error}"
+        ),
+    }
+}
+
+fn prepare_fixed_helper_port_for_restart(settings: Option<&BackendSettings>) -> anyhow::Result<()> {
+    let loaded;
+    let settings = match settings {
+        Some(settings) => settings,
+        None => match SettingsStore::default().load() {
+            Ok(value) => {
+                loaded = value;
+                &loaded
+            }
+            // 读不到设置时仍交给 launcher 自己等。这里失败不应把一次普通重启拦死。
+            Err(_) => return Ok(()),
+        },
+    };
+    let Some(port) = codex_plus_core::launcher::required_fixed_helper_port(settings) else {
+        return Ok(());
+    };
+    codex_plus_core::launcher::wait_for_fixed_helper_port(
+        port,
+        codex_plus_core::launcher::protocol_proxy_bind_retry_timeout_ms(),
+        codex_plus_core::launcher::helper_bind_retry_interval_ms(),
+        probe_loopback_port,
+        |interval_ms| std::thread::sleep(std::time::Duration::from_millis(interval_ms)),
+    )
+}
+
+fn probe_loopback_port(port: u16) -> std::io::Result<()> {
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
     Ok(())
 }
 
@@ -1469,9 +1545,17 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
         ) else {
             return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
         };
-        let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
+        // 包内 CLI 可能存在于受系统保护的目录而无法执行（#2028 同类问题），
+        // 因此先验证能真正启动，失败时回退到用户目录中的独立 CLI。
+        let bundled = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir);
+        let standalone = codex_plus_core::app_paths::find_standalone_codex_cli();
+        let Some(path) = [bundled, standalone]
+            .into_iter()
+            .flatten()
+            .find(|candidate| codex_cli_can_start(candidate))
+        else {
             return failed(
-                "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
+                "已找到 Codex Desktop，但没有可用的 Codex CLI；请安装或指定用户目录中的 Codex CLI。",
                 json!({ "path": null }),
             );
         };
@@ -1479,6 +1563,27 @@ pub fn find_desktop_codex_cli() -> CommandResult<Value> {
             "已填入桌面版内置 Codex CLI。",
             json!({ "path": path.to_string_lossy() }),
         )
+    }
+}
+
+fn codex_cli_can_start(path: &std::path::Path) -> bool {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut command = Command::new(path);
+    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(codex_plus_core::windows_create_no_window());
+    }
+    let Ok(mut child) = command.spawn() else { return false; };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return false; }
+        }
     }
 }
 
@@ -7161,6 +7266,42 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
+    /// 回归（issue #1604）：用户点「重启 Codex++」走的就是这条同步路径。
+    /// 现场遗留的 0 字节 auth.json 必须被修复成合法 JSON，否则仍然停在登录页。
+    #[test]
+    fn active_aggregate_sync_repairs_empty_auth_json() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "").unwrap();
+        let settings = BackendSettings {
+            active_relay_id: "aggregate".to_string(),
+            active_aggregate_relay_id: "aggregate".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "aggregate".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Aggregate,
+                ..RelayProfile::default()
+            }],
+            aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
+                id: "aggregate".to_string(),
+                name: "Aggregate".to_string(),
+                session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
+                strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
+                members: Vec::new(),
+                routes: Vec::new(),
+            }],
+            ..BackendSettings::default()
+        };
+
+        sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+        let raw = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&raw).expect("重启同步后 auth.json 必须是合法 JSON");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|item| item.as_str()),
+            Some("codex-plus-aggregate")
+        );
+    }
+
     fn failed_active_relay_sync_does_not_spawn_or_change_live_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
@@ -7205,10 +7346,54 @@ base_url = "https://example.invalid/v1"
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
             || events.borrow_mut().push("codex"),
-            || { events.borrow_mut().push("cleanup"); Ok(()) },
+            || {
+                events.borrow_mut().push("cleanup");
+                Ok(codex_plus_core::native_browser::NativeBrowserShutdown::Ready)
+            },
             || { events.borrow_mut().push("launcher"); Ok(()) },
         ).unwrap();
         assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+    }
+
+    #[test]
+    fn restore_failure_still_stops_the_old_launcher() {
+        let stopped_launcher = std::cell::Cell::new(false);
+        let shutdown = stop_codex_plus_for_restart(
+            || {},
+            || Ok(codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed),
+            || {
+                stopped_launcher.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            shutdown,
+            codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed
+        );
+        assert!(stopped_launcher.get());
+    }
+
+    #[test]
+    fn restart_stop_errors_name_the_step_that_failed() {
+        let browser = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::Error::new(
+                codex_plus_core::native_browser::NativeBrowserCleanupStillRunning,
+            ),
+        ));
+        let launcher = restart_stop_failure_message(&RestartStopError::Launcher(anyhow::anyhow!(
+            "old launcher still exiting"
+        )));
+        assert!(browser.contains("原生浏览器文件仍在恢复"));
+        assert!(!browser.contains("旧启动器尚未退出"));
+        assert!(launcher.contains("旧启动器尚未退出"));
+        assert!(!launcher.contains("原生浏览器文件仍在恢复"));
+
+        let failed = restart_stop_failure_message(&RestartStopError::NativeBrowser(
+            anyhow::anyhow!("Invalid native cleanup receipt"),
+        ));
+        assert!(failed.contains("原生浏览器文件恢复失败"));
+        assert!(!failed.contains("原生浏览器文件仍在恢复"));
     }
 
     #[test]

@@ -114,6 +114,8 @@ import {
 } from "./model-windows";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
+import { sessionProviderForProtocol } from "./relay-session";
 import { resolveProviderName } from "./provider-name";
 import {
   providerSyncStreamPercent,
@@ -207,6 +209,7 @@ type OverviewResult = CommandResult<{
 
 type LaunchCommandResult = CommandResult<{
   launchStartedAtMs?: number;
+  nativeBrowserRestoreFailed?: boolean;
 }>;
 
 type PluginMarketplaceRepairResult = CommandResult<{
@@ -372,6 +375,7 @@ export type RelayProfile = {
   vlmModel: string;
   vlmBaseUrl: string;
   userAgent: string;
+  customHeaders: { key: string; value: string }[];
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
   noAuth: boolean;
@@ -1088,6 +1092,7 @@ const defaultSettings: BackendSettings = {
       vlmModel: "",
       vlmBaseUrl: "",
       userAgent: "",
+      customHeaders: [],
       sub2apiEnabled: false,
       noAuth: false,
       sub2apiMultiplier: "",
@@ -2159,7 +2164,13 @@ export function App() {
       showNotice(t("重启 Codex++"), result.message, result.status);
       return false;
     }
-    showNotice(t("重启 Codex++"), t("正在等待 Codex 重新启动…"), "accepted");
+    showNotice(
+      t("重启 Codex++"),
+      result.nativeBrowserRestoreFailed
+        ? t("原生浏览器文件恢复失败，仍会继续启动。")
+        : t("正在等待 Codex 重新启动…"),
+      result.nativeBrowserRestoreFailed ? "failed" : "accepted",
+    );
     const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
     showLaunchCompletionNotice(t("重启 Codex++"), completion);
     const succeeded = Boolean(
@@ -7323,6 +7334,7 @@ function RelayProfileDetail({
       ? aggregateRelayProfileValidation(draft)
       : relayModelRoutesSettingsValidation(validationSettings));
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
+  const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     const validSlugs = serializedRows.modelList.split("\n").map((slug) => slug.trim()).filter(Boolean);
@@ -7332,6 +7344,7 @@ function RelayProfileDetail({
       modelWindows: serializedRows.modelWindows,
       modelAutoCompact: serializedRows.modelAutoCompact,
       modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
+      customHeaders: serializeRelayHeaders(draft.customHeaders || []),
       modelVlm: serializedRows.modelVlm,
     };
   };
@@ -7728,6 +7741,7 @@ function RelayProfileEditor({
     setModelWindowRows([...modelWindowRows, { model: "", window: "", autoCompact: "", imageHandling: "" }]);
   };
   const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
+  const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
   const fetchSub2ApiRate = async () => {
     const result = await actions.fetchSub2ApiBilling(deriveRelayProfileFromFiles(profile));
     if (!result) return;
@@ -7802,7 +7816,7 @@ function RelayProfileEditor({
               <span>{t("关闭官方低额度提示")}</span>
             </label>
             <p className="field-hint">
-              {t("关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。")}
+              {t("只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。")}
             </p>
           </Field>
         ) : null}
@@ -8188,9 +8202,13 @@ function RelayProfileEditor({
           </section>
         ) : null}
         {showApiFields ? (
-          <label className="switch-row compact relay-switch-row relay-field-standard">
+          <label
+            className={`switch-row compact relay-switch-row relay-field-standard${profile.protocol === "chatCompletions" ? "" : " is-disabled"}`}
+            title={profile.protocol === "chatCompletions" ? undefined : t("仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。")}
+          >
             <input
               checked={profile.standardOpenaiProtocol}
+              disabled={profile.protocol !== "chatCompletions"}
               onChange={(event) =>
                 updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
               }
@@ -8322,6 +8340,73 @@ function RelayProfileEditor({
               onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
               placeholder={t("留空使用默认值")}
             />
+          </Field>
+        ) : null}
+        {showApiFields ? (
+          <Field className="relay-field-custom-headers" label={t("自定义请求头")}>
+            <div className="relay-custom-headers">
+              {(profile.customHeaders || []).map((row, index) => (
+                <div className="relay-custom-header-row" key={`custom-header-${index}`}>
+                  <Input
+                    aria-label={t("请求头名称")}
+                    value={row.key}
+                    onChange={(event) => {
+                      const next = (profile.customHeaders || []).slice();
+                      next[index] = { ...next[index], key: event.currentTarget.value };
+                      updateDraft({ customHeaders: next });
+                    }}
+                    placeholder="X-Tenant"
+                  />
+                  <Input
+                    aria-label={t("请求头值")}
+                    value={row.value}
+                    onChange={(event) => {
+                      const next = (profile.customHeaders || []).slice();
+                      next[index] = { ...next[index], value: event.currentTarget.value };
+                      updateDraft({ customHeaders: next });
+                    }}
+                    placeholder={t("请求头值")}
+                  />
+                  <Button
+                    aria-label={t("删除这一项")}
+                    onClick={() =>
+                      updateDraft({
+                        customHeaders: (profile.customHeaders || []).filter((_, i) => i !== index),
+                      })
+                    }
+                    size="sm"
+                    type="button"
+                    variant="secondary"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <div className="relay-custom-headers-actions">
+                <Button
+                  onClick={() =>
+                    updateDraft({
+                      customHeaders: [...(profile.customHeaders || []), { key: "", value: "" }],
+                    })
+                  }
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("添加请求头")}
+                </Button>
+              </div>
+              <span className="hint-line">
+                {t("自定义请求头会同时用于测试连接、模型列表与实际代理请求。")}
+              </span>
+              <span className="hint-line">
+                {t("Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}
+              </span>
+              {customHeadersError ? (
+                <span className="hint-line relay-custom-headers-error">{customHeadersError}</span>
+              ) : null}
+            </div>
           </Field>
         ) : null}
       </div>
@@ -11033,6 +11118,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             vlmModel: "",
             vlmBaseUrl: "",
             userAgent: "",
+            customHeaders: [],
             sub2apiEnabled: false,
             noAuth: false,
             sub2apiMultiplier: "",
@@ -11171,6 +11257,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelMetadata: profile.modelMetadata || "",
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
+    customHeaders: profile.customHeaders || [],
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
@@ -11450,7 +11537,15 @@ function applyRelayProfilePatchToFiles(
   patch: Partial<RelayProfile>,
   options: { allowGenerateFiles?: boolean } = {},
 ): RelayProfile {
-  let next: RelayProfile = { ...profile, ...patch };
+  const protocol = patch.protocol ?? profile.protocol;
+  const sessionProvider = "sessionProvider" in patch
+    ? normalizeRelaySessionProvider(patch.sessionProvider)
+    : relaySessionProvider(profile);
+  const compatibleSession = sessionProviderForProtocol(sessionProvider, protocol);
+  const normalizedPatch = compatibleSession === sessionProvider
+    ? patch
+    : { ...patch, sessionProvider: compatibleSession };
+  let next: RelayProfile = { ...profile, ...normalizedPatch };
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
   }
@@ -11977,6 +12072,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmModel: "",
     vlmBaseUrl: "",
     userAgent: "",
+    customHeaders: [],
     sub2apiEnabled: false,
     noAuth: false,
     sub2apiMultiplier: "",
@@ -12020,6 +12116,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       vlmModel: "",
       vlmBaseUrl: "",
       userAgent: "",
+      customHeaders: [],
       sub2apiEnabled: false,
       noAuth: false,
       sub2apiMultiplier: "",

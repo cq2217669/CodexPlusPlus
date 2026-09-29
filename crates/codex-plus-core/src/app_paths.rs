@@ -410,6 +410,62 @@ pub fn find_standalone_codex_app_dir() -> Option<PathBuf> {
     None
 }
 
+/// Finds the CLI shipped by the standalone Codex installer.
+pub fn find_standalone_codex_cli() -> Option<PathBuf> {
+    let local_appdata = std::env::var_os("LOCALAPPDATA")?;
+    find_standalone_codex_cli_in(&PathBuf::from(local_appdata).join("OpenAI").join("Codex").join("bin"))
+}
+
+fn find_standalone_codex_cli_in(bin_dir: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = standalone_cli_in_dir(bin_dir) { candidates.push(path); }
+    if let Ok(entries) = std::fs::read_dir(bin_dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                if let Some(path) = standalone_cli_in_dir(&entry.path()) { candidates.push(path); }
+            }
+        }
+    }
+    candidates.sort_by_key(|path| std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok());
+    candidates.pop()
+}
+
+fn standalone_cli_in_dir(dir: &Path) -> Option<PathBuf> {
+    ["codex.exe", "codex", "Codex.exe", "Codex"].iter().map(|name| dir.join(name)).find(|path| path.is_file())
+}
+
+#[cfg(test)]
+mod standalone_cli_tests {
+    use super::find_standalone_codex_cli_in;
+
+    #[test]
+    fn standalone_cli_finds_latest_versioned_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        let new = temp.path().join("new");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("codex.exe"), "old").unwrap();
+        std::fs::write(new.join("codex.exe"), "new").unwrap();
+        std::fs::File::options().write(true).open(old.join("codex.exe")).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))).unwrap();
+        assert_eq!(find_standalone_codex_cli_in(temp.path()), Some(new.join("codex.exe")));
+    }
+
+    #[test]
+    fn standalone_cli_returns_none_without_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(find_standalone_codex_cli_in(temp.path()), None);
+    }
+
+    #[test]
+    fn standalone_cli_finds_unversioned_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("codex.exe");
+        std::fs::write(&binary, "cli").unwrap();
+        assert_eq!(find_standalone_codex_cli_in(temp.path()), Some(binary));
+    }
+}
+
 pub fn resolve_codex_app_dir_with_saved(
     app_dir: Option<&Path>,
     saved_app_path: Option<&str>,
@@ -640,7 +696,57 @@ pub fn packaged_app_user_model_id(app_dir: &Path) -> Option<String> {
     if publisher_id.is_empty() {
         return None;
     }
-    Some(format!("{}_{publisher_id}!{}", spec.identity, spec.app_id))
+    // 新版 ChatGPT-Desktop 可能改变包内 Application Id（参见 #2148 的 0x80270254 报错），
+    // 这里优先读取真实 manifest，读取失败再回退到历史硬编码值。
+    //
+    // 注意：这段逻辑曾被 #2202 的 799ef0c9（一个纯 Linux 修复）基于旧基线静默回退掉，
+    // 导致 #2308/#2310 的「该进程没有程序包标识符」。恢复时连同下面的测试一起。
+    let app_id = packaged_manifest_app_id(app_dir).unwrap_or_else(|| spec.app_id.to_string());
+    Some(format!("{}_{publisher_id}!{app_id}", spec.identity))
+}
+
+fn packaged_manifest_app_id(app_dir: &Path) -> Option<String> {
+    let package_dir = if app_dir
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("app"))
+    {
+        app_dir.parent()?
+    } else {
+        app_dir
+    };
+    let manifest = std::fs::read_to_string(package_dir.join("AppxManifest.xml")).ok()?;
+    manifest_first_application_id(&manifest)
+}
+
+// AppxManifest.xml 中第一个 <Application> 节点的 Id，即 AUMID 感叹号后的部分。
+fn manifest_first_application_id(manifest: &str) -> Option<String> {
+    let mut rest = manifest;
+    while let Some(pos) = rest.find("<Application") {
+        rest = &rest[pos + "<Application".len()..];
+        // 跳过 <Applications> 等容器节点，只处理 <Application ...>。
+        if !rest.chars().next().is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let tag_end = rest.find('>')?;
+        if let Some(id) = xml_attribute_value(&rest[..tag_end], "Id") {
+            return Some(id);
+        }
+        rest = &rest[tag_end..];
+    }
+    None
+}
+
+fn xml_attribute_value(tag: &str, name: &str) -> Option<String> {
+    for segment in tag.split_whitespace() {
+        let Some((attr, value)) = segment.split_once('=') else {
+            continue;
+        };
+        if attr != name {
+            continue;
+        }
+        return Some(value.trim_matches('"').trim_matches('\'').to_string());
+    }
+    None
 }
 
 fn package_name_from_app_dir(app_dir: &Path) -> Option<String> {

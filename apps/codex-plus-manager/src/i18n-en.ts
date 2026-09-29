@@ -15,6 +15,8 @@ export const EN_PLAIN: Record<string, string> = {
   "启动中": "Starting",
   "启动仍在后台进行，可在概览的“最近启动”中查看状态。": "Startup is still running in the background. Check Recent Launch on Overview for its status.",
   "正在等待 Codex 重新启动…": "Waiting for Codex to restart...",
+  "原生浏览器文件恢复失败，仍会继续启动。":
+    "Native browser files could not be restored. Codex will still start.",
   "正在等待 Codex 启动结果…": "Waiting for the Codex startup result...",
   "运行中（增强等待中）": "Running (waiting for enhancements)",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
@@ -286,6 +288,7 @@ export const EN_PLAIN: Record<string, string> = {
   "上次更新结果": "Last update result",
   "上游协议": "Upstream protocol",
   "纯标准协议": "Standard protocol only",
+  "仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。": "Available only when the upstream protocol is Chat Completions. Responses API requests are forwarded unchanged.",
   "强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。": "Force the standard OpenAI protocol without vendor-specific reasoning parameters, for third-party gateways that accept only standard OpenAI fields and reject vendor-bundled private parameters.",
   "上一页": "Previous page",
   "下一页": "Next page",
@@ -786,8 +789,8 @@ export const EN_PLAIN: Record<string, string> = {
   "混入 API": "Mixed-in API",
   "混入 API KEY": "Mix in API KEY",
   "关闭官方低额度提示": "Hide official low-usage alert",
-  "关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。":
-    "When hidden, you can still view the official quota from the account menu in the lower-left corner of Codex.",
+  "只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。":
+    "Only hides low-usage and exhausted prompts. It does not change send restrictions. The account menu in Codex's lower-left corner still shows the official remaining quota.",
   "混入 API Key": "Mix in API Key",
   "添加供应商": "Add provider",
   "添加模型": "Add model",
@@ -1166,6 +1169,14 @@ export const EN_PLAIN: Record<string, string> = {
     "❌ Batch description parse failed (should not trigger for single-image tests)",
   "❌ HTTP 客户端构建失败": "❌ Failed to build the HTTP client",
   "❌ 未知错误": "❌ Unknown error",
+  // issue #1685：供应商自定义上游请求头。
+  "自定义请求头": "Custom request headers",
+  "请求头名称": "Header name",
+  "请求头值": "Header value",
+  "自定义请求头会同时用于测试连接、模型列表与实际代理请求。":
+    "Custom headers apply to the connection test, the model list and proxied requests alike.",
+  "Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。":
+    "Transport headers such as Host and Content-Length are managed by the proxy and cannot be overridden. When Authorization is set here it takes precedence and the API key is not injected.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
