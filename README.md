@@ -129,7 +129,7 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
 
 ## 交流与支持
 
-欢迎加入 Codex++ 交流 3 群（QQ群：619480492），反馈问题、交流使用体验或提出新功能建议。<a href="https://qm.qq.com/q/Erf1F1zwqs">点击链接加入群聊</a>。
+欢迎加入 Codex++ 交流 4 群（QQ群：1127858981），反馈问题、交流使用体验或提出新功能建议。<a href="https://qm.qq.com/q/5h3pxpxg7S">点击链接加入群聊</a>。
 
 <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ 微信群二维码" width="260">
 
@@ -187,6 +187,8 @@ Codex++ 通过 GitHub Release 发布安装包。Windows 会生成 NSIS 安装程
 管理工具的“关于”页可以检查并启动更新。静默启动器发现新版本时会拉起管理工具并进入更新提示。
 
 ## 数据位置
+
+以下 `~/.codex` 均指 Codex 主目录：设置了 `CODEX_HOME` 环境变量时以该目录为准，否则为用户目录下的 `.codex`。
 
 - Codex 配置：`~/.codex/config.toml`
 - Codex 登录状态：`~/.codex/auth.json`

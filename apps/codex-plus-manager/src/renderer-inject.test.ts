@@ -273,6 +273,12 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /codexPlusSidebarNavId\s*=\s*"codex-plus-sidebar-nav"/);
     assert.match(renderer, /function installCodexPlusSidebarNavigation\(\)/);
     assert.match(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\]/);
+    // 新版把 role="navigation" 挪去了缩略图面板/演示目录，兜底要限定在 aside 内；
+    // 而图标栏本身也是 aside 里的 <nav> 且文档顺序在前，必须显式排除，
+    // 否则 "点导航就关页面" 的监听会挂到图标栏上，点自己的入口就把页面关掉。
+    assert.doesNotMatch(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\], nav\[role="navigation"\]/);
+    assert.match(renderer, /aside\.app-shell-left-panel nav\[role="navigation"\]'\)/);
+    assert.match(renderer, /!nav\.hasAttribute\("data-app-navigation-rail"\)/);
     assert.match(renderer, /const insertionButton = pluginButton \|\| navButtons\.find/);
     assert.match(renderer, /selectors\.pluginNavButton/);
     assert.match(renderer, /button\.querySelector\(selectors\.pluginSvgPath\)/);
@@ -286,8 +292,174 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
     assert.match(renderer, /closeCodexPlusPageAfterNativeNavigation\(\)/);
     assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
-    assert.match(renderer, /installCodexPlusSidebarNavigation\(\);/);
+    assert.match(renderer, /installCodexPlusNavigationEntries\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
+  });
+
+  it("mounts Codex++ and 拓展 entries into the new navigation rail", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /codexPlusRailNavId\s*=\s*"codex-plus-rail-nav"/);
+    assert.match(renderer, /codexPlusRailExtensionsId\s*=\s*"codex-plus-rail-extensions"/);
+    assert.match(renderer, /codexPlusRailSelector\s*=\s*"nav\[data-app-navigation-rail\]"/);
+    assert.match(renderer, /function installCodexPlusRailNavigation\(\)/);
+    // 模板按钮取自原生 destination，clone 后必须清掉这几个属性，
+    // 否则会被 Codex 的自定义/排序逻辑当成真 destination。
+    assert.match(renderer, /codexPlusRailDestinationSelector\s*=\s*"\[data-sidebar-destination\]"/);
+    assert.match(renderer, /button\.removeAttribute\("data-sidebar-destination"\)/);
+    assert.match(renderer, /button\.removeAttribute\("aria-current"\)/);
+    // 图标栏是纯图标，不塞文字标签。
+    assert.match(renderer, /class="codex-plus-rail-icon"/);
+    assert.doesNotMatch(renderer, /codex-plus-rail-icon"[^]*?<span class="truncate">/);
+  });
+
+  it("falls back to the legacy sidebar entry when the rail is absent", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function installCodexPlusNavigationEntries\(\)/);
+    // 两条路径互斥：有 rail 就移除旧入口，没有就移除 rail 入口。
+    assert.match(renderer, /if \(installCodexPlusRailNavigation\(\)\) \{\s*detachCodexPlusSidebarNavigation\(\);\s*return;\s*\}/);
+    assert.match(renderer, /removeCodexPlusRailNavigation\(\);\s*installCodexPlusSidebarNavigation\(\);/);
+    assert.match(renderer, /function detachCodexPlusSidebarNavigation\(\)/);
+    // 启动补扫要认两条路径任意一条已装上。
+    assert.match(renderer, /const installed = document\.getElementById\(codexPlusSidebarNavId\)\s*\|\| document\.getElementById\(codexPlusRailNavId\);/);
+  });
+
+  it("opens 拓展 as a standalone page instead of a Codex++ tab", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /codexPlusExtensionsTab\s*=\s*"extensions"/);
+    assert.match(renderer, /function openCodexPlusExtensions\(\)/);
+    assert.match(renderer, /openCodexPlusModal\(\{ page: true, tab: codexPlusExtensionsTab \}\)/);
+    // 旧名 userScripts 仍要能映射过去，避免存量调用点失效。
+    assert.match(renderer, /if \(tab === "extensions" \|\| tab === "userScripts"\) return codexPlusExtensionsTab;/);
+    // 弹窗必须尊重传入的初始 tab，而不是硬编码 home。
+    assert.match(renderer, /selectCodexPlusTab\(initialTab\);/);
+    // 激活态要靠 data-codex-plus-active-tab 区分页面，必须排在 selectCodexPlusTab 之后。
+    assert.match(renderer, /selectCodexPlusTab\(initialTab\);\s*\/\/[^]*?if \(pageMode\) setCodexPlusSidebarNavActive\(true, codexPlusActiveEntry\(\) \|\| "home"\);/);
+  });
+
+  it("gives the page mode a two-column layout with its own left panel", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
+    assert.match(renderer, /function refreshCodexPlusPageNav\(tab\)/);
+    assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
+    // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
+    assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
+    assert.match(renderer, /main\.className = "codex-plus-page-main"/);
+    // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
+    // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
+    assert.match(renderer, /main\.appendChild\(body\)/);
+    // 左面板只有「拓展」需要（它是脚本列表）；主页与推荐内容是单栏内容页，
+    // 页面切换交给图标栏那三个入口，所以导航容器要在条件分支里创建。
+    assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
+    assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
+    // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
+    assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
+    // 左面板分组导航走同一个选中函数。
+    assert.match(renderer, /const pageNav = target\?\.closest\("\[data-codex-plus-page-nav\]"\)/);
+    assert.match(renderer, /selectCodexPlusTab\(pageNav\.getAttribute\("data-codex-plus-page-nav"\)\)/);
+  });
+
+  it("把三个 rail 入口都接成独立页面，并跟随 Codex 的界面缩放", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    // 推荐内容从弹窗二级 tab 提成图标栏上的一级入口。
+    assert.match(renderer, /const codexPlusRailSponsorId = "codex-plus-rail-sponsor"/);
+    assert.match(renderer, /const codexPlusSponsorTab = "sponsor"/);
+    assert.match(renderer, /function openCodexPlusSponsor\(\)/);
+    assert.match(renderer, /id: codexPlusRailSponsorId, label: "推荐内容"/);
+    // 三个入口都要参与选中态映射，否则「推荐内容」亮不起来。
+    assert.match(renderer, /\[codexPlusRailSponsorId, "sponsor"\],/);
+    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) return "sponsor";/);
+
+    // 弹窗里的 tab 条已随入口外移删除，不该再有残留。
+    assert.doesNotMatch(renderer, /codex-plus-tab-button/);
+
+    // 「拓展」入口用 VSCode 的扩展字形，和列表默认图标同一份 path。
+    assert.match(renderer, /extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="\$\{codexPlusDefaultExtensionIconPath\}"/);
+
+    // 界面缩放：读 Codex 的 zoom 变量，套到 overlay 上，尺寸用 calc 反向抵消。
+    assert.match(renderer, /const codexPlusWindowZoomVar = "--codex-window-zoom"/);
+    assert.match(renderer, /function codexPlusWindowZoom\(\)/);
+    assert.match(renderer, /function applyCodexPlusZoom\(overlay\)/);
+    assert.match(renderer, /overlay\.style\.setProperty\("zoom", String\(zoom\)\)/);
+    assert.match(renderer, /width: calc\(100vw \/ var\(--codex-plus-zoom, 1\)\)/);
+    // 页面模式的 left 偏移要按 zoom 折算回布局坐标，CSS 里的 width 用的是同一个空间，
+    // 两边量纲不一致会把右边缘算短（曾出现 62 + 1652 = 1714，视口 1727）。
+    assert.match(renderer, /const layoutLeft = zoom === 1 \? left : left \/ zoom;/);
+    assert.match(renderer, /overlay\.style\.setProperty\("--codex-plus-page-left", `\$\{layoutLeft\}px`\)/);
+  });
+
+  it("颜色走 Codex 的语义令牌，不写死调色板", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    // applyCodexPlusTheme 读宿主算好的令牌，取不到才回落。
+    assert.match(renderer, /function applyCodexPlusTheme\(overlay\)/);
+    assert.match(renderer, /--color-token-text-primary/);
+    assert.match(renderer, /--color-token-text-secondary/);
+    assert.match(renderer, /--color-token-bg-primary/);
+    // 早先写死的 zinc 调色板不能再出现在主题函数里。
+    const themeBody = renderer.slice(
+      renderer.indexOf("function applyCodexPlusTheme(overlay)"),
+      renderer.indexOf("function codexPlusModalTab(tab)"),
+    );
+    assert.ok(themeBody.length > 0, "找不到 applyCodexPlusTheme 的函数体");
+    assert.ok(!themeBody.includes('text: "#f3f4f6"'), "主题函数里残留硬编码的正文色");
+    assert.ok(!themeBody.includes('textSecondary: "#a1a1aa"'), "主题函数里残留硬编码的次要色");
+  });
+
+  it("lists user scripts in the 拓展 page left panel", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function renderCodexPlusExtensionsNav\(\)/);
+    // 点左面板的行 = 选中（右侧看详情），不直接切开关——
+    // 开关移到详情页，避免点行就误触发启停。
+    assert.match(renderer, /data-codex-extensions-select="installed:\$\{escapeHtml\(entry\.key\)\}"/);
+    assert.match(renderer, /data-codex-extensions-select="market:\$\{escapeHtml\(entry\.key\)\}"/);
+    assert.match(renderer, /codex-plus-page-nav-item-state/);
+    // 每个条目都有图标，没有自带图标的用默认字形。
+    assert.match(renderer, /codex-plus-page-nav-item-icon/);
+    assert.match(renderer, /codexPlusDefaultExtensionIconPath/);
+    // 脚本启停/状态变化要同步到左面板与详情。
+    assert.match(renderer, /if \(codexPlusActiveEntry\(\) === "extensions"\) refreshCodexPlusExtensionsView\(\);/);
+  });
+
+  it("shows a VSCode-style detail pane for the selected 拓展", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function renderCodexPlusExtensionsDetail\(\)/);
+    assert.match(renderer, /data-codex-plus-extensions-detail="true"/);
+    assert.match(renderer, /function codexPlusExtensionsSelectionDetail\(\)/);
+    // 详情里给已安装的开关（复用 user-script-key 委托）与卸载入口。
+    assert.match(renderer, /data-codex-extensions-uninstall=/);
+    assert.match(renderer, /function uninstallUserScript\(key\)/);
+    assert.match(renderer, /postJson\("\/user-scripts\/delete", \{ key \}\)/);
+    // 内置脚本在只读目录里，只给用户脚本提供卸载。
+    assert.match(renderer, /if \(local\?\.source === "user"\)/);
+    // 市场条目在详情里也能直接安装。
+    assert.match(renderer, /codex-plus-extensions-detail-primary/);
+    // 选中项要高亮。
+    assert.match(renderer, /data-active="\$\{String\(selected\)\}"/);
+  });
+
+  it("gives 拓展 a searchable 已安装 / 市场 分组视图", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /data-codex-extensions-search="true"/);
+    assert.match(renderer, /function refreshCodexPlusExtensionsView\(\)/);
+    assert.match(renderer, /function codexPlusExtensionsEntries\(\)/);
+    assert.match(renderer, /function loadScriptMarket\(/);
+    // 市场走 bridge 的两个新路由。
+    assert.match(renderer, /postJson\("\/script-market\/list", \{\}\)/);
+    assert.match(renderer, /postJson\("\/script-market\/install", \{ id \}\)/);
+    // 空分组要留着显示占位（加载中/加载失败），只在搜索无匹配时才省略——
+    // 否则「正在读取脚本市场…」和错误提示会被一起藏掉，面板全空。
+    assert.match(renderer, /if \(!entries\.length && searching\) return "";/);
+    assert.doesNotMatch(renderer, /if \(!entries\.length && \(searching \|\| !count\)\) return "";/);
+    // 搜索重绘后要把焦点放回输入框，否则每敲一个字就断。
+    assert.match(renderer, /next\.setSelectionRange\(next\.value\.length, next\.value\.length\)/);
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {
@@ -335,6 +507,29 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /if \(loaded\) syncOfficialUsagePolicy\(\);/);
     assert.doesNotMatch(renderer, /officialUsageAlertCards|refreshOfficialUsageAlertVisibility|codex-plus-hide-usage-alert/);
     assert.doesNotMatch(renderer, /mutationTouchesUsageAlert/);
+    assert.match(renderer, /function isOfficialLowQuotaSidebarCard/);
+    assert.match(renderer, /function isOfficialLowQuotaComposerBanner/);
+    assert.match(renderer, /upsell-banner-title-/);
+    assert.match(renderer, /function isOfficialLowQuotaComposerAside/);
+    assert.match(renderer, /tagName !== "ASIDE"/);
+    assert.match(renderer, /rounded-3xl/);
+    assert.match(renderer, /function syncOfficialUsageWindowMode/);
+    assert.match(renderer, /key === "official-hide"/);
+    assert.match(renderer, /officialUsageWindowObserver\?\.disconnect\(\)/);
+    assert.match(renderer, /officialUsageWindowMarker\}="hidden"/);
+    assert.doesNotMatch(scan, /startOfficialUsageWindowBlock|hideOfficialUsageWindowsWithin/);
+    const policyStart = renderer.indexOf("  function syncOfficialUsagePolicy()");
+    const policyEnd = renderer.indexOf("  if (window.__CODEX_PLUS_TEST_RATE_LIMIT_UNLOCK__)", policyStart);
+    assert.ok(policyStart >= 0 && policyEnd > policyStart);
+    const policy = renderer.slice(policyStart, policyEnd);
+    const sameKey = policy.slice(policy.indexOf("if (key === officialUsagePolicyApplied)"), policy.indexOf("const previous"));
+    assert.match(sameKey, /rewriteCachedOfficialUsage/);
+    assert.doesNotMatch(sameKey, /hideOfficialUsageWindowsWithin|querySelectorAll/);
+    assert.match(renderer, /function codexPlusPublishUsageData/);
+    assert.match(renderer, /unlockSend: mixed/);
+    assert.match(renderer, /limit_reached: false/);
+    assert.doesNotMatch(renderer, /__codexPlusApiQuotaGate/);
+    assert.doesNotMatch(renderer, /installExternalApiQuotaGate|__codexPlusApiQuotaBreakpoint|refreshComposers/);
   });
 
   // issue #2169：HTTP 回落成功不得掩盖桥接通道故障。桥接失败计数独立于后端状态，
@@ -1110,5 +1305,336 @@ describe("renderer injection app-server model request patch", () => {
 
     assert.equal(harness.sweeps(), 1);
     assert.deepEqual(harness.diagnostics(), ["model_app_server_request_patch_installed"]);
+  });
+});
+
+// renderer-inject.js 现在是「分片源码 + 生成产物」：真正的源码在
+// assets/inject/renderer-inject/*.js，产物是拼回去的单体文件，供 assets.rs 的
+// include_str! 和本文件的大量按路径断言消费。
+// 这组用例防止有人只改产物、不回改分片，让两边悄悄分叉。
+describe("renderer inject 分片与产物一致", () => {
+  const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
+  const artifactPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  async function assembleFromFragments(): Promise<{ source: string; names: string[] }> {
+    const manifest = JSON.parse(
+      await readFile(new URL("manifest.json", fragmentDir), "utf8"),
+    ) as { fragments: Array<{ name: string; description?: string }> };
+    assert.ok(
+      Array.isArray(manifest.fragments) && manifest.fragments.length > 0,
+      "manifest.json 必须有 fragments",
+    );
+    const bodies = await Promise.all(
+      manifest.fragments.map(async (fragment) => {
+        assert.ok(fragment.name, "分片必须带 name");
+        const body = await readFile(new URL(fragment.name, fragmentDir), "utf8");
+        // 每片以换行收尾，直接相接才能还原原始行结构；漏了会让两处声明粘连。
+        assert.ok(body.endsWith("\n"), `分片 ${fragment.name} 未以换行结尾`);
+        return body;
+      }),
+    );
+    return { source: bodies.join(""), names: manifest.fragments.map((f) => f.name) };
+  }
+
+  it("分片按 manifest 顺序拼接后与产物逐字节一致", async () => {
+    const { source, names } = await assembleFromFragments();
+    const artifact = await readFile(artifactPath, "utf8");
+    assert.equal(
+      source,
+      artifact,
+      `产物与分片不一致（分片 ${names.length} 个）。` +
+        "改分片后请跑 node scripts/assemble-renderer-inject.mjs 重新组装。",
+    );
+  });
+
+  it("拼接结果是完整可解析的单个 IIFE", async () => {
+    const { source } = await assembleFromFragments();
+    assert.ok(source.startsWith("(() => {\n"), "必须以 IIFE 开头");
+    assert.ok(source.includes("\n})();\n"), "必须包含主 IIFE 的收尾");
+    // 语法解析（不执行）能抓出分片切坏造成的括号不匹配。
+    assert.doesNotThrow(() => new Function(source));
+  });
+
+  it("测试辅助依赖的锚点仍落在同一个分片里且顺序不变", async () => {
+    // installRendererStyle() 用 indexOf 划区间，靠这两个标记定位。
+    // 它们一旦被拆到不同分片、或前后顺序反转，helper 会静默取到空区间。
+    const { source } = await assembleFromFragments();
+    const start = source.indexOf("  function installStyle()");
+    const end = source.indexOf("\n  function defaultCodexPlusSettings", start);
+    assert.ok(start >= 0, "找不到 installStyle 锚点");
+    assert.ok(end > start, "defaultCodexPlusSettings 必须排在 installStyle 之后");
+  });
+
+  it("拓展列表渲染不裸取 entry.item", async () => {
+    // 已安装条目的形状是 { kind, key, name, meta, enabled, script }，没有 item；
+    // 只有市场条目才有。裸取 entry.item.description 会在列表里只要有任意一个
+    // 已安装脚本时就抛 TypeError，整块渲染中断，左面板停在「正在读取…」占位。
+    // 已安装条目要走 codexPlusExtensionMarketItem(entry) 按 market_id 回查。
+    const { source } = await assembleFromFragments();
+    const openingTag = source.indexOf("  function renderCodexPlusExtensionsNav()");
+    const closingTag = source.indexOf("\n  /** 左面板内容变了就整块重绘", openingTag);
+    assert.ok(openingTag >= 0, "找不到 renderCodexPlusExtensionsNav");
+    assert.ok(closingTag > openingTag, "找不到函数结束位置");
+    const body = source.slice(openingTag, closingTag);
+    assert.ok(
+      !/entry\.item\s*\./.test(body),
+      "itemHtml 里出现了不带可选链的 entry.item.*，会在已安装条目上抛 TypeError",
+    );
+    assert.ok(
+      body.includes("codexPlusExtensionMarketItem(entry)"),
+      "itemHtml 应该用 codexPlusExtensionMarketItem(entry) 解析图标与简介来源",
+    );
+  });
+});
+
+/**
+ * 拓展接口层的契约测试。
+ *
+ * 这些测试把 01-registry.js 与 91-extension-api.js 的定义抽出来单独执行，
+ * 不依赖真实 DOM——注册中心本身刻意不读 DOM，正是为了让它可以这样被验证。
+ */
+describe("拓展注册中心", () => {
+  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  interface RegistryHarness {
+    registry: { rowActions: Map<string, unknown>; navEntries: Map<string, unknown>; pages: Map<string, unknown>; menuItems: Map<string, unknown> };
+    register: (kind: string, reg: Map<string, unknown>, id: string, def: unknown, key: string) => () => void;
+    registerSelector: (selector: string) => boolean;
+    extensionSelector: () => string;
+    isExtensionNode: (node: unknown) => boolean;
+    items: (reg: Map<string, unknown>) => Array<Record<string, unknown>>;
+    runCallback: (key: string, label: string, cb: () => unknown) => { ok: boolean; value?: unknown; error?: string };
+    failures: () => Array<{ script_key: string; message: string }>;
+    registryLog: () => unknown[];
+  }
+
+  async function registryRuntime(): Promise<RegistryHarness> {
+    // 直接读注册中心分片本身：它刻意不读 DOM、不依赖 prelude 常量，所以能独立执行。
+    // 不要从产物里 indexOf 切片——注册中心与接口层之间隔着十来个分片，区间会失控。
+    const source = await readFile(
+      new URL("../../../assets/inject/renderer-inject/01-registry.js", import.meta.url),
+      "utf8",
+    );
+
+    const windowValue: Record<string, unknown> = {};
+    const documentValue = {
+      // registerCodexPlusExtensionSelector 用空 fragment 验证选择器语法，
+      // 非法选择器会抛错，模拟这个方法就足以覆盖合法性判定。
+      createDocumentFragment: () => ({
+        querySelector: (selector: string) => {
+          if (/[<>]/.test(selector)) throw new Error("invalid selector");
+          return null;
+        },
+      }),
+    };
+    const factory = new Function(
+      "window",
+      "document",
+      `${source}
+return { codexPlusRegistry, registerCodexPlusExtension, registerCodexPlusExtensionSelector,
+  codexPlusExtensionSelector, isCodexPlusExtensionNode, codexPlusExtensionItems,
+  runCodexPlusExtensionCallback };`,
+    );
+    const api = factory(windowValue, documentValue) as Record<string, unknown>;
+    return {
+      registry: api.codexPlusRegistry as RegistryHarness["registry"],
+      register: api.registerCodexPlusExtension as RegistryHarness["register"],
+      registerSelector: api.registerCodexPlusExtensionSelector as RegistryHarness["registerSelector"],
+      extensionSelector: api.codexPlusExtensionSelector as RegistryHarness["extensionSelector"],
+      isExtensionNode: api.isCodexPlusExtensionNode as RegistryHarness["isExtensionNode"],
+      items: api.codexPlusExtensionItems as RegistryHarness["items"],
+      runCallback: api.runCodexPlusExtensionCallback as RegistryHarness["runCallback"],
+      failures: () => (windowValue.__codexPlusExtensionFailures || []) as Array<{ script_key: string; message: string }>,
+      registryLog: () => (windowValue.__codexPlusRegistryLog || []) as unknown[],
+    };
+  }
+
+  it("第三方项从 1000 起排，不会插到内置项前面", async () => {
+    const runtime = await registryRuntime();
+    runtime.register("rowAction", runtime.registry.rowActions, "builtin:a", { order: 10, onActivate() {} }, "builtin");
+    runtime.register("rowAction", runtime.registry.rowActions, "ext:b", { order: 5, onActivate() {} }, "user:x.js");
+    const items = runtime.items(runtime.registry.rowActions);
+    // 传入的 5 被抬到 1000：内置项永远排在拓展项之前。
+    assert.deepEqual(items.map((item) => item.id), ["builtin:a", "ext:b"]);
+    assert.equal(items[1].order, 1000);
+  });
+
+  it("按脚本配额限制注册数量，超出时抛错", async () => {
+    const runtime = await registryRuntime();
+    for (let index = 0; index < 16; index += 1) {
+      runtime.register("navEntry", runtime.registry.navEntries, `ext:${index}`, { onActivate() {} }, "user:noisy.js");
+    }
+    assert.throws(
+      () => runtime.register("navEntry", runtime.registry.navEntries, "ext:overflow", { onActivate() {} }, "user:noisy.js"),
+      /最多注册 16 项/,
+    );
+    // 另一个脚本不受影响。
+    assert.doesNotThrow(
+      () => runtime.register("navEntry", runtime.registry.navEntries, "ext:other", { onActivate() {} }, "user:other.js"),
+    );
+  });
+
+  it("拒绝重复 id 与缺少回调的定义", async () => {
+    const runtime = await registryRuntime();
+    runtime.register("page", runtime.registry.pages, "ext:p", { render() {} }, "user:x.js");
+    assert.throws(
+      () => runtime.register("page", runtime.registry.pages, "ext:p", { render() {} }, "user:x.js"),
+      /已被占用/,
+    );
+    assert.throws(
+      () => runtime.register("page", runtime.registry.pages, "ext:empty", {}, "user:x.js"),
+      /必须提供 render \/ onActivate/,
+    );
+  });
+
+  it("菜单项的开关形态（只给 onChange）不被校验误拒", async () => {
+    const runtime = await registryRuntime();
+    // 开关形态没有 render / onActivate，早期实现会把它当成非法定义拒掉。
+    assert.doesNotThrow(
+      () => runtime.register("menuItem", runtime.registry.menuItems, "ext:toggle", { onChange() {} }, "user:x.js"),
+    );
+    assert.doesNotThrow(
+      () => runtime.register("page", runtime.registry.pages, "ext:cleanup-only", { onCleanup() {} }, "user:x.js"),
+    );
+  });
+
+  it("dispose 只移除自己注册的那一项", async () => {
+    const runtime = await registryRuntime();
+    const dispose = runtime.register("page", runtime.registry.pages, "ext:first", { render() {} }, "user:x.js");
+    runtime.register("page", runtime.registry.pages, "ext:second", { render() {} }, "user:y.js");
+    dispose();
+    assert.deepEqual([...runtime.registry.pages.keys()], ["ext:second"]);
+    // 重复 dispose 不应误删后来者。
+    dispose();
+    assert.deepEqual([...runtime.registry.pages.keys()], ["ext:second"]);
+  });
+
+  it("选择器登记拒绝非法语法，避免 closest() 在每次 mutation 上抛错", async () => {
+    const runtime = await registryRuntime();
+    assert.equal(runtime.registerSelector('[data-codex-plus-ext="a"]'), true);
+    assert.match(runtime.extensionSelector(), /data-codex-plus-ext/);
+    assert.equal(runtime.registerSelector("div << p"), false);
+    assert.equal(runtime.registerSelector(""), false);
+  });
+
+  it("回调抛错时记进该脚本的失败通道，不向调用方抛出", async () => {
+    const runtime = await registryRuntime();
+    const outcome = runtime.runCallback("user:broken.js", "rowAction.onActivate", () => {
+      throw new Error("boom");
+    });
+    assert.equal(outcome.ok, false);
+    assert.match(String(outcome.error), /boom/);
+    assert.equal(runtime.failures().length, 1);
+    assert.equal(runtime.failures()[0].script_key, "user:broken.js");
+  });
+});
+
+/**
+ * 对外接口层的护栏测试。
+ *
+ * 接口层挂在 window.codexPlus 上、面向第三方脚本，所以「哪些能力被开放」必须
+ * 有测试守着——新增路由时默认不开放，漏网才是 bug。
+ */
+describe("拓展接口层", () => {
+  const apiFragmentPath = new URL(
+    "../../../assets/inject/renderer-inject/91-extension-api.js",
+    import.meta.url,
+  );
+  const artifactPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  async function readRouteWhitelist(): Promise<string[]> {
+    const source = await readFile(apiFragmentPath, "utf8");
+    const start = source.indexOf("const codexPlusExtensionRoutes = new Set([");
+    const end = source.indexOf("]);", start);
+    assert.ok(start >= 0 && end > start, "找不到路由白名单");
+    const body = source.slice(start, end);
+    return Array.from(body.matchAll(/"([^"]+)"/g), ([, route]) => route);
+  }
+
+  it("路由白名单只放只读能力，不含设置写入与远端控制", async () => {
+    const routes = await readRouteWhitelist();
+    assert.ok(routes.length > 0, "白名单不能为空");
+    // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
+      assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
+    }
+    assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
+  });
+
+  it("接口对象在 IIFE 收尾前挂载", async () => {
+    const renderer = await readFile(artifactPath, "utf8");
+    const mount = renderer.indexOf("window.codexPlus = buildCodexPlusExtensionApi();");
+    const tail = renderer.indexOf("\n})();\n");
+    assert.ok(mount >= 0, "找不到 window.codexPlus 的挂载点");
+    // 挂载必须在主 IIFE 结束之前，否则闭包里的函数已经不可达。
+    assert.ok(mount < tail, "挂载点必须位于 IIFE 收尾之前");
+  });
+});
+
+/**
+ * 菜单项的接入方式护栏。
+ *
+ * 菜单的接入点是「在 home 面板模板末尾追加一块」，不是把内置的一百多行模板
+ * 拆成数据结构——后者会动到内置 UI 主干。这些断言守住这个决定，以及点击
+ * 委托的分支顺序。
+ */
+describe("拓展菜单项", () => {
+  const settingsPath = new URL(
+    "../../../assets/inject/renderer-inject/40-backend-settings.js",
+    import.meta.url,
+  );
+  const hostPath = new URL(
+    "../../../assets/inject/renderer-inject/92-extension-host.js",
+    import.meta.url,
+  );
+
+  it("内置菜单模板保持原样，只追加一个拓展挂载点", async () => {
+    const source = await readFile(settingsPath, "utf8");
+    // 挂载点在 home 面板里，且位于「提出问题」之后（即内置项末尾）。
+    const openIdx = source.indexOf("overlay.innerHTML = `");
+    const mountIdx = source.indexOf("${renderCodexPlusExtensionMenuRows()}");
+    const issueIdx = source.indexOf("提出问题");
+    assert.ok(mountIdx > 0, "找不到拓展菜单挂载点");
+    assert.ok(mountIdx > issueIdx, "挂载点应位于内置项之后");
+    // 关键：内置的行仍然是内联模板，没有被拆成数组。
+    assert.ok(
+      source.slice(openIdx, mountIdx).includes('class="codex-plus-row"'),
+      "内置菜单行应当仍是内联模板",
+    );
+    assert.ok(
+      !/const codexPlusBuiltinMenuRows\s*=/.test(source),
+      "不应把内置菜单行抽成数组",
+    );
+  });
+
+  it("点击委托里拓展分支排在内置分支之前", async () => {
+    const source = await readFile(settingsPath, "utf8");
+    const handler = source.indexOf('overlay.addEventListener("click"');
+    assert.ok(handler > 0, "找不到点击委托");
+    const body = source.slice(handler, handler + 600);
+    const extIdx = body.indexOf("handleCodexPlusExtensionMenuClick(target)");
+    const devtoolsIdx = body.indexOf("data-codex-open-devtools");
+    assert.ok(extIdx > 0, "点击委托应当调用拓展菜单处理器");
+    assert.ok(extIdx < devtoolsIdx, "拓展分支应排在内置分支之前");
+  });
+
+  it("开关与按钮分别渲染成不同的控件", async () => {
+    const source = await readFile(hostPath, "utf8");
+    const start = source.indexOf("function renderCodexPlusExtensionMenuRows()");
+    const end = source.indexOf("function handleCodexPlusExtensionMenuClick(", start);
+    assert.ok(start > 0 && end > start, "找不到菜单渲染函数");
+    const body = source.slice(start, end);
+    assert.match(body, /data-codex-plus-ext-setting/, "开关应有自己的 data 属性");
+    assert.match(body, /data-codex-plus-ext-action/, "按钮应有自己的 data 属性");
+    // 是追加到 home 面板，不是替换它。
+    assert.ok(!/panel\.innerHTML\s*=/.test(body), "不应整体替换面板内容");
+  });
+
+  it("菜单项失败经由脚本状态上报，不向调用方抛出", async () => {
+    const source = await readFile(hostPath, "utf8");
+    const start = source.indexOf("function handleCodexPlusExtensionMenuClick(");
+    const body = source.slice(start, start + 1400);
+    assert.match(body, /runCodexPlusExtensionCallback/, "回调必须经失败隔离包装");
+    assert.ok(!/try\s*{[\s\S]*item\.onActivate\(/.test(body), "不应裸调 onActivate");
   });
 });

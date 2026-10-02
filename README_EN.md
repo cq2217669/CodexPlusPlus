@@ -35,7 +35,7 @@ For first-time setup, open the manager, verify the detected app path, configure 
 
 ## Community and Support
 
-Join <a href="https://qm.qq.com/q/Erf1F1zwqs">Codex++ community group 3 (QQ group: 619480492)</a> to report issues, share feedback, or suggest features.
+Join <a href="https://qm.qq.com/q/5h3pxpxg7S">Codex++ community group 4 (QQ group: 1127858981)</a> to report issues, share feedback, or suggest features.
 
 WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">get the latest group QR code</a>.
 
@@ -101,6 +101,8 @@ The manager's About page can check and start updates. When the silent launcher f
 - Codex local database: prefers `~/.codex/sqlite/*.db`, falls back to legacy `~/.codex/state_5.sqlite`
 - Codex++ state and logs: `~/.codex-session-delete/`
 - Provider Sync backups: `~/.codex/backups_state/provider-sync`
+
+`~/.codex` above refers to the Codex home directory: it follows the `CODEX_HOME` environment variable when set, and defaults to `.codex` under the user profile otherwise.
 
 ## FAQ
 
