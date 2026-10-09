@@ -126,12 +126,73 @@ $url_types
 PLIST
 }
 
+# 签名身份。设了 MACOS_SIGNING_IDENTITY 就走 Developer ID 正式签名，
+# 没设则退回 ad-hoc——贡献者本地和 PR 构建没有证书，不能因此构建失败。
+SIGNING_IDENTITY="${MACOS_SIGNING_IDENTITY:-}"
+# 公证凭据 profile（notarytool store-credentials 存的那个名字）。
+# 设为空则跳过公证，只签名。
+NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-}"
+ENTITLEMENTS="$ROOT/scripts/installer/macos/entitlements.plist"
+
+# 签名参数必须用数组装：身份串里含空格
+# （"Developer ID Application: Xxx (TEAMID)"），用字符串拼接会在空格处断词。
+SIGN_ARGS=()
+if [ -n "$SIGNING_IDENTITY" ]; then
+  # hardened runtime 与安全时间戳是公证的前置条件，ad-hoc 下无意义。
+  SIGN_ARGS=(--options runtime --timestamp --sign "$SIGNING_IDENTITY")
+else
+  SIGN_ARGS=(--sign -)
+fi
+
 sign_app() {
   local app_dir="$1"
   local executable
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_dir/Contents/Info.plist")"
-  codesign --force --sign - "$app_dir/Contents/MacOS/$executable"
-  codesign --force --sign - "$app_dir"
+  # 二进制先签、bundle 后签：签 bundle 时会把二进制纳入密封清单，
+  # 顺序反了会报 "code object is not signed at all"。
+  # 注意：macOS 自带 bash 3.2，set -u 下展开空数组会报 unbound variable，
+  # 所以空数组必须用 "${arr[@]+"${arr[@]}"}" 这种形式，不能直接 "${arr[@]}"。
+  local extra=()
+  if [ -n "$SIGNING_IDENTITY" ] && [ -f "$ENTITLEMENTS" ]; then
+    extra=(--entitlements "$ENTITLEMENTS")
+  fi
+  codesign --force "${SIGN_ARGS[@]}" ${extra[@]+"${extra[@]}"} "$app_dir/Contents/MacOS/$executable"
+  codesign --force "${SIGN_ARGS[@]}" "$app_dir"
+}
+
+sign_dmg() {
+  local dmg="$1"
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    return 0
+  fi
+  codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$dmg"
+}
+
+notarize_dmg() {
+  local dmg="$1"
+  if [ -z "$SIGNING_IDENTITY" ] || [ -z "$NOTARY_PROFILE" ]; then
+    echo "note: 跳过公证（未同时提供 MACOS_SIGNING_IDENTITY 与 MACOS_NOTARY_PROFILE）" >&2
+    return 0
+  fi
+
+  echo "==> 提交公证，等待 Apple 扫描结果…" >&2
+  # --wait 会阻塞到 Apple 返回结果；失败时只给 submission id，日志要另外取。
+  # 输出必须先收进变量再 grep：直接管道给 grep -q 时，grep 一命中就退出，
+  # 上游 tee 收到 SIGPIPE，在 set -o pipefail 下会把整条管道判为失败。
+  local output
+  output="$(xcrun notarytool submit "$dmg" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)" || true
+  printf '%s\n' "$output" >&2
+  if ! printf '%s\n' "$output" | grep -q "status: Accepted"; then
+    echo "error: 公证未通过。" >&2
+    echo "       用 'xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE' 看详情，" >&2
+    echo "       最常见原因是签名漏了 --options runtime。" >&2
+    return 1
+  fi
+
+  # 装订票据后，用户离线也能通过 Gatekeeper 校验。
+  xcrun stapler staple "$dmg" >/dev/null
+  xcrun stapler validate "$dmg" >/dev/null
+  echo "==> 公证通过，票据已装订" >&2
 }
 
 verify_app() {
@@ -148,10 +209,19 @@ verify_app() {
     echo "error: missing PkgInfo in $app_dir" >&2
     return 1
   fi
-  codesign -dv "$app_dir" >/dev/null 2>&1 || {
-    echo "error: codesign verification failed for $app_dir" >&2
-    return 1
-  }
+  # 正式签名时用 --verify --deep --strict 真正校验签名有效性（含资源密封、
+  # 信任链、时间戳）；仅 codesign -dv 只能证明"有签名"，证明不了"签名有效"。
+  if [ -n "$SIGNING_IDENTITY" ]; then
+    codesign --verify --deep --strict --verbose=2 "$app_dir" || {
+      echo "error: codesign --verify failed for $app_dir" >&2
+      return 1
+    }
+  else
+    codesign -dv "$app_dir" >/dev/null 2>&1 || {
+      echo "error: codesign verification failed for $app_dir" >&2
+      return 1
+    }
+  fi
 }
 
 prepare_icon
@@ -173,10 +243,36 @@ DMG_CREATED=false
 MOUNT_POINT=""
 MOUNT_DEVICE=""
 
+release_dmg_holders() {
+  local target="$1"
+  local pids=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -t -- "$target" 2>/dev/null || true)"
+  fi
+  # GitHub 的 macOS runner 上，hdiutil -force 失败后 diskimages-helper 仍会占着
+  # 设备，直到 job 收尾才被当成孤儿杀掉。那时 convert 已经来不及跑。
+  if [ -z "$pids" ] && [ "${GITHUB_ACTIONS:-}" = "true" ] && command -v pgrep >/dev/null 2>&1; then
+    pids="$(pgrep -x diskimages-helper || true)"
+  fi
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill -KILL $pids >/dev/null 2>&1 || true
+  fi
+}
+
 detach_dmg() {
   local target="$1"
   local attempt
   local device_info
+
+  # target: /dev/disk4 或一个挂载点。判「设备是否仍注册」只在 /dev/* 时成立，
+  # 挂载点路径不会出现在 hdiutil info 的设备列里。
+  target_is_gone() {
+    [[ "$target" == /dev/* ]] || return 1
+    device_info="$(hdiutil info 2>/dev/null)" || return 1
+    ! printf '%s\n' "$device_info" | awk -v t="$target" '$1 == t { found = 1 } END { exit !found }'
+  }
 
   [ -z "$target" ] && return 0
   for attempt in 1 2 3 4; do
@@ -186,21 +282,24 @@ detach_dmg() {
 
     # hdiutil can report a transient failure even though the device detached
     # while the command was returning. Treat an already-gone device as done.
-    if [[ "$target" == /dev/* ]] && device_info="$(hdiutil info 2>/dev/null)" &&
-      ! printf '%s\n' "$device_info" | awk -v target="$target" '$1 == target { found = 1 } END { exit !found }'; then
+    if target_is_gone; then
       return 0
     fi
 
+    # 普通 detach 失败后立刻补一次强制卸载：CI runner 上常见「卷已消失、
+    # 设备仍注册」的中间态，只靠普通的 detach 重试永远不会成功，必须 -force。
+    # 这一步曾在 e55c58b1 被移出循环，导致 macOS x64 打包稳定失败。
+    if hdiutil detach "$target" -force >/dev/null 2>&1; then
+      return 0
+    fi
+    if target_is_gone; then
+      return 0
+    fi
+
+    release_dmg_holders "$target"
+
     sleep "$attempt"
   done
-
-  if hdiutil detach "$target" -force >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ "$target" == /dev/* ]] && device_info="$(hdiutil info 2>/dev/null)" &&
-    ! printf '%s\n' "$device_info" | awk -v target="$target" '$1 == target { found = 1 } END { exit !found }'; then
-    return 0
-  fi
 
   echo "error: failed to detach DMG device: $target" >&2
   return 1
@@ -318,5 +417,10 @@ if [ ! -s "$DMG" ]; then
   find "$DIST" -maxdepth 2 -type f -print >&2 || true
   exit 1
 fi
+
+# 顺序不能变：先签 app（已在上面完成）→ 打 DMG → 签 DMG → 公证 DMG → 装订票据。
+# DMG 本身也要签名，Apple 才知道这个容器是谁做的。
+sign_dmg "$DMG"
+notarize_dmg "$DMG"
 
 echo "$DMG"

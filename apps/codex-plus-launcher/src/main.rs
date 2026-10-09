@@ -69,6 +69,8 @@ async fn main() -> Result<()> {
                     .app_dir
                     .map(|path| path.to_string_lossy().to_string()),
                 aumid: None,
+                // 终态不带进行中的阶段（issue #2244 的 phase/progress）。
+                ..LaunchStatus::default()
             });
         }
         return Err(error);
@@ -84,6 +86,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
         hooks.shutdown_helper(options.helper_port).await;
         return Ok(());
     }
+    ensure_weixin_manager_started();
     let Some(_guard) = acquire_single_instance_guard(options.debug_port)? else {
         activate_existing_codex_app(&options).await?;
         options.status_store.save_latest(&LaunchStatus {
@@ -96,6 +99,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
                 .app_dir
                 .map(|path| path.to_string_lossy().to_string()),
             aumid: None,
+            ..LaunchStatus::default()
         })?;
         return Ok(());
     };
@@ -104,8 +108,79 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
     });
     let hooks = LauncherHooks::default();
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
-    handle.wait_for_codex_exit().await?;
+    run_periodic_until_exit(
+        handle.wait_for_codex_exit(),
+        std::time::Duration::from_secs(30 * 60),
+        || repair_session_index_automatically(true),
+    )
+    .await?;
     Ok(())
+}
+
+// 退出时不再安排下一次检查；已开始的数据库事务先完成，避免脱离启动器生命周期。
+async fn run_periodic_until_exit<F, T, C, W>(exit: F, interval: std::time::Duration, mut check: C) -> T
+where
+    F: std::future::Future<Output = T>,
+    C: FnMut() -> W,
+    W: std::future::Future<Output = ()>,
+{
+    tokio::pin!(exit);
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut exit => return result,
+            _ = tokio::time::sleep(interval) => check().await,
+        }
+    }
+}
+
+async fn repair_session_index_automatically(check_setting: bool) {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        if check_setting && !codex_plus_core::settings::SettingsStore::default().load()?.provider_sync_enabled {
+            return Ok(());
+        }
+        codex_plus_data::repair_session_index(None)?;
+        Ok(())
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|result| result);
+    if let Err(error) = result {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.session_index_repair.failed",
+            json!({ "message": error.to_string() }),
+        );
+    }
+}
+
+/// 「激活已有实例」路径上的供应商同步。
+///
+/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
+/// 前后各取一次 app state 快照；会话索引修复由 run_provider_sync 本身串联
+/// （见 LauncherHooks::run_provider_sync）。同步失败只记日志——用户这次点击
+/// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
+async fn run_activation_provider_sync(
+    hooks: &LauncherHooks,
+    settings: &codex_plus_core::settings::BackendSettings,
+) {
+    if !settings.provider_sync_enabled {
+        return;
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+        &home,
+        "launcher.activate_existing.before",
+    );
+    if let Err(error) = hooks.run_provider_sync().await {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.activate_existing_provider_sync.failed",
+            json!({ "message": error.to_string() }),
+        );
+    }
+    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+        &home,
+        "launcher.activate_existing.after_provider_sync",
+    );
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -113,6 +188,42 @@ fn current_timestamp_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn ensure_weixin_manager_started() {
+    let result = (|| -> anyhow::Result<()> {
+        let settings = codex_plus_core::settings::SettingsStore::default().load()?;
+        if should_start_weixin_manager(settings.weixin_connect_enabled, &settings.weixin_connect_token) {
+            codex_plus_core::install::spawn_companion(
+                codex_plus_core::install::MANAGER_BINARY,
+                ["--background"],
+            )?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.weixin_manager_start_failed",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
+}
+
+fn should_start_weixin_manager(enabled: bool, token: &str) -> bool {
+    enabled && !token.trim().is_empty()
+}
+
+#[cfg(test)]
+mod weixin_startup_tests {
+    use super::should_start_weixin_manager;
+
+    #[test]
+    fn only_enabled_and_authenticated_connections_start_manager() {
+        assert!(should_start_weixin_manager(true, "test-token"));
+        assert!(!should_start_weixin_manager(false, "test-token"));
+        assert!(!should_start_weixin_manager(true, ""));
+        assert!(!should_start_weixin_manager(true, "   "));
+    }
 }
 
 fn acquire_single_instance_guard(
@@ -224,6 +335,11 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             json!({"blocking_process_ids": blocking_process_ids}),
         );
     }
+    // 快捷方式启动且 Codex 已在运行时，这里会走到「激活已有实例」的早退分支。
+    // 过去该分支直接返回，跳过了完整启动流程里的供应商同步与会话索引修复，
+    // 于是「切换登录方式后 model_provider 没跟着切换」「历史会话没被自动修复」，
+    // 只有管理工具的「重启」才生效（issue #2080）。失败不阻断激活，只记日志。
+    run_activation_provider_sync(&hooks, &settings).await;
     let launch_result = hooks
         .launch_codex(
             &app_dir,
@@ -373,10 +489,35 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        require_completed_provider_sync(&result.status, &result.message)
+        // issue #2160：同步失败不再中断启动。前置读取（典型是 .codex-global-state.json
+        // 为空或被截断）失败时，provider sync 返回 Skipped 并带上底层 serde_json 原文；
+        // 以前这里用 `?` 把它变成致命的，用户看到一句无从下手的英文就直接退出了。
+        // 口径与 run_activation_provider_sync 一致：失败只记诊断日志，不阻断启动。
+        let outcome =
+            tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None)).await;
+        match outcome {
+            Ok(result) => {
+                if let Err(error) = require_completed_provider_sync(&result.status, &result.message)
+                {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "launcher.provider_sync.degraded",
+                        json!({
+                            "status": format!("{:?}", result.status),
+                            "message": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "launcher.provider_sync.degraded",
+                    json!({ "message": format!("provider sync task failed: {error}") }),
+                );
+            }
+        }
+        // 同步没做成，索引该修的还是要修——它们各自独立，不能因为一路失败连坐。
+        repair_session_index_automatically(false).await;
+        Ok(())
     }
 
     fn has_pending_remote_control_session_recoveries(&self) -> bool {
@@ -534,12 +675,6 @@ impl LaunchHooks for LauncherHooks {
             .await
     }
 
-    async fn ensure_plugin_marketplace_config(
-        &self,
-        settings: &codex_plus_core::settings::BackendSettings,
-    ) -> anyhow::Result<()> {
-        self.core.ensure_plugin_marketplace_config(settings).await
-    }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.core.start_helper(helper_port).await
@@ -653,6 +788,8 @@ impl Default for LauncherDataService {
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
+        // 只读本地 SQLite 的实现不能接收远端/未知来源；同 ID 不代表同一主机。
+        session.require_local_delete()?;
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         tokio::task::spawn_blocking(move || {
@@ -892,6 +1029,22 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         codex_plus_core::user_scripts::reload_scripts_at(&websocket_url, &self.user_scripts).await
     }
 
+    async fn script_market_list(&self) -> anyhow::Result<Value> {
+        codex_plus_core::script_market::list_market_scripts(&self.user_scripts).await
+    }
+
+    async fn script_market_install(&self, payload: Value) -> anyhow::Result<Value> {
+        let id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if id.is_empty() {
+            anyhow::bail!("脚本 id 不能为空");
+        }
+        codex_plus_core::script_market::install_market_script_by_id(&self.user_scripts, id).await
+    }
+
     async fn open_devtools(&self) -> anyhow::Result<Value> {
         let debug_port = *self.debug_port.lock().unwrap();
         let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
@@ -960,60 +1113,6 @@ impl BridgeRuntimeService for LauncherRuntimeService {
 
     async fn ads(&self) -> anyhow::Result<Value> {
         codex_plus_core::ads::fetch_ad_list().await
-    }
-
-    async fn zed_remote_status(&self) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::zed_remote_status())
-    }
-
-    async fn resolve_zed_remote_host(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::resolve_ssh_target_response(
-            &payload,
-        ))
-    }
-
-    async fn fallback_zed_remote_request(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::fallback_open_request_response(
-            &payload,
-        ))
-    }
-
-    async fn open_zed_remote(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::open_zed_remote(&payload))
-    }
-
-    async fn list_zed_remote_projects(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::list_zed_remote_projects_response(&payload))
-    }
-
-    async fn remember_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::remember_zed_remote_project_response(&payload))
-    }
-
-    async fn forget_zed_remote_project(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::zed_remote::forget_zed_remote_project_response(&payload))
-    }
-
-    async fn upstream_worktree_status(&self) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::status_response())
-    }
-
-    async fn upstream_worktree_defaults(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::defaults_response(
-            &payload,
-        ))
-    }
-
-    async fn upstream_worktree_prepare(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::prepare_response(
-            &payload,
-        ))
-    }
-
-    async fn upstream_worktree_create(&self, payload: Value) -> anyhow::Result<Value> {
-        Ok(codex_plus_core::upstream_worktree::create_response(
-            &payload,
-        ))
     }
 }
 
@@ -1146,6 +1245,33 @@ fn default_user_scripts_config_dir() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn session_index_monitor_does_not_start_after_exit() {
+        let checks = std::cell::Cell::new(0);
+        let result = run_periodic_until_exit(async { 42 }, std::time::Duration::ZERO, || {
+            checks.set(checks.get() + 1);
+            std::future::ready(())
+        }).await;
+        assert_eq!(result, 42);
+        assert_eq!(checks.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_index_monitor_finishes_current_check_before_exit() {
+        let (done, exit) = tokio::sync::oneshot::channel::<()>();
+        let mut done = Some(done);
+        let finished = std::cell::Cell::new(false);
+        run_periodic_until_exit(exit, std::time::Duration::from_millis(1), || {
+            done.take().expect("only one check").send(()).unwrap();
+            let finished = &finished;
+            async move {
+                tokio::task::yield_now().await;
+                finished.set(true);
+            }
+        }).await.unwrap();
+        assert!(finished.get());
+    }
+
     #[test]
     fn parse_launch_options_accepts_manager_forwarded_ports_and_app_path() {
         let options = parse_launch_options([
@@ -1188,6 +1314,34 @@ mod tests {
                 .expect_err("an incomplete provider sync must stop launch");
             assert!(error.to_string().contains("target is unresolved"));
         }
+    }
+
+    /// issue #2160：判定函数仍然把不完整同步视作失败，但启动路径必须把它降级成
+    /// 一条诊断日志——.codex-global-state.json 坏掉不能把整次启动带下去。
+    #[test]
+    fn startup_provider_sync_failure_is_non_fatal() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn run_provider_sync(&self)")
+            .expect("provider sync hook");
+        let end = source[start..]
+            .find("fn has_pending_remote_control_session_recoveries")
+            .map(|offset| start + offset)
+            .expect("next method after the hook");
+        let body = &source[start..end];
+
+        // 不再用 `?` 把同步失败变成致命错误。
+        assert!(
+            !body.contains("require_completed_provider_sync(&result.status, &result.message)?"),
+            "provider sync 失败不得中断启动"
+        );
+        assert!(
+            body.contains("launcher.provider_sync.degraded"),
+            "降级要留下诊断日志"
+        );
+        // 同步失败不连坐：索引修复照常执行。
+        assert!(body.contains("repair_session_index_automatically(false).await"));
+        assert!(body.trim_end().ends_with("Ok(())\n    }"));
     }
 
     #[test]
@@ -1268,6 +1422,48 @@ mod tests {
     }
 
     #[test]
+    fn existing_launcher_path_runs_provider_sync_before_activation() {
+        // issue #2080：快捷方式启动且 Codex 已在运行时走早退分支，过去直接返回，
+        // 跳过了供应商同步与会话索引修复，只有管理工具的「重启」才生效。
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("existing launcher activation function");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after existing launcher activation");
+        let body = &source[start..end];
+
+        let sync = body
+            .find("run_activation_provider_sync(&hooks, &settings)")
+            .expect("provider sync on the activation path");
+        let launch = body
+            .find("let launch_result = hooks")
+            .expect("Codex activation");
+        assert!(sync < launch, "provider sync must run before activation");
+    }
+
+    #[test]
+    fn activation_provider_sync_respects_the_setting_and_is_non_fatal() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn run_activation_provider_sync")
+            .expect("activation provider sync helper");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after the helper");
+        let body = &source[start..end];
+
+        // 只在设置启用时同步，与完整启动流程一致。
+        assert!(body.contains("if !settings.provider_sync_enabled"));
+        // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
+        assert!(!body.contains("hooks.run_provider_sync().await?"));
+        assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
+    }
+
+    #[test]
     fn pending_remote_control_finalization_requires_an_idle_desktop() {
         assert!(should_finalize_pending_remote_control_recovery(true, &[]));
         assert!(!should_finalize_pending_remote_control_recovery(false, &[]));
@@ -1313,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_hooks_forward_runtime_watchdog_and_marketplace_methods() {
+    fn launcher_hooks_forward_runtime_watchdog_and_protocol_proxy_methods() {
         let source = include_str!("main.rs");
         let compact_source = source.split_whitespace().collect::<String>();
 
@@ -1321,8 +1517,6 @@ mod tests {
         assert!(source.contains("self.watchdog_bridge_context()?"));
         assert!(source.contains("set_bridge_reinjector(reinjector)"));
         assert!(source.contains("inject_with_context(debug_port, helper_port, ctx, runtime)"));
-        assert!(source.contains("async fn ensure_plugin_marketplace_config"));
-        assert!(source.contains("self.core.ensure_plugin_marketplace_config(settings).await"));
         assert!(source.contains("async fn ensure_active_protocol_proxy_config"));
         assert!(
             compact_source

@@ -70,6 +70,36 @@ fn manager_close_minimizes_to_tray_without_confirmation() {
 }
 
 #[test]
+fn manager_hides_macos_dock_icon_when_window_moves_to_tray() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("tauri::ActivationPolicy::Accessory"));
+    assert!(lib_rs.contains("tauri::ActivationPolicy::Regular"));
+    assert!(lib_rs.contains("set_manager_activation_policy(&close_event_app, false)"));
+    assert!(lib_rs.contains("set_manager_activation_policy(app_handle, true)"));
+    assert!(lib_rs.contains("set_manager_activation_policy(&app_handle, false)"));
+}
+
+#[test]
+fn manager_reopens_hidden_window_when_macos_dock_requests_reopen() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("tauri::RunEvent::Reopen"));
+    assert!(lib_rs.contains("show_main_window(app_handle);"));
+}
+
+#[test]
+fn manager_second_instance_activates_existing_macos_bundle() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+
+    assert!(lib_rs.contains("codex_plus_core::install::MANAGER_BUNDLE_ID"));
+    assert!(lib_rs.contains("std::process::Command::new(\"/usr/bin/open\")"));
+}
+
+#[test]
 fn manager_queues_codexplusplus_provider_urls_for_confirmation_on_startup() {
     let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
         .expect("read manager main.rs");
@@ -178,7 +208,7 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
 }
 
 #[test]
-fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
+fn github_release_workflow_builds_one_universal_macos_dmg() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let workflow = manifest_dir
         .parent()
@@ -188,12 +218,15 @@ fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
         .join(".github/workflows/release-assets.yml");
     let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
 
-    assert!(workflow.contains("macos-15-intel"));
-    assert!(workflow.contains("x86_64-apple-darwin"));
+    // 通用包：单个 job 在两个 target 上各编一遍，由 build-universal.sh
+    // 用 lipo 合并。两个架构的 std 都要装。
     assert!(workflow.contains("macos-14"));
-    assert!(workflow.contains("aarch64-apple-darwin"));
-    assert!(workflow.contains("package-dmg.sh \"$VERSION\" \"${{ matrix.arch }}\""));
-    assert!(workflow.contains("target/${{ matrix.target }}/release"));
+    assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
+    assert!(workflow.contains("build-universal.sh \"$VERSION\""));
+
+    // 分架构的 matrix 形态不应再出现，否则会回到「用户自己挑架构」的老问题。
+    assert!(!workflow.contains("matrix.arch"));
+    assert!(!workflow.contains("macos-15-intel"));
 }
 
 #[test]

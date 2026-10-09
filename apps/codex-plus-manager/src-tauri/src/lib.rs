@@ -60,6 +60,10 @@ pub fn run() {
                 main_window_builder = main_window_builder.icon(icon)?;
             }
             let main_window = main_window_builder.build()?;
+            if startup_is_background() {
+                main_window.hide()?;
+                set_manager_activation_policy(app.handle(), false);
+            }
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
             register_main_window_events(main_window, startup_is_transient());
@@ -87,6 +91,8 @@ pub fn run() {
             commands::weixin_connect_start,
             commands::weixin_connect_stop,
             commands::find_desktop_codex_cli,
+            commands::query_builtin_model_metadata,
+            commands::builtin_model_metadata_index,
             commands::dream_skin_status,
             commands::import_dream_skin_image,
             commands::reset_dream_skin_image,
@@ -118,12 +124,12 @@ pub fn run() {
             commands::import_local_session,
             commands::load_pending_session_share,
             commands::import_session_url,
-            commands::list_zed_remote_projects,
-            commands::open_zed_remote,
-            commands::forget_zed_remote_project,
             commands::delete_local_session,
             commands::load_provider_sync_targets,
+            commands::repair_session_index,
+            commands::load_session_index_repair_report,
             commands::preview_session_index_cleanup,
+            commands::preview_provider_sync,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,
             commands::load_ads,
@@ -131,6 +137,7 @@ pub fn run() {
             commands::refresh_user_script_inventory,
             commands::reload_user_scripts,
             commands::install_market_script,
+            commands::set_user_scripts_enabled,
             commands::set_user_script_enabled,
             commands::delete_user_script,
             commands::refresh_skill_catalog,
@@ -147,10 +154,6 @@ pub fn run() {
             commands::install_entrypoints,
             commands::uninstall_entrypoints,
             commands::repair_shortcuts,
-            commands::plugin_marketplace_status,
-            commands::repair_plugin_marketplace,
-            commands::remote_plugin_marketplace_status,
-            commands::repair_remote_plugin_marketplace,
             commands::check_update,
             commands::perform_update,
             commands::load_watcher_state,
@@ -160,6 +163,8 @@ pub fn run() {
             commands::disable_watcher,
             commands::read_latest_logs,
             commands::clear_logs,
+            commands::scan_agent_cache,
+            commands::clean_agent_cache,
             commands::copy_diagnostics,
             commands::reset_settings,
             commands::reset_image_overlay_settings,
@@ -198,14 +203,24 @@ pub fn run() {
     match app_result {
         Ok(app) => app.run(|app_handle, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = event {
-                for url in urls {
-                    if handle_session_share_url(url.as_str()) || handle_dream_skin_url(url.as_str())
-                    {
-                        show_main_window(app_handle);
+            match event {
+                tauri::RunEvent::Opened { urls } => {
+                    for url in urls {
+                        if handle_session_share_url(url.as_str())
+                            || handle_dream_skin_url(url.as_str())
+                        {
+                            show_main_window(app_handle);
+                        }
                     }
                 }
+                tauri::RunEvent::Reopen { .. } => {
+                    show_main_window(app_handle);
+                }
+                _ => {}
             }
+
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
         }),
         Err(error) => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -345,6 +360,7 @@ fn register_main_window_events<R: tauri::Runtime>(
 
             api.prevent_close();
             let _ = close_event_window.hide();
+            set_manager_activation_policy(&close_event_app, false);
         }
         _ => {}
     });
@@ -385,7 +401,9 @@ fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
+    let app_handle = window.app_handle();
     let _ = window.hide();
+    set_manager_activation_policy(&app_handle, false);
 }
 
 #[tauri::command]
@@ -456,15 +474,34 @@ fn record_tray_dream_skin_result(action: &str, result: anyhow::Result<()>) {
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     if let Some(window) = app_handle.get_webview_window("main") {
+        set_manager_activation_policy(app_handle, true);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
-/// Restores and focuses an existing manager window on Windows.
-///
-/// This is a no-op on other platforms.
+#[cfg(target_os = "macos")]
+fn set_manager_activation_policy<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    main_window_visible: bool,
+) {
+    let policy = if main_window_visible {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app_handle.set_activation_policy(policy);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_manager_activation_policy<R: tauri::Runtime>(
+    _app_handle: &tauri::AppHandle<R>,
+    _main_window_visible: bool,
+) {
+}
+
+/// Restores and focuses an existing manager window on desktop platforms.
 pub fn focus_existing_manager_window() {
     #[cfg(windows)]
     {
@@ -481,6 +518,13 @@ pub fn focus_existing_manager_window() {
                 break;
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .args(["-b", codex_plus_core::install::MANAGER_BUNDLE_ID])
+            .status();
     }
 }
 

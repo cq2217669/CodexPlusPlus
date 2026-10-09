@@ -12,12 +12,15 @@ use base64::Engine;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 pub const BRIDGE_BINDING_NAME: &str = "codexSessionDeleteV2";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+// 25MiB 音频的 base64 与 JSON 封装约 33.4MiB；限制单 frame 和完整 message 的内存上限。
+const CDP_MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 /// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
 /// generation 检查；bridge 失效场景下旧 socket 不会再有任何消息，没有这个轮询，
 /// 被顶替的会话会带着 Runtime.enable 订阅和脚本注册无限期滞留。
@@ -142,6 +145,11 @@ pub fn bridge_health_check_script() -> &'static str {
   const bridge = window.__codexSessionDeleteBridge;
   const health = window.__codexPlusBridgeHealth;
   if (typeof bridge !== "function" || !health) return false;
+  // 窗口隐藏时 Chromium 会把后台定时器钳到约每分钟一次，心跳时间戳必然过期。
+  // 此时桥接对象仍在，不判定失效，避免看门狗按失败阈值每分钟重注入整份脚本
+  // （issue #2330）。
+  // 必须放在 bridge/health 存在性检查之后：页面重载后真丢桥时仍要能修复。
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return true;
   const now = Date.now();
   const lastSuccessAt = Number(health.lastSuccessAt) || 0;
   const lastInjectionAt = Number(health.lastInjectionAt) || 0;
@@ -300,6 +308,62 @@ pub fn parse_app_server_client_capture_location(value: &Value) -> Option<(String
 const APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT: Duration = Duration::from_secs(90);
 const APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL: Duration = Duration::from_secs(2);
 const APP_SERVER_CLIENT_CAPTURE_WATCH_CAP: Duration = Duration::from_secs(8 * 60 * 60);
+// Debugger.enable 冷启动时要枚举大型 bundle，仅放宽抓取会话，不改变普通 CDP 命令。
+const APP_SERVER_CLIENT_CAPTURE_ENABLE_TIMEOUT: Duration = Duration::from_secs(15);
+const APP_SERVER_CLIENT_CAPTURE_ENABLE_ATTEMPTS: usize = 3;
+const APP_SERVER_CLIENT_CAPTURE_ENABLE_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+async fn wait_for_stale_bridge_generation(generation: &BridgeGeneration) {
+    while bridge_generation_is_current(generation) {
+        tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL).await;
+    }
+}
+
+async fn enable_app_server_client_capture_debugger<S>(
+    session: &mut CdpSession<S>,
+    generation: &BridgeGeneration,
+    timeout: Duration,
+    retry_delay: Duration,
+) -> anyhow::Result<bool>
+where
+    S: SinkExt<Message>
+        + StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin
+        + Send,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    for attempt in 1..=APP_SERVER_CLIENT_CAPTURE_ENABLE_ATTEMPTS {
+        if !bridge_generation_is_current(generation) {
+            return Ok(false);
+        }
+        let result = tokio::select! {
+            result = session.send_command_with_timeout(
+                next_message_id(), "Debugger.enable", json!({}), timeout
+            ) => result,
+            _ = wait_for_stale_bridge_generation(generation) => return Ok(false),
+        };
+        match result {
+            Ok(_) => return Ok(bridge_generation_is_current(generation)),
+            Err(error) => {
+                // 协议错误/断连不能靠重复 enable 修复，只重试迟到或缺失的回包。
+                if attempt == APP_SERVER_CLIENT_CAPTURE_ENABLE_ATTEMPTS
+                    || !error.is::<tokio::time::error::Elapsed>()
+                {
+                    return Err(error);
+                }
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.app_server_client_capture_enable_retry",
+                    json!({ "attempt": attempt, "timeout_ms": timeout.as_millis() }),
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(retry_delay) => {},
+                    _ = wait_for_stale_bridge_generation(generation) => return Ok(false),
+                }
+            }
+        }
+    }
+    Ok(false)
+}
 
 fn spawn_app_server_client_capture(websocket_url: &str, generation: BridgeGeneration) {
     let websocket_url = websocket_url.to_string();
@@ -320,7 +384,10 @@ async fn run_app_server_client_capture(
     let settings = crate::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    if !settings.codex_app_service_tier_controls && !settings.codex_app_model_whitelist_unlock {
+    if !settings.codex_app_service_tier_controls
+        && !settings.codex_app_model_whitelist_unlock
+        && !settings.codex_app_session_delete
+    {
         return Ok(());
     }
     let socket = connect_cdp_websocket(websocket_url).await?;
@@ -328,6 +395,9 @@ async fn run_app_server_client_capture(
     let probe_script = app_server_client_capture_probe_script();
     let location_wait = async {
         loop {
+            if !bridge_generation_is_current(&generation) {
+                return None;
+            }
             tokio::time::sleep(APP_SERVER_CLIENT_CAPTURE_LOCATION_POLL).await;
             let Ok(response) = session
                 .send_command(
@@ -339,7 +409,9 @@ async fn run_app_server_client_capture(
             else {
                 continue;
             };
-            let Some(text) = response.pointer("/result/result/value").and_then(Value::as_str)
+            let Some(text) = response
+                .pointer("/result/result/value")
+                .and_then(Value::as_str)
             else {
                 continue;
             };
@@ -350,12 +422,10 @@ async fn run_app_server_client_capture(
             }
         }
     };
-    let Some((url_regex, line_number, column_number)) = tokio::time::timeout(
-        APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT,
-        location_wait,
-    )
-    .await
-    .unwrap_or(None)
+    let Some((url_regex, line_number, column_number)) =
+        tokio::time::timeout(APP_SERVER_CLIENT_CAPTURE_LOCATION_TIMEOUT, location_wait)
+            .await
+            .unwrap_or(None)
     else {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "bridge.app_server_client_capture_skipped",
@@ -363,9 +433,16 @@ async fn run_app_server_client_capture(
         );
         return Ok(());
     };
-    session
-        .send_command(next_message_id(), "Debugger.enable", json!({}))
-        .await?;
+    if !enable_app_server_client_capture_debugger(
+        &mut session,
+        &generation,
+        APP_SERVER_CLIENT_CAPTURE_ENABLE_TIMEOUT,
+        APP_SERVER_CLIENT_CAPTURE_ENABLE_RETRY_DELAY,
+    )
+    .await?
+    {
+        return Ok(());
+    }
     let breakpoint = session
         .send_command(
             next_message_id(),
@@ -403,7 +480,7 @@ async fn run_app_server_client_capture(
         }
         let message = tokio::select! {
             message = tokio::time::timeout_at(watch_deadline, session.next_message()) => message,
-            _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => continue,
+            _ = wait_for_stale_bridge_generation(&generation) => break,
         };
         let Ok(message) = message else {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -595,6 +672,12 @@ pub fn reject_bridge_expression(request_id: &str, message: &str) -> anyhow::Resu
     ))
 }
 
+fn cdp_websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(CDP_MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(CDP_MAX_MESSAGE_BYTES))
+}
+
 async fn connect_cdp_websocket(
     websocket_url: &str,
 ) -> anyhow::Result<
@@ -605,15 +688,18 @@ async fn connect_cdp_websocket(
         .port()
         .ok_or_else(|| anyhow::anyhow!("CDP WebSocket URL must include an explicit port"))?;
     crate::cdp::validate_cdp_websocket_url(websocket_url, port)?;
-    let (socket, _) = tokio::time::timeout(CDP_CONNECT_TIMEOUT, connect_async(websocket_url))
-        .await
-        .with_context(|| {
-            format!(
-                "timed out connecting CDP websocket after {}s",
-                CDP_CONNECT_TIMEOUT.as_secs()
-            )
-        })?
-        .context("failed to connect CDP websocket")?;
+    let (socket, _) = tokio::time::timeout(
+        CDP_CONNECT_TIMEOUT,
+        connect_async_with_config(websocket_url, Some(cdp_websocket_config()), false),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "timed out connecting CDP websocket after {}s",
+            CDP_CONNECT_TIMEOUT.as_secs()
+        )
+    })?
+    .context("failed to connect CDP websocket")?;
 
     Ok(socket)
 }
@@ -683,6 +769,17 @@ where
         method: &str,
         params: Value,
     ) -> anyhow::Result<Value> {
+        self.send_command_with_timeout(message_id, method, params, CDP_COMMAND_TIMEOUT)
+            .await
+    }
+
+    async fn send_command_with_timeout(
+        &mut self,
+        message_id: u64,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> anyhow::Result<Value> {
         self.socket
             .send(Message::Text(
                 json!({
@@ -697,14 +794,14 @@ where
             .with_context(|| format!("failed to send CDP command {method} id {message_id}"))?;
 
         tokio::time::timeout(
-            CDP_COMMAND_TIMEOUT,
+            timeout,
             self.wait_for_id(message_id, method.to_string()),
         )
         .await
         .with_context(|| {
             format!(
                 "timed out waiting for CDP command {method} id {message_id} response after {}s",
-                CDP_COMMAND_TIMEOUT.as_secs()
+                timeout.as_secs()
             )
         })?
     }
@@ -1037,4 +1134,235 @@ fn extract_string_field(input: &str, field: &str) -> Option<String> {
 
 fn next_message_id() -> u64 {
     NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+#[cfg(test)]
+mod app_server_capture_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn capture_enable_retries_timeout_and_accepts_late_response() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = next_bridge_generation(&format!("capture-retry-{address}"));
+        assert!(publish_bridge_generation(&generation));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let first: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            let second: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(first["method"], "Debugger.enable");
+            assert_eq!(second["method"], "Debugger.enable");
+            assert_ne!(first["id"], second["id"]);
+            // 第一条回包迟到，不能误认为第二条完成，也不能阻止真正的第二条响应。
+            for command in [first, second] {
+                socket
+                    .send(Message::Text(
+                        json!({ "id": command["id"], "result": {"debuggerId": "mock"} })
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let socket = connect_cdp_websocket(&format!("ws://{address}/devtools/page/capture-retry"))
+            .await
+            .unwrap();
+        let mut session = CdpSession::new(socket);
+        assert!(
+            enable_app_server_client_capture_debugger(
+                &mut session,
+                &generation,
+                Duration::from_millis(40),
+                Duration::from_millis(5),
+            )
+            .await
+            .unwrap()
+        );
+        server.await.unwrap();
+        release_bridge_generation(&generation);
+    }
+
+    #[tokio::test]
+    async fn capture_enable_stops_after_bounded_attempts() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = next_bridge_generation(&format!("capture-bounded-{address}"));
+        assert!(publish_bridge_generation(&generation));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for _ in 0..APP_SERVER_CLIENT_CAPTURE_ENABLE_ATTEMPTS {
+                let command: Value =
+                    serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                assert_eq!(command["method"], "Debugger.enable");
+            }
+            // 保持连接，让最后一轮以超时结束，而不是断连。
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), socket.next())
+                    .await
+                    .is_err()
+            );
+        });
+        let socket = connect_cdp_websocket(&format!("ws://{address}/devtools/page/capture-bounded"))
+            .await
+            .unwrap();
+        let mut session = CdpSession::new(socket);
+        let error = enable_app_server_client_capture_debugger(
+            &mut session,
+            &generation,
+            Duration::from_millis(20),
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.is::<tokio::time::error::Elapsed>());
+        server.await.unwrap();
+        release_bridge_generation(&generation);
+    }
+
+    #[tokio::test]
+    async fn capture_enable_does_not_retry_protocol_error() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = next_bridge_generation(&format!("capture-error-{address}"));
+        assert!(publish_bridge_generation(&generation));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let command: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({ "id": command["id"], "error": { "code": -32000, "message": "unavailable" } })
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), socket.next())
+                    .await
+                    .is_err()
+            );
+        });
+        let socket = connect_cdp_websocket(&format!("ws://{address}/devtools/page/capture-error"))
+            .await
+            .unwrap();
+        let mut session = CdpSession::new(socket);
+        let error = enable_app_server_client_capture_debugger(
+            &mut session,
+            &generation,
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("unavailable"));
+        server.await.unwrap();
+        release_bridge_generation(&generation);
+    }
+
+    #[tokio::test]
+    async fn capture_enable_cancels_when_generation_is_replaced() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = next_bridge_generation(&format!("capture-stale-{address}"));
+        assert!(publish_bridge_generation(&generation));
+        let replacement = next_bridge_generation(&generation.target);
+        let replacement_for_server = replacement.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let command: Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(command["method"], "Debugger.enable");
+            assert!(publish_bridge_generation(&replacement_for_server));
+            // 旧会话退出前不得重发 enable 或安装断点。
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1500), socket.next())
+                    .await
+                    .is_err()
+            );
+        });
+        let socket = connect_cdp_websocket(&format!("ws://{address}/devtools/page/capture-stale"))
+            .await
+            .unwrap();
+        let mut session = CdpSession::new(socket);
+        assert!(
+            !enable_app_server_client_capture_debugger(
+                &mut session,
+                &generation,
+                Duration::from_secs(5),
+                Duration::from_millis(5),
+            )
+            .await
+            .unwrap()
+        );
+        server.await.unwrap();
+        release_bridge_generation(&replacement);
+    }
+}
+
+#[cfg(test)]
+mod websocket_size_tests {
+    use super::*;
+
+    #[test]
+    fn cdp_websocket_limits_fit_maximum_dictation_payload_and_remain_bounded() {
+        let config = cdp_websocket_config();
+        let base64_bytes = crate::dictation::MAX_AUDIO_BODY_BYTES.div_ceil(3) * 4;
+        assert_eq!(config.max_message_size, Some(40 * 1024 * 1024));
+        assert_eq!(config.max_frame_size, Some(40 * 1024 * 1024));
+        assert!(base64_bytes + 64 * 1024 < config.max_frame_size.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cdp_websocket_receives_maximum_dictation_base64_in_one_frame() {
+        // 仅连接本地模拟服务器，不操作真实 app 或页面。
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let base64_bytes = crate::dictation::MAX_AUDIO_BODY_BYTES.div_ceil(3) * 4;
+        let payload = json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "payload": json!({
+                    "id": "dictation-smoke",
+                    "path": "/dictation/transcribe",
+                    "payload": {"audioBase64": "A".repeat(base64_bytes)}
+                }).to_string()
+            }
+        })
+        .to_string();
+        let payload_bytes = payload.len();
+        assert!(payload_bytes > 16 * 1024 * 1024);
+        assert!(payload_bytes < CDP_MAX_MESSAGE_BYTES);
+        let sender = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(Message::Text(payload.into())).await.unwrap();
+        });
+        let mut socket =
+            connect_cdp_websocket(&format!("ws://{address}/devtools/page/dictation-smoke"))
+                .await
+                .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(15), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(received.is_text());
+        assert_eq!(received.len(), payload_bytes);
+        sender.await.unwrap();
+    }
 }

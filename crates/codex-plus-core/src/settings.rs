@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -9,15 +9,6 @@ use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item};
 
 use crate::tools::{ToolConfig, ToolId};
-use crate::zed_remote::ZedOpenStrategy;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LaunchMode {
-    #[default]
-    Patch,
-    Relay,
-}
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -115,9 +106,35 @@ pub struct RelayProfile {
     pub sub2api_multiplier: String,
     #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
     pub model_routes: Vec<RelayModelRoute>,
+    /// 自定义上游请求头（有序列表，保住用户写的顺序）。
+    /// 传输头（Host / Content-Length 等）与跳头由协议层掌控，写入前会被校验拦下。
+    #[serde(
+        rename = "customHeaders",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub custom_headers: Vec<RelayHeaderKeyValue>,
     // 上游审查要求：导出 round-trip 不改变既有 provider；为 false 时不写出该字段。
-    #[serde(rename = "standardOpenaiProtocol", default, skip_serializing_if = "is_false")]
+    #[serde(
+        rename = "standardOpenaiProtocol",
+        default,
+        skip_serializing_if = "is_false"
+    )]
     pub standard_openai_protocol: bool,
+    #[serde(rename = "rateLimitCooldownEnabled", default)]
+    pub rate_limit_cooldown_enabled: bool,
+    #[serde(rename = "channelQueueEnabled", default)]
+    pub channel_queue_enabled: bool,
+    #[serde(
+        rename = "channelRequestsPerMinute",
+        default = "default_channel_requests_per_minute"
+    )]
+    pub channel_requests_per_minute: u32,
+    #[serde(
+        rename = "cooldownErrorStatuses",
+        default = "default_cooldown_error_statuses"
+    )]
+    pub cooldown_error_statuses: Vec<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -132,6 +149,19 @@ pub struct RelayModelRoute {
         skip_serializing_if = "String::is_empty"
     )]
     pub target_model: String,
+}
+
+/// 供应商自定义上游请求头。
+///
+/// 用有序 Vec 而不是 map：与 MCP 的 env / http_headers 一致，保住用户书写顺序，
+/// 也让设置文件的 diff 稳定。
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayHeaderKeyValue {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -232,7 +262,12 @@ impl Default for RelayProfile {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            rate_limit_cooldown_enabled: false,
+            channel_queue_enabled: false,
+            channel_requests_per_minute: default_channel_requests_per_minute(),
+            cooldown_error_statuses: default_cooldown_error_statuses(),
         }
     }
 }
@@ -396,8 +431,48 @@ impl Default for DreamSkinThemeConfig {
     }
 }
 
+/// 独立的听写服务配置；不复用编码供应商的密钥。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DictationSettings {
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key: String,
+    pub api_key_env: String,
+    pub model: String,
+    pub language: String,
+    pub timeout_seconds: u64,
+}
+
+impl Default for DictationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "https://api.groq.com/openai/v1".to_string(),
+            api_key: String::new(),
+            api_key_env: String::new(),
+            model: "whisper-large-v3-turbo".to_string(),
+            language: String::new(),
+            timeout_seconds: 120,
+        }
+    }
+}
+
+impl DictationSettings {
+    pub fn normalize(&mut self) {
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        self.api_key = self.api_key.trim().to_string();
+        self.api_key_env = self.api_key_env.trim().to_string();
+        self.model = self.model.trim().to_string();
+        self.language = self.language.trim().to_string();
+        self.timeout_seconds = self.timeout_seconds.clamp(1, 600);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
+    #[serde(default)]
+    pub dictation: DictationSettings,
     #[serde(rename = "codexAppPath", default)]
     pub codex_app_path: String,
     #[serde(rename = "codexExtraArgs", default)]
@@ -426,30 +501,14 @@ pub struct BackendSettings {
     pub codex_app_markdown_export: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
-    #[serde(rename = "codexAppForceChineseLocale", default = "default_true")]
-    pub codex_app_force_chinese_locale: bool,
-    #[serde(rename = "codexAppFastStartup", default)]
-    pub codex_app_fast_startup: bool,
     #[serde(rename = "codexAppThreadIdBadge", default)]
     pub codex_app_thread_id_badge: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
     #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
     pub codex_app_thread_scroll_restore: bool,
-    #[serde(rename = "codexAppZedRemoteOpen", default = "default_true")]
-    pub codex_app_zed_remote_open: bool,
-    #[serde(rename = "zedRemoteOpenStrategy", default)]
-    pub zed_remote_open_strategy: ZedOpenStrategy,
-    #[serde(rename = "zedRemoteProjectRegistryEnabled", default = "default_true")]
-    pub zed_remote_project_registry_enabled: bool,
-    #[serde(rename = "zedRemoteSyncToZedSettings", default)]
-    pub zed_remote_sync_to_zed_settings: bool,
-    #[serde(rename = "codexAppUpstreamWorktreeCreate", default = "default_true")]
-    pub codex_app_upstream_worktree_create: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
     pub codex_app_native_menu_placement: bool,
-    #[serde(rename = "codexAppNativeMenuLocalization", default = "default_true")]
-    pub codex_app_native_menu_localization: bool,
     #[serde(rename = "codexAppNativeBrowserRequireIdentification", default)]
     pub codex_app_native_browser_require_identification: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
@@ -568,8 +627,6 @@ pub struct BackendSettings {
     pub weixin_connect_sandbox: String,
     #[serde(rename = "weixinConnectCodexPath", default)]
     pub weixin_connect_codex_path: String,
-    #[serde(rename = "launchMode", default)]
-    pub launch_mode: LaunchMode,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
     pub relay_base_url: String,
     #[serde(rename = "relayApiKey", default)]
@@ -600,6 +657,7 @@ pub struct BackendSettings {
 impl Default for BackendSettings {
     fn default() -> Self {
         Self {
+            dictation: DictationSettings::default(),
             codex_app_path: String::new(),
             codex_extra_args: Vec::new(),
             provider_sync_enabled: false,
@@ -614,18 +672,10 @@ impl Default for BackendSettings {
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
-            codex_app_force_chinese_locale: true,
-            codex_app_fast_startup: false,
             codex_app_thread_id_badge: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
-            codex_app_zed_remote_open: true,
-            zed_remote_open_strategy: ZedOpenStrategy::AddToFocusedWorkspace,
-            zed_remote_project_registry_enabled: true,
-            zed_remote_sync_to_zed_settings: false,
-            codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
-            codex_app_native_menu_localization: true,
             codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
@@ -662,7 +712,6 @@ impl Default for BackendSettings {
             weixin_connect_model: String::new(),
             weixin_connect_sandbox: default_weixin_connect_sandbox(),
             weixin_connect_codex_path: String::new(),
-            launch_mode: LaunchMode::Patch,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
@@ -724,7 +773,12 @@ impl BackendSettings {
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
                 model_routes: Vec::new(),
+                custom_headers: Vec::new(),
                 standard_openai_protocol: false,
+                rate_limit_cooldown_enabled: false,
+                channel_queue_enabled: false,
+                channel_requests_per_minute: default_channel_requests_per_minute(),
+                cooldown_error_statuses: default_cooldown_error_statuses(),
             };
         }
 
@@ -779,7 +833,12 @@ impl BackendSettings {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            custom_headers: Vec::new(),
             standard_openai_protocol: false,
+            rate_limit_cooldown_enabled: false,
+            channel_queue_enabled: false,
+            channel_requests_per_minute: default_channel_requests_per_minute(),
+            cooldown_error_statuses: default_cooldown_error_statuses(),
         }
     }
 
@@ -1049,8 +1108,40 @@ pub fn default_relay_test_model() -> String {
     "gpt-5.4-mini".to_string()
 }
 
+pub fn default_channel_requests_per_minute() -> u32 {
+    20
+}
+
+pub fn default_cooldown_error_statuses() -> Vec<u16> {
+    vec![429, 500]
+}
+
+pub fn normalize_channel_requests_per_minute(value: u32) -> u32 {
+    value.clamp(1, 10_000)
+}
+
+pub fn normalize_channel_cooldown_statuses(value: &[u16]) -> Vec<u16> {
+    let mut statuses = value
+        .iter()
+        .copied()
+        .filter(|status| (100..=599).contains(status))
+        .collect::<Vec<_>>();
+    statuses.sort_unstable();
+    statuses.dedup();
+    statuses.truncate(20);
+    statuses
+}
+
 pub fn default_relay_profiles() -> Vec<RelayProfile> {
     vec![RelayProfile::default()]
+}
+
+/// 判断一份供应商列表是否退化成了「仅剩默认 profile」。
+///
+/// 这是 `load` 失败后退回默认设置、再被原样回写磁盘的典型形态。
+/// `RelayProfile::default()` 的 id 固定为 `default`，用户手工创建的条目不会长这样。
+pub fn is_default_single_profile(profiles: &[RelayProfile]) -> bool {
+    profiles.len() == 1 && profiles[0] == RelayProfile::default()
 }
 
 pub fn default_aggregate_member_weight() -> u32 {
@@ -1168,6 +1259,31 @@ pub struct SettingsStore {
     path: PathBuf,
 }
 
+/// 配置不应承载无界的转义膨胀或文件内容。超限时只报错，不覆盖原文件。
+pub const MAX_SETTINGS_FILE_BYTES: usize = 16 * 1024 * 1024;
+
+fn serialize_settings_bounded(value: &impl serde::Serialize) -> anyhow::Result<Vec<u8>> {
+    struct BoundedWriter(Vec<u8>);
+    impl Write for BoundedWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_SETTINGS_FILE_BYTES.saturating_sub(self.0.len()) {
+                return Err(std::io::Error::other(
+                    "settings 超过 16 MiB 上限，原文件未修改",
+                ));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = BoundedWriter(Vec::new());
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    Ok(writer.0)
+}
+
 impl Default for SettingsStore {
     fn default() -> Self {
         Self::new(crate::paths::default_settings_path())
@@ -1180,29 +1296,81 @@ impl SettingsStore {
     }
 
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
-        let contents = match fs::read_to_string(&self.path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let contents = match self.read_contents()? {
+            Some(contents) => contents,
+            None => {
                 let mut settings = BackendSettings::default();
                 settings.sync_tool_shards();
                 return Ok(settings);
             }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to read settings {}", self.path.display()));
-            }
         };
 
-        Ok(normalize_settings_config_sections(
-            serde_json::from_str(&contents).unwrap_or_default(),
-        ))
+        let parsed = serde_json::from_str(&contents).with_context(|| {
+            format!(
+                "settings {} 解析失败，拒绝退回默认设置以免覆盖用户配置",
+                self.path.display()
+            )
+        })?;
+        Ok(normalize_settings_config_sections(parsed))
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        // `save()` 是整体覆盖写，manager 的 save_settings 走的就是这条路。
+        // 历史事故：load 失败退回默认设置（只剩 1 条默认 profile），前端把它原样
+        // 回写，用户的 N 条供应商配置被清空。这里在写盘前比一次条数。
+        // 旧文件超限、不可读或 JSON 损坏时拒绝写入，不能把读取失败当成空配置。
+        let existing_profile_count = self
+            .load_raw_object()?
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if settings.relay_profiles.is_empty() && existing_profile_count > 0 {
+            anyhow::bail!(
+                "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存的列表为空；为避免清空用户配置，已保持原文件不变",
+                existing_profile_count
+            );
+        }
+        if is_default_single_profile(&settings.relay_profiles) && existing_profile_count > 1 {
+            anyhow::bail!(
+                "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存退化为仅剩默认供应商；为避免覆盖用户配置，已保持原文件不变",
+                existing_profile_count
+            );
+        }
+        // 先限制输入序列化大小，再复制/归一化；转义后的体积也计入预算。
+        serialize_settings_bounded(settings)?;
         let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
-        let bytes = serde_json::to_vec_pretty(&settings)?;
+        let bytes = serialize_settings_bounded(&settings)?;
         atomic_write(&self.path, &bytes)
+    }
+
+    /// 切换事务的原始字节快照，保留未识别字段；不得把读错伪装成缺失文件。
+    pub(crate) fn snapshot_raw_bytes(&self) -> anyhow::Result<Option<Vec<u8>>> {
+        let Some(contents) = self.read_contents()? else {
+            return Ok(None);
+        };
+        let bytes = contents.into_bytes();
+        validate_settings_snapshot(&bytes)?;
+        Ok(Some(bytes))
+    }
+
+    /// 仅供已捕获原始状态的内部事务回滚，不经过普通保存的供应商塌缩判断。
+    /// None 只能来自事务开始时文件不存在的快照，删除本次新建的 settings 文件。
+    pub(crate) fn restore_raw_snapshot(&self, snapshot: Option<&[u8]>) -> anyhow::Result<()> {
+        // 本操作写出的文件也受预算约束；超限的当前文件可能是外部新写入，不能覆盖。
+        self.read_contents()?;
+        match snapshot {
+            Some(bytes) => {
+                validate_settings_snapshot(bytes)?;
+                atomic_write(&self.path, bytes)
+            }
+            None => match fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("恢复缺失 settings 文件状态失败"),
+            },
+        }
     }
 
     pub fn update(&self, payload: Value) -> anyhow::Result<BackendSettings> {
@@ -1210,8 +1378,29 @@ impl SettingsStore {
             return self.load();
         };
 
+        serialize_settings_bounded(&payload)?;
         let mut raw = self.load_raw_object()?;
+        let existing_profile_count = raw
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        // 已移除的增强项不再接受更新；顺便清理旧版本留下的开关。
+        for key in [
+            "launchMode",
+            "codexAppFastStartup",
+            "codexAppForceChineseLocale",
+            "codexAppZedRemoteOpen",
+            "zedRemoteOpenStrategy",
+            "zedRemoteProjectRegistryEnabled",
+            "zedRemoteSyncToZedSettings",
+            "codexAppUpstreamWorktreeCreate",
+            "codexAppNativeMenuLocalization",
+        ] {
+            raw.remove(key);
+        }
         merge_known_setting_fields(&mut raw, &payload);
+        serialize_settings_bounded(&raw)?;
         let settings = normalize_settings_config_sections(
             serde_json::from_value(Value::Object(raw.clone())).unwrap_or_default(),
         );
@@ -1229,31 +1418,108 @@ impl SettingsStore {
             "tools".to_string(),
             serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
         );
-        let bytes = serde_json::to_vec_pretty(&Value::Object(raw))?;
+        let new_profile_count = raw
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if new_profile_count == 0 && existing_profile_count > 0 {
+            anyhow::bail!(
+                "拒绝写入 settings：本次更新会把供应商列表从 {} 条清空为 0 条，已保持原文件不变",
+                existing_profile_count
+            );
+        }
+        let bytes = serialize_settings_bounded(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
         Ok(settings)
     }
 
     fn load_raw_object(&self) -> anyhow::Result<Map<String, Value>> {
-        let contents = match fs::read_to_string(&self.path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let contents = match self.read_contents()? {
+            Some(contents) => contents,
+            None => {
                 return Ok(settings_to_object(&BackendSettings::default()));
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to read settings {}", self.path.display()));
             }
         };
 
         match serde_json::from_str::<Value>(&contents) {
             Ok(Value::Object(map)) => Ok(map),
-            Ok(_) | Err(_) => Ok(settings_to_object(&BackendSettings::default())),
+            Ok(_) => Err(anyhow::anyhow!(
+                "settings {} 顶层不是 JSON 对象，拒绝用默认值覆盖",
+                self.path.display()
+            )),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "settings {} 解析失败，拒绝用默认值覆盖；请先修复该文件",
+                    self.path.display()
+                )
+            }),
         }
+    }
+
+    fn read_contents(&self) -> anyhow::Result<Option<String>> {
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("failed to open settings"),
+        };
+        let reject_large_file = || {
+            anyhow::anyhow!(
+                "settings {} 超过 16 MiB 上限，拒绝读取或覆盖；请保留原文件并先修复",
+                self.path.display()
+            )
+        };
+        let length = file.metadata()?.len();
+        if length > MAX_SETTINGS_FILE_BYTES as u64 {
+            return Err(reject_large_file());
+        }
+        let mut bytes = Vec::with_capacity(length as usize);
+        // metadata 检查后文件仍可能增长，实际读取也必须有上限。
+        file.take(MAX_SETTINGS_FILE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_SETTINGS_FILE_BYTES {
+            return Err(reject_large_file());
+        }
+        Ok(Some(
+            String::from_utf8(bytes).context("settings 不是有效 UTF-8，原文件未修改")?,
+        ))
     }
 }
 
+fn validate_settings_snapshot(bytes: &[u8]) -> anyhow::Result<()> {
+    if bytes.len() > MAX_SETTINGS_FILE_BYTES {
+        anyhow::bail!("settings 快照超过 16 MiB 上限，原文件未修改");
+    }
+    if !serde_json::from_slice::<Value>(bytes)
+        .context("settings 快照不是有效 JSON，原文件未修改")?
+        .is_object()
+    {
+        anyhow::bail!("settings 快照顶层不是 JSON 对象，原文件未修改");
+    }
+    Ok(())
+}
+
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
+    if let Some(patch) = source.get("dictation").and_then(Value::as_object) {
+        let mut dictation = target
+            .get("dictation")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        merge_bool_setting(&mut dictation, patch, "enabled");
+        for key in ["baseUrl", "apiKey", "apiKeyEnv", "model", "language"] {
+            if let Some(value) = patch.get(key).and_then(Value::as_str) {
+                dictation.insert(key.to_string(), Value::String(value.trim().to_string()));
+            }
+        }
+        if let Some(value) = patch.get("timeoutSeconds").and_then(Value::as_u64) {
+            dictation.insert(
+                "timeoutSeconds".to_string(),
+                Value::from(value.clamp(1, 600)),
+            );
+        }
+        target.insert("dictation".to_string(), Value::Object(dictation));
+    }
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
@@ -1295,22 +1561,10 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppPasteFix");
-    merge_bool_setting(target, source, "codexAppForceChineseLocale");
-    merge_bool_setting(target, source, "codexAppFastStartup");
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
-    merge_bool_setting(target, source, "codexAppZedRemoteOpen");
-    if let Some(value) = source.get("zedRemoteOpenStrategy") {
-        if serde_json::from_value::<ZedOpenStrategy>(value.clone()).is_ok() {
-            target.insert("zedRemoteOpenStrategy".to_string(), value.clone());
-        }
-    }
-    merge_bool_setting(target, source, "zedRemoteProjectRegistryEnabled");
-    merge_bool_setting(target, source, "zedRemoteSyncToZedSettings");
-    merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
-    merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
     merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
@@ -1482,11 +1736,6 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             target.insert(key.to_string(), Value::String(value.trim().to_string()));
         }
     }
-    if let Some(value) = source.get("launchMode").and_then(Value::as_str) {
-        if matches!(value, "patch" | "relay") {
-            target.insert("launchMode".to_string(), Value::String(value.to_string()));
-        }
-    }
     if let Some(value) = source.get("relayBaseUrl").and_then(Value::as_str) {
         target.insert("relayBaseUrl".to_string(), Value::String(value.to_string()));
     }
@@ -1494,13 +1743,45 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("relayApiKey".to_string(), Value::String(value.to_string()));
     }
     if let Some(value) = source.get("relayProfiles").and_then(Value::as_array) {
-        let mut profiles = serde_json::from_value::<Vec<RelayProfile>>(Value::Array(value.clone()))
-            .unwrap_or_default();
-        preserve_official_mix_bearer_tokens(&mut profiles, target);
-        target.insert(
-            "relayProfiles".to_string(),
-            serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
-        );
+        // 逐个反序列化：单个坏条目只丢自己，不能把整份供应商列表清空。
+        // 历史实现用 serde_json::from_value::<Vec<RelayProfile>>(...).unwrap_or_default()，
+        // 任一 profile 字段不匹配就会让整个数组变空，随后被 update 写回磁盘。
+        let mut profiles = Vec::with_capacity(value.len());
+        let mut dropped = 0usize;
+        for entry in value {
+            match serde_json::from_value::<RelayProfile>(entry.clone()) {
+                Ok(profile) => profiles.push(profile),
+                Err(_) => dropped += 1,
+            }
+        }
+        if dropped > 0 {
+            eprintln!(
+                "codex-plus settings: {dropped} 个供应商条目反序列化失败已跳过（共 {} 个）",
+                value.len()
+            );
+        }
+        // 新列表为空、或退化为仅剩默认 profile，而现有列表非空时，保留现有列表。
+        // 空列表和「默认单条」都是 load 失败后默认设置被原样回写的形态。
+        let existing_count = target
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|existing| existing.len())
+            .unwrap_or(0);
+        let should_reject = (profiles.is_empty() && existing_count > 0)
+            || (is_default_single_profile(&profiles) && existing_count > 1);
+        if should_reject {
+            eprintln!(
+                "codex-plus settings: 新供应商列表退化为 {} 条，现有 {} 条，已拒绝覆盖",
+                profiles.len(),
+                existing_count
+            );
+        } else {
+            preserve_official_mix_bearer_tokens(&mut profiles, target);
+            target.insert(
+                "relayProfiles".to_string(),
+                serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
+            );
+        }
     }
     if let Some(value) = source
         .get("relayCommonConfigContents")
@@ -1674,6 +1955,7 @@ fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
 }
 
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
+    settings.dictation.normalize();
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     let (common, extracted_context) =
         split_context_config_sections(&settings.relay_common_config_contents);
@@ -1753,6 +2035,12 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
+    for profile in &mut settings.relay_profiles {
+        profile.channel_requests_per_minute =
+            normalize_channel_requests_per_minute(profile.channel_requests_per_minute);
+        profile.cooldown_error_statuses =
+            normalize_channel_cooldown_statuses(&profile.cooldown_error_statuses);
+    }
     // 扁平字段始终是 Codex 的唯一事实来源，这里把它镜像进 tools.codex；
     // 其它工具的分片原样保留。放在函数末尾，所有 load / save / update 路径
     // 都会经过，两边不会漂移。
@@ -1943,23 +2231,25 @@ mod tests {
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_thread_id_badge);
-        assert!(settings.codex_app_force_chinese_locale);
         assert!(!settings.codex_goals_enabled);
         assert!(settings.codex_app_path.is_empty());
         assert!(settings.codex_extra_args.is_empty());
-        assert_eq!(
-            settings.zed_remote_open_strategy,
-            ZedOpenStrategy::AddToFocusedWorkspace
-        );
-        assert!(settings.zed_remote_project_registry_enabled);
-        assert!(!settings.zed_remote_sync_to_zed_settings);
-        assert!(settings.codex_app_native_menu_localization);
-        assert_eq!(settings.launch_mode, LaunchMode::Patch);
         assert_eq!(settings.relay_base_url, default_relay_base_url());
         assert!(settings.relay_api_key.is_empty());
         assert_eq!(settings.relay_profiles[0].relay_mode, RelayMode::Official);
         assert!(settings.relay_common_config_contents.is_empty());
         assert_eq!(settings.relay_test_model, default_relay_test_model());
+        let default_profile = &settings.relay_profiles[0];
+        assert!(!default_profile.rate_limit_cooldown_enabled);
+        assert!(!default_profile.channel_queue_enabled);
+        assert_eq!(
+            default_profile.channel_requests_per_minute,
+            default_channel_requests_per_minute()
+        );
+        assert_eq!(
+            default_profile.cooldown_error_statuses,
+            default_cooldown_error_statuses()
+        );
         assert!(!settings.codex_app_stepwise_enabled);
         assert_eq!(settings.codex_app_stepwise_generation_mode, "auto");
         assert!(!settings.codex_app_answer_outline_enabled);
@@ -1983,6 +2273,67 @@ mod tests {
         );
         assert!(settings.weixin_connect_token.is_empty());
         assert_eq!(settings.weixin_connect_sandbox, "read-only");
+    }
+
+    #[test]
+    fn channel_protection_settings_are_normalized() {
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                channel_requests_per_minute: 0,
+                cooldown_error_statuses: vec![500, 429, 429, 99, 600],
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let normalized = normalize_settings_config_sections(settings);
+
+        assert_eq!(normalized.relay_profiles[0].channel_requests_per_minute, 1);
+        assert_eq!(
+            normalized.relay_profiles[0].cooldown_error_statuses,
+            vec![429, 500]
+        );
+    }
+
+    #[test]
+    fn channel_protection_settings_round_trip_independently_per_profile() {
+        let settings = BackendSettings {
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "relay-a".to_string(),
+                    rate_limit_cooldown_enabled: true,
+                    channel_queue_enabled: true,
+                    channel_requests_per_minute: 24,
+                    cooldown_error_statuses: vec![429],
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "relay-b".to_string(),
+                    rate_limit_cooldown_enabled: false,
+                    channel_queue_enabled: true,
+                    channel_requests_per_minute: 90,
+                    cooldown_error_statuses: vec![500, 503],
+                    ..RelayProfile::default()
+                },
+            ],
+            ..BackendSettings::default()
+        };
+
+        let serialized = serde_json::to_value(&settings).unwrap();
+        let restored: BackendSettings = serde_json::from_value(serialized).unwrap();
+        let normalized = normalize_settings_config_sections(restored);
+
+        let first = &normalized.relay_profiles[0];
+        assert!(first.rate_limit_cooldown_enabled);
+        assert!(first.channel_queue_enabled);
+        assert_eq!(first.channel_requests_per_minute, 24);
+        assert_eq!(first.cooldown_error_statuses, vec![429]);
+
+        let second = &normalized.relay_profiles[1];
+        assert!(!second.rate_limit_cooldown_enabled);
+        assert!(second.channel_queue_enabled);
+        assert_eq!(second.channel_requests_per_minute, 90);
+        assert_eq!(second.cooldown_error_statuses, vec![500, 503]);
     }
 
     #[test]
@@ -2539,14 +2890,194 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(store.load().unwrap(), normalized_default_settings());
     }
 
+    /// 坏 JSON 不再静默退回默认设置：解析失败必须报错，避免拿默认值把磁盘上的
+    /// 供应商列表覆盖掉。原文件内容必须原样保留。
     #[test]
-    fn settings_store_load_bad_json_returns_default() {
+    fn settings_store_load_bad_json_returns_error_and_keeps_file() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, "{bad json").unwrap();
-        let store = SettingsStore::new(path);
+        let store = SettingsStore::new(path.clone());
 
-        assert_eq!(store.load().unwrap(), normalized_default_settings());
+        let error = store
+            .load()
+            .expect_err("坏 JSON 必须报错，而不是退回默认值");
+        assert!(
+            error.to_string().contains("解析失败"),
+            "错误信息应指出解析失败，实际是: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{bad json");
+        assert!(store.save(&BackendSettings::default()).is_err());
+        assert!(store.update(json!({"providerSyncEnabled": false})).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{bad json");
+    }
+
+    #[test]
+    fn settings_store_rejects_oversized_existing_file_without_overwriting() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(b"keep-original").unwrap();
+        file.set_len(MAX_SETTINGS_FILE_BYTES as u64 + 1).unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        for error in [
+            store.load().unwrap_err(),
+            store.save(&BackendSettings::default()).unwrap_err(),
+            store
+                .update(json!({"providerSyncEnabled": false}))
+                .unwrap_err(),
+            store.snapshot_raw_bytes().unwrap_err(),
+            store
+                .restore_raw_snapshot(Some(b"{}".as_slice()))
+                .unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("16 MiB"));
+        }
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            MAX_SETTINGS_FILE_BYTES as u64 + 1
+        );
+        let mut prefix = [0_u8; 13];
+        File::open(&path).unwrap().read_exact(&mut prefix).unwrap();
+        assert_eq!(&prefix, b"keep-original");
+    }
+
+    #[test]
+    fn settings_store_serialized_size_limit_counts_json_escaping() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let original = r#"{"providerSyncEnabled":false,"customField":"keep"}"#;
+        fs::write(&path, original).unwrap();
+        let store = SettingsStore::new(path.clone());
+        let mut settings = BackendSettings::default();
+        settings.codex_app_image_overlay_path = "\\".repeat(MAX_SETTINGS_FILE_BYTES / 2);
+
+        assert!(
+            store
+                .save(&settings)
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        let error = store
+            .update(json!({
+                "codexAppImageOverlayPath": settings.codex_app_image_overlay_path,
+            }))
+            .unwrap_err();
+        assert!(error.to_string().contains("16 MiB"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn settings_store_reads_file_at_size_limit() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let mut bytes = b"{\"providerSyncEnabled\":false}".to_vec();
+        bytes.resize(MAX_SETTINGS_FILE_BYTES, b' ');
+        fs::write(&path, bytes).unwrap();
+        assert!(
+            !SettingsStore::new(path)
+                .load()
+                .unwrap()
+                .provider_sync_enabled
+        );
+    }
+
+    /// 回归：一次把 relayProfiles 传空的 update，不得清掉磁盘上已有的供应商配置。
+    /// 这就是「供应商配置一个都不剩」那次故障的核心防护。
+    #[test]
+    fn settings_store_update_does_not_wipe_existing_relay_profiles() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+    {"id": "relay-b", "name": "B", "relayMode": "pureApi"}
+  ],
+  "activeRelayId": "relay-a"
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        assert_eq!(store.load().unwrap().relay_profiles.len(), 2);
+
+        let _ = store.update(json!({ "relayProfiles": [] }));
+
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles.len(),
+            2,
+            "传空 relayProfiles 不得覆盖磁盘上已有的供应商配置"
+        );
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("relay-a"), "原条目不得被清空: {raw}");
+        assert!(raw.contains("relay-b"), "原条目不得被清空: {raw}");
+    }
+
+    /// 回归：数组里混入一条反序列化失败的条目时，好条目必须保留，
+    /// 而不是像旧实现那样整个列表退化成空。
+    #[test]
+    fn settings_store_update_keeps_good_profiles_when_one_entry_is_broken() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"relayProfiles":[]}"#).unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let _ = store.update(json!({
+            "relayProfiles": [
+                {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+                {"id": 12345, "name": "broken"}
+            ]
+        }));
+
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles.len(),
+            1,
+            "坏条目应被跳过，好条目必须保留"
+        );
+        assert_eq!(after.relay_profiles[0].id, "relay-a");
+    }
+
+    /// 回归：一次把 relayProfiles 退化为「仅默认 profile」的 save，不得覆盖磁盘上
+    /// 多条供应商配置。这就是「20 条变 1 条」那次故障的核心防护。
+    #[test]
+    fn settings_store_save_does_not_collapse_to_default_single_profile() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+    {"id": "relay-b", "name": "B", "relayMode": "pureApi"},
+    {"id": "relay-c", "name": "C", "relayMode": "pureApi"}
+  ]
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let collapsed = BackendSettings {
+            relay_profiles: vec![RelayProfile::default()],
+            ..BackendSettings::default()
+        };
+        let error = store
+            .save(&collapsed)
+            .expect_err("退化为默认单条必须被拒绝");
+        assert!(
+            error.to_string().contains("退化为仅剩默认"),
+            "实际错误: {error}"
+        );
+
+        let after = store.load().unwrap();
+        assert_eq!(after.relay_profiles.len(), 3, "原 3 条不得被覆盖");
+        assert_eq!(after.relay_profiles[0].id, "relay-a");
     }
 
     #[test]
@@ -2760,7 +3291,6 @@ experimental_bearer_token = "sk-existing""#
             "codexAppSessionDelete": false,
             "codexAppConversationView": true,
             "codexAppThreadIdBadge": true,
-            "codexAppNativeMenuLocalization": false,
             "codexAppServiceTierControls": true,
             "codexAppPetRealMouseLook": true,
             "codexGoalsEnabled": true,
@@ -2777,7 +3307,6 @@ experimental_bearer_token = "sk-existing""#
         assert!(!updated.codex_app_session_delete);
         assert!(updated.codex_app_conversation_view);
         assert!(updated.codex_app_thread_id_badge);
-        assert!(!updated.codex_app_native_menu_localization);
         assert!(updated.codex_app_service_tier_controls);
         assert!(updated.codex_app_pet_real_mouse_look);
         assert!(updated.codex_goals_enabled);
@@ -2982,17 +3511,61 @@ experimental_bearer_token = "sk-existing""#
     }
 
     #[test]
-    fn settings_store_update_persists_launch_mode() {
+    fn legacy_launch_mode_is_ignored_without_changing_provider_modes() {
+        for value in [
+            json!("relay"),
+            json!("patch"),
+            json!("obsolete"),
+            json!(true),
+        ] {
+            let mut old = serde_json::to_value(BackendSettings::default()).unwrap();
+            old["launchMode"] = value;
+            old["relayProfiles"][0]["relayMode"] = json!("pureApi");
+            let loaded: BackendSettings = serde_json::from_value(old).unwrap();
+            assert!(loaded.enhancements_enabled);
+            assert_eq!(loaded.relay_profiles[0].relay_mode, RelayMode::PureApi);
+            assert!(
+                serde_json::to_value(loaded)
+                    .unwrap()
+                    .get("launchMode")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn settings_update_cleans_legacy_launch_mode_and_preserves_provider_and_voice_configuration() {
         let dir = temp_dir();
-        let store = SettingsStore::new(dir.join("settings.json"));
-
-        let updated = store.update(json!({"launchMode": "relay"})).unwrap();
-        let saved: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
-                .unwrap();
-
-        assert_eq!(updated.launch_mode, LaunchMode::Relay);
-        assert_eq!(saved["launchMode"], json!("relay"));
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let mut old = serde_json::to_value(BackendSettings::default()).unwrap();
+        old["launchMode"] = json!("relay");
+        old["relayProfiles"][0]["relayMode"] = json!("pureApi");
+        old["dictation"]["enabled"] = json!(true);
+        old["dictation"]["apiKey"] = json!("fake-asr-private-key");
+        old["preservedUnknownSetting"] = json!("keep");
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.relay_profiles[0].relay_mode, RelayMode::PureApi);
+        assert!(
+            serde_json::to_value(&loaded)
+                .unwrap()
+                .get("launchMode")
+                .is_none()
+        );
+        let updated = store
+            .update(json!({"launchMode": "relay", "enhancementsEnabled": false}))
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("launchMode").is_none());
+        assert_eq!(saved["preservedUnknownSetting"], "keep");
+        assert_eq!(updated.relay_profiles[0].relay_mode, RelayMode::PureApi);
+        assert!(updated.dictation.enabled);
+        assert_eq!(updated.dictation.api_key, "fake-asr-private-key");
+        assert!(!updated.enhancements_enabled);
+        store.save(&updated).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("launchMode").is_none());
     }
 
     #[test]
@@ -3287,6 +3860,37 @@ experimental_bearer_token = "sk-existing""#
             .remove("standardOpenaiProtocol");
         let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
         assert!(!profile.standard_openai_protocol);
+    }
+
+    #[test]
+    fn raw_settings_snapshot_restores_original_bytes_and_rejects_invalid_input() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let original = b"{\n \"providerSyncEnabled\":false,\"unknownFutureField\":{\"x\":1}}\n";
+        fs::write(&path, original).unwrap();
+        let store = SettingsStore::new(path.clone());
+        let snapshot = store.snapshot_raw_bytes().unwrap();
+        fs::write(&path, b"{\"providerSyncEnabled\":true}").unwrap();
+        store.restore_raw_snapshot(snapshot.as_deref()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        for invalid in [b"{broken".as_slice(), b"[]".as_slice()] {
+            assert!(store.restore_raw_snapshot(Some(invalid)).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        let oversized = vec![b' '; MAX_SETTINGS_FILE_BYTES + 1];
+        assert!(store.restore_raw_snapshot(Some(&oversized)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn raw_settings_snapshot_restores_a_previously_absent_file() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(store.snapshot_raw_bytes().unwrap().is_none());
+        store.save(&BackendSettings::default()).unwrap();
+        store.restore_raw_snapshot(None).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

@@ -35,11 +35,7 @@ For first-time setup, open the manager, verify the detected app path, configure 
 
 ## Community and Support
 
-Join <a href="https://qm.qq.com/q/Erf1F1zwqs">Codex++ community group 3 (QQ group: 619480492)</a> to report issues, share feedback, or suggest features.
-
-WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">get the latest group QR code</a>.
-
-<img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="260">
+Join <a href="https://qm.qq.com/q/5h3pxpxg7S">Codex++ community group 4 (QQ group: 1127858981)</a> to report issues, share feedback, or suggest features.
 
 Telegram: <https://t.me/CodexPlusPlus>
 
@@ -53,8 +49,8 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 | Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, model metadata import (models.json), shared config, and per-provider MCP, Skill, and Plugin selection |
 | Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
 | WeChat connection | QR login connects personal WeChat to local Codex sessions; each WeChat contact maps to a separate session, with an allowed-user list |
-| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, skin management, and image overlay |
-| Development workflow | Project move, Upstream worktree creation, thread IDs, and Zed Remote project discovery and opening |
+| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, API-key dictation, conversation width and scroll restore, service-tier controls, Goals, next-step suggestions, skin management, and image overlay |
+| Development workflow | Project move and thread IDs |
 | Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
 Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
@@ -80,11 +76,12 @@ Provider switching saves the current profile before applying the target profile.
 
 - Session delete, bulk delete, Markdown export, and project move actions.
 - Plugin marketplace unlock, plugin auto-expand, and model whitelist handling.
-- Plain-text paste, forced Chinese locale, startup acceleration, and native menu localization.
+- Plain-text paste and startup acceleration.
+- API-key dictation: configure an independent transcription service in Codex Enhancements, then record and insert or send the text.
 - Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
-- Stepwise suggestions with a separate API, model, item count, and timeout.
+- Next-step suggestions: manage toggles, API, model, item count, and timeout together in Codex Enhancements.
 - Skin management: search, preview, install, and image replacement for Dream Skin community themes.
-- Upstream worktrees, Zed Remote, custom image overlays, and user scripts.
+- Custom image overlays and user scripts.
 
 Settings that depend on renderer injection generally require saving and restarting Codex++.
 
@@ -102,6 +99,8 @@ The manager's About page can check and start updates. When the silent launcher f
 - Codex++ state and logs: `~/.codex-session-delete/`
 - Provider Sync backups: `~/.codex/backups_state/provider-sync`
 
+`~/.codex` above refers to the Codex home directory: it follows the `CODEX_HOME` environment variable when set, and defaults to `.codex` under the user profile otherwise.
+
 ## FAQ
 
 ### The Codex++ menu does not appear
@@ -111,20 +110,6 @@ Launch through the `Codex++` entry instead of opening the official app directly.
 ### Requests fail after switching providers
 
 Run the model test or Provider Doctor from the provider detail page. Verify that the protocol, Base URL, key, and test model match. Pure API and official-login-plus-API use different authentication locations; do not manually copy `auth.json` between them.
-
-### How is Upstream worktree different from Codex native creation?
-
-Codex++ updates the remote branch first, then creates the worktree as if you ran:
-
-```bash
-git worktree add -b <new-branch> <worktree-path> upstream/<base-branch>
-```
-
-The new worktree starts from the fresh remote tracking branch instead of the local HEAD used by the current session. If Codex++ cannot safely recognize the current Codex version's native worktree form, use the Codex++ menu entry and enter the repository path, branch name, worktree path, remote, and base branch manually.
-
-### macOS says the app cannot be opened or is damaged
-
-Unsigned and unnotarized builds may be blocked by Gatekeeper. Allow the app in System Settings -> Privacy & Security. For formal distribution, configure Apple Developer ID signing and notarization.
 
 ### Does it support Intel Macs?
 
