@@ -613,12 +613,14 @@
   }
 
   function appServerModelRequestMethod(method, params) {
-    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
+    if (method === "send-cli-request-for-host" && params?.method) return appServerModelRequestMethod(String(params.method), params.params);
     if (method === "vscode://codex/list-plugins") return "list-plugins";
     if (method === "vscode://codex/plugin/install") return "install-plugin";
     if (method === "vscode://codex/plugin/uninstall") return "uninstall-plugin";
     if (method === "plugin/list") return "list-plugins";
     if (method === "plugin/install") return "install-plugin";
+    if (method === "plugin/read") return "read-plugin";
+    if (method === "plugin/installed") return "installed-plugins";
     if (method === "plugin/uninstall") return "uninstall-plugin";
     return String(method || "");
   }
@@ -713,9 +715,13 @@
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
-    // 只把明确需要增强的请求放进异步链；其余请求保持官方同步调用与返回值，
-    // 插件依赖挂起或增强抛错都不能阻塞官方消息发送。
+    // 插件原生请求由插件层接管，必须先于门控——否则会被当作普通请求直通官方接口。
+    // 其余只把明确需要增强的请求放进异步链；追发、停止、读取及未知请求保持官方
+    // 同步调用与返回值，插件依赖挂起或增强抛错都不能阻塞官方消息发送。
     client.sendRequest = function codexPlusModelPatchedSendRequest(method, params, options) {
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest(method, params, nextOptions), client.hostId);
+      if (managed) return managed;
       if (!codexAppServerRequestNeedsPatch(method, params)) return originalSendRequest(method, params, options);
       return sendPatchedCodexAppServerRequest(client, originalSendRequest, method, params, options);
     };
@@ -917,6 +923,7 @@
     function installCodexAppServerClientPrototypePatch() {
     if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
     const wanted = codexPlusModelUnlockEnabled()
+      || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
       || codexPlusSettings().serviceTierControls
       || codexPlusSettings().sessionDelete;
@@ -943,10 +950,13 @@
     proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
     proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
     // 与实例版同构：原生宿主客户端登记先做（删除远程会话依赖真实 client），
-    // 随后同步门控放行，只有需要增强的请求才进入异步链。
+    // 插件原生请求交给插件层，最后同步门控放行，只有需要增强的请求才进入异步链。
     proto.sendRequest = function codexPlusModelPatchedSendRequest(method, params, options) {
       const client = this;
       registerNativeHostClient(client);
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest.call(client, method, params, nextOptions), client.hostId);
+      if (managed) return managed;
       if (!codexAppServerRequestNeedsPatch(method, params)) {
         return originalSendRequest.call(client, method, params, options);
       }
@@ -1078,6 +1088,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
+        || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
         || codexPlusSettings().serviceTierControls
         || codexPlusSettings().sessionDelete) {
