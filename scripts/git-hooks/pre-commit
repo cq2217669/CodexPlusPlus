@@ -1,0 +1,24 @@
+#!/bin/sh
+# fork 本地钩子。由 scripts/fork-sync-setup.mjs 把 core.hooksPath 指到本目录。
+#
+# 背景：assets/inject/renderer-inject.js 是「分片源码 + 生成产物」，分片是唯一真实
+# 来源。合并上游时产物必然冲突，而它不该由人手工解。统一在这里按分片重建，保证
+# 任何一次提交里产物都与分片逐字节一致。
+#
+# 对应关系：
+#   - 产物合并策略  .git/info/attributes -> merge=ours（本地配置，不进版本库）
+#   - 产物重建      本钩子
+#   - 一致性把守    renderer-inject.test.ts「分片与产物一致」用例
+set -e
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: 未找到 node，跳过 renderer-inject 产物重建" >&2
+  exit 0
+fi
+
+if [ ! -f scripts/assemble-renderer-inject.mjs ]; then
+  exit 0
+fi
+
+node scripts/assemble-renderer-inject.mjs
+git add assets/inject/renderer-inject.js
