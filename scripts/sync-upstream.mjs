@@ -91,13 +91,16 @@ if (await mergeInProgress()) {
 
 const dirty = (await gitTry("status", "--porcelain")).stdout;
 if (dirty) {
-  const lines = dirty.split(/\r?\n/).filter((line) => line.trim() && !line.includes(ARTIFACT));
+  // 未跟踪文件（?? 开头）不阻塞合并，只有已跟踪文件的改动需要先处理。
+  const lines = dirty
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !line.startsWith("??") && !line.includes(ARTIFACT));
   if (lines.length) {
     console.error("工作区有未提交改动，先处理干净再同步：");
     for (const line of lines) console.error(`  ${line}`);
     process.exit(1);
   }
-  console.log("工作区仅有产物改动，提交前会由钩子重建，继续。");
+  console.log("工作区仅有产物改动或未跟踪文件，提交前会由钩子重建，继续。");
 }
 
 // ---------------------------------------------------------------- fetch + merge
@@ -108,6 +111,11 @@ console.log(`上游 main = ${target}`);
 
 const merge = await gitTry("merge", "--no-commit", "--no-ff", "upstream/main");
 if (merge.stdout || merge.stderr) console.log([merge.stdout, merge.stderr].filter(Boolean).join("\n"));
+
+if (!(await mergeInProgress())) {
+  console.log("\n上游没有新提交，无需合并。");
+  process.exit(0);
+}
 
 // ---------------------------------------------------------------- 自动处理冲突
 let conflicted = await unmergedFiles();
