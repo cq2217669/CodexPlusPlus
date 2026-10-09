@@ -15,11 +15,16 @@
  *      内容由 scripts/git-hooks/pre-commit 在提交前按分片重建。
  *   2. rerere：记录一次冲突解决过程，之后同形态冲突自动重放。
  *
- * 所有配置都写在本地（.git/info/attributes 与 git config），不进版本库，
+ * 所有配置都写在本地（.git/hooks、.git/info/attributes 与 git config），不进版本库，
  * 因此不会和上游的 .gitattributes 产生新的冲突。
  *
- * 注意：统一用异步 spawn 调用外部命令。部分受限环境（含 CI 沙箱）会拒绝
- * node 的同步 spawnSync/execFileSync（EBUSY），异步 spawn 不受影响。
+ * 两个刻意的实现选择
+ * ------------------
+ *   - 钩子以「强制 LF」写入 .git/hooks/pre-commit，而不是用 core.hooksPath 指向
+ *     版本库内的目录：.gitattributes 只对 *.sh 强制 LF，无扩展名的 pre-commit 在
+ *     Windows 上会被检出为 CRLF，`#!/bin/sh\r` 会让钩子直接失效。
+ *   - 统一用异步 spawn 调用外部命令：部分受限环境（含 CI 沙箱）会拒绝 node 的
+ *     同步 spawnSync/execFileSync（EBUSY），异步 spawn 不受影响。
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -44,31 +49,46 @@ function run(command, args) {
 }
 
 const git = (...args) => run("git", args);
+const gitTry = (...args) => run("git", args).catch((error) => ({ ok: false, stdout: "", stderr: error.message }));
 
 const steps = [];
+const gitDir = path.resolve(repoRoot, (await git("rev-parse", "--git-dir")).stdout);
 
-// 1. 钩子目录指向版本库内的 scripts/git-hooks，随代码一起分发。
-await git("config", "core.hooksPath", "scripts/git-hooks");
-steps.push("core.hooksPath -> scripts/git-hooks");
+// 1. 钩子：源文件在版本库里，安装时强制 LF 写进 .git/hooks。
+const hookSource = path.join(repoRoot, "scripts", "git-hooks", "pre-commit");
+const hookTarget = path.join(gitDir, "hooks", "pre-commit");
+const hookBody = fs.readFileSync(hookSource, "utf8").replace(/\r\n/g, "\n");
+if (fs.existsSync(hookTarget)) {
+  const current = fs.readFileSync(hookTarget, "utf8").replace(/\r\n/g, "\n");
+  if (current !== hookBody) {
+    const backup = path.join(gitDir, "hooks", "pre-commit.fork-backup");
+    fs.writeFileSync(backup, current, "utf8");
+    steps.push(`原有 pre-commit 已备份为 ${path.relative(repoRoot, backup)}`);
+  }
+}
+fs.mkdirSync(path.dirname(hookTarget), { recursive: true });
+fs.writeFileSync(hookTarget, hookBody, "utf8");
+if (process.platform !== "win32") fs.chmodSync(hookTarget, 0o755);
+steps.push("pre-commit 钩子已安装到 .git/hooks（强制 LF）");
 
-const hookPath = path.join(repoRoot, "scripts", "git-hooks", "pre-commit");
-if (process.platform !== "win32") {
-  fs.chmodSync(hookPath, 0o755);
-  steps.push("pre-commit 已置为可执行");
+// 2. 清掉可能残留的 core.hooksPath：指向版本库内目录会踩 CRLF 检出问题。
+const hooksPath = (await gitTry("config", "--get", "core.hooksPath")).stdout;
+if (hooksPath) {
+  await git("config", "--unset", "core.hooksPath").catch(() => {});
+  steps.push(`已清除 core.hooksPath（原为 ${hooksPath}），改用 .git/hooks`);
 }
 
-// 2. rerere：冲突解决过程记录与自动重放。
+// 3. rerere：冲突解决过程记录与自动重放。
 await git("config", "rerere.enabled", "true");
 await git("config", "rerere.autoupdate", "true");
 steps.push("rerere.enabled / rerere.autoupdate -> true");
 
-// 3. merge=ours 驱动。产物内容由 pre-commit 钩子重建，合并阶段保留本地版本即可。
+// 4. merge=ours 驱动。产物内容由 pre-commit 钩子重建，合并阶段保留本地版本即可。
 await git("config", "merge.ours.driver", "true");
 steps.push("merge.ours.driver -> true");
 
-// 4. 本地属性文件：只影响本克隆，不动上游跟踪的 .gitattributes。
-const gitDir = (await git("rev-parse", "--git-dir")).stdout;
-const infoDir = path.join(path.resolve(repoRoot, gitDir), "info");
+// 5. 本地属性文件：只影响本克隆，不动上游跟踪的 .gitattributes。
+const infoDir = path.join(gitDir, "info");
 fs.mkdirSync(infoDir, { recursive: true });
 const attributesPath = path.join(infoDir, "attributes");
 const rule = "assets/inject/renderer-inject.js merge=ours";
@@ -81,7 +101,8 @@ if (existing.split(/\r?\n/).some((line) => line.trim() === rule)) {
   steps.push(`.git/info/attributes += ${rule}`);
 }
 
-// 5. 自检：产物当前是否与分片一致（不一致不阻塞安装，只提示）。
+// 6. 自检：属性是否被 git 认到、产物是否与分片一致。
+const attr = (await gitTry("check-attr", "merge", "--", "assets/inject/renderer-inject.js")).stdout;
 let drift;
 try {
   const checked = await run(process.execPath, [path.join(repoRoot, "scripts", "assemble-renderer-inject.mjs"), "--check"]);
@@ -92,5 +113,6 @@ try {
 
 console.log("fork 本地 git 配置已安装：");
 for (const step of steps) console.log(`  - ${step}`);
-console.log(`\n自检：${drift}`);
+console.log(`\n自检：${attr || "未取到属性"}`);
+console.log(`自检：${drift}`);
 console.log("\n后续同步上游：node scripts/sync-upstream.mjs");

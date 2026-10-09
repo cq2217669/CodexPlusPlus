@@ -46,8 +46,12 @@ node scripts/fork-sync-setup.mjs
 
 1. **产物合并策略**：`.git/info/attributes` 里 `assets/inject/renderer-inject.js merge=ours`
    ——产物不再产生冲突。
-2. **产物重建**：`core.hooksPath=scripts/git-hooks`，`pre-commit` 钩子每次提交前
-   按分片重建产物并 `git add`，保证产物与分片始终一致。
+2. **产物重建**：把 `scripts/git-hooks/pre-commit` 以**强制 LF** 写入
+   `.git/hooks/pre-commit`，每次提交前按分片重建产物并 `git add`，保证产物与分片
+   始终一致。
+   刻意不用 `core.hooksPath` 指向版本库内目录：`.gitattributes` 只对 `*.sh` 强制 LF，
+   无扩展名的 `pre-commit` 在 Windows 上会被检出成 CRLF，`#!/bin/sh\r` 会让钩子直接
+   失效；也不为此去改上游的 `.gitattributes`，避免引入新冲突。
 3. **rerere**：`rerere.enabled=true` + `rerere.autoupdate=true`，记录一次冲突解决
    过程，同形态冲突自动重放。
 
