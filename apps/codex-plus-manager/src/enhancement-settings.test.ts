@@ -74,7 +74,7 @@ function eventHandlerNodes(component: ts.Node, element: ts.JsxOpeningElement | t
 test("retired enhancements have no settings, navigation or command references in the manager UI", () => {
   const retired = new Set([
     "codexAppZedRemoteOpen", "zedRemoteOpenStrategy", "zedRemoteProjectRegistryEnabled", "zedRemoteSyncToZedSettings",
-    "codexAppUpstreamWorktreeCreate", "codexAppForceChineseLocale", "codexAppNativeMenuLocalization",
+    "codexAppUpstreamWorktreeCreate", "codexAppNativeMenuLocalization",
     "codexAppFastStartup", "快速启动",
     "ZedRemoteScreen", "ZedRemoteProjectSection", "zedRemote", "list_zed_remote_projects", "open_zed_remote", "forget_zed_remote_project",
     "launchMode", "LaunchMode", "ModeSelector", "saveLaunchMode", "setLaunchMode", "patchMode",
@@ -108,6 +108,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   const whaleWidget = fieldControl(petGroup.parent, "form.codexAppWhaleWidgetEnabled");
   assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
     && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(whaleWidget)), "the Codex usage widget must be available on every platform");
+  assert.ok(fieldControl(petGroup.parent, "form.codexAppActivityOverlayRight"), "the native activity overlay mirror belongs with the pet layout settings");
 
   const visibleEnglish = descendants(app).filter((node) => ts.isStringLiteral(node)
     || ts.isNoSubstitutionTemplateLiteral(node) || ts.isJsxText(node)).filter((node) => /Stepwise/.test(node.getText(app)));
@@ -134,6 +135,20 @@ test("complete voice and Stepwise panels share the enhancement form and save act
   assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
   assert.ok(!descendants(settings).some((node) => ts.isPropertyAccessExpression(node)
     && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
+});
+
+test("local speech download requires a configuration button click and mount only reads status", () => {
+  const panel = component("DictationSettingsPanel");
+  const button = elements(panel).find((element) => attribute(element, "onClick")?.includes("downloadLocalModel()"));
+  assert.ok(button, "the voice settings must expose a manual model download action");
+  assert.equal(attribute(button, "disabled"), "downloading");
+  const calls = eventHandlerNodes(panel, button, "onClick").filter(ts.isCallExpression);
+  assert.ok(calls.some((node) => node.expression.getText(app) === "invoke"
+    && node.arguments[0]?.getText(app) === '"download_dictation_local_model"'));
+  const effects = descendants(panel).filter(ts.isCallExpression)
+    .filter((node) => node.expression.getText(app) === "useEffect");
+  assert.ok(effects.some((effect) => effect.getText(app).includes('"dictation_local_model_status"')));
+  for (const effect of effects) assert.ok(!effect.getText(app).includes("download_dictation_local_model"));
 });
 
 test("enhancement panels retain every service field, private key input and Stepwise connection test", () => {
@@ -213,4 +228,18 @@ test("enhancement saving is an explicit permanent top action", () => {
   assert.equal(isConditional(saves[0], enhance), false);
   const firstPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel");
   assert.ok(firstPane && saves[0].pos < firstPane.pos);
+});
+
+test("standalone quota unlock remains editable below the master switch when enhancements are off", () => {
+  const enhance = component("EnhanceScreen");
+  const master = fieldControl(enhance, "form.enhancementsEnabled");
+  const standalone = fieldControl(enhance, "form.codexAppStandaloneQuotaUnlock");
+  assert.equal(attribute(standalone, "disabled"), undefined);
+  assert.equal(isConditional(standalone, enhance), false);
+  assert.ok(master.pos < standalone.pos);
+  const firstPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel");
+  assert.ok(firstPane && standalone.pos < firstPane.pos);
+  const handler = eventHandlerNodes(enhance, standalone, "onChange");
+  assert.ok(handler.some((node) => ts.isCallExpression(node) && node.expression.getText(app) === "onFormChange"));
+  assert.ok(handler.some((node) => ts.isStringLiteral(node) && node.text === "codexAppStandaloneQuotaUnlock"));
 });

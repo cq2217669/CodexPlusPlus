@@ -172,10 +172,12 @@ pub fn relay_profile_from_ccs(
         model_routes: Vec::new(),
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
-        rate_limit_cooldown_enabled: false,
-        channel_queue_enabled: false,
-        channel_requests_per_minute: crate::settings::default_channel_requests_per_minute(),
-        cooldown_error_statuses: crate::settings::default_cooldown_error_statuses(),
+        web_search_history_compat: false,
+        anthropic_auth_header: String::new(),
+        anthropic_max_tokens: 0,
+        anthropic_prompt_cache: true,
+        anthropic_impersonate_claude_code: false,
+        anthropic_thinking_mode: String::new(),
     }
 }
 
@@ -242,6 +244,11 @@ fn extract_protocol(config: &Value) -> RelayProtocol {
         if is_chat_protocol(&api_format) {
             return RelayProtocol::ChatCompletions;
         }
+        // 导入源的 Codex 供应商允许把上游设为 Anthropic Messages，
+        // 导入时要保住协议，否则会退化成 Responses 直连并必然 404。
+        if is_anthropic_protocol(&api_format) {
+            return RelayProtocol::AnthropicMessages;
+        }
     }
     if let Some(wire_api) = config
         .get("config")
@@ -294,6 +301,17 @@ fn is_chat_protocol(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "chat" | "chat_completions" | "chat-completions" | "openai_chat" | "openai-chat"
+    )
+}
+
+fn is_anthropic_protocol(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "anthropic"
+            | "anthropic_messages"
+            | "anthropic-messages"
+            | "claude"
+            | "claude_messages"
     )
 }
 

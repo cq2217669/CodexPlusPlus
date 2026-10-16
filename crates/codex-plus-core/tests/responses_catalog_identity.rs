@@ -82,14 +82,10 @@ fn assert_auth_and_identity(home: &Path, profile: &RelayProfile, identity: &str)
         auth,
         serde_json::from_str::<Value>(&profile.auth_contents).unwrap()
     );
-    if profile.relay_mode == RelayMode::PureApi {
-        assert!(provider.get("experimental_bearer_token").is_none());
-    } else {
-        assert_eq!(
-            provider["experimental_bearer_token"].as_str(),
-            Some("test-api-key")
-        );
-    }
+    assert_eq!(
+        provider["experimental_bearer_token"].as_str(),
+        Some("test-api-key")
+    );
 }
 
 #[test]
@@ -153,11 +149,18 @@ fn managed_responses_copy_external_catalogs_for_both_identities() {
                     }
                     std::fs::write(temp.path().join("auth.json"), &profile.auth_contents).unwrap();
                     apply(temp.path(), &profile, "").unwrap();
-                    assert_eq!(
-                        config(temp.path())["model_catalog_json"].as_str(),
-                        Some("model-catalogs/identity-catalog.json"),
+                    let applied_config = config(temp.path());
+                    let catalog_path =
+                        Path::new(applied_config["model_catalog_json"].as_str().unwrap());
+                    assert!(
+                        catalog_path.is_absolute(),
                         "{mode:?}, {identity}, {path_name}, live={live_pointer}"
                     );
+                    assert_eq!(
+                        catalog_path,
+                        temp.path().join("model-catalogs").join("identity-catalog.json")
+                    );
+                    assert!(catalog_path.is_file());
                     assert_eq!(catalog(temp.path()), expected);
                     assert_eq!(std::fs::read(&external).unwrap(), original_bytes);
                     assert_auth_and_identity(temp.path(), &profile, identity);

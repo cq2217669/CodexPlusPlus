@@ -695,7 +695,7 @@ fn run_official_usage_status_harness() -> serde_json::Value {
 const scriptPath = {script_path};
 function node() {{
   return {{
-    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}}, toggleAttribute() {{}},
     addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
     closest() {{ return null; }}, getAttribute() {{ return null; }},
     classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
@@ -889,8 +889,25 @@ process.exit(0);
 fn injection_script_installs_image_overlay_from_data_uri() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("const source = config.dataUrl || \"\""));
-    assert!(script.contains("backgroundImage: `url(\"${source.replace(/\"/g, \"%22\")}\")`"));
+    assert!(script.contains("typeof config.dataUrl === \"string\""));
+    assert!(script.contains("overlay.id = codexPlusImageOverlayId"));
+    let overlay_script = script
+        .split("function installCodexPlusImageOverlay()")
+        .nth(1)
+        .and_then(|body| body.split("function scheduleCodexPlusImageOverlay()").next())
+        .expect("image overlay entry point should be embedded");
+    assert!(overlay_script.contains("data-codex-plus-image-native"));
+    assert!(overlay_script.contains("root.insertBefore(overlay, document.body"));
+    assert!(!overlay_script.contains("maskImage"));
+    assert!(!overlay_script.contains("ScrollTimeline"));
+    assert!(!overlay_script.contains("cloneNode"));
+    assert!(script.contains("URL.createObjectURL(new Blob([bytes], { type: data[1] }))"));
+    assert!(script.contains("image.src = resource.imageSource"));
+    assert!(!script.contains("JSON.stringify(source)"));
+    assert!(overlay_script.contains("zIndex: String(wallpaperLayer)"));
+    assert!(script.contains("pointerEvents: \"none\""));
+    assert!(!script.contains("codexPlusImageOverlayTransparentTargetSelector"));
+    assert!(!script.contains("function installCodexPlusImageOverlayForeground"));
     assert!(script.contains(
         "fit: { size: \"contain\", position: \"center center\", repeat: \"no-repeat\" }"
     ));
@@ -2649,7 +2666,7 @@ const scriptPath = {script_path};
 const store = new Map();
 function node() {{
   return {{
-    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}}, toggleAttribute() {{}},
     addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
     closest() {{ return null; }},
     classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
@@ -2816,6 +2833,24 @@ fn injection_script_loads_backend_settings_before_initial_scan() {
 }
 
 #[test]
+fn conversation_view_scope_regressions() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let output = Command::new("node")
+        .arg(repo.join("assets/inject/conversation-view.test.cjs"))
+        .output()
+        .expect("node should run the conversation view regression harness");
+    assert!(
+        output.status.success(),
+        "conversation view harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn injection_script_exposes_conversation_view_width_control() {
     let script = assets::injection_script(57321);
 
@@ -2869,6 +2904,98 @@ fn injection_script_exposes_sidebar_thread_id_badge_control() {
     assert!(script.contains("function refreshThreadIdBadges()"));
     assert!(script.contains("uuidV7TimestampMs(sessionId)"));
     assert!(script.contains("refreshThreadIdBadges();"));
+}
+
+#[test]
+fn injection_script_exposes_capacity_auto_retry_control() {
+    let script = assets::injection_script(57321);
+
+    // 开关接线：默认值 → 后端映射 → 中文标签 → 菜单 DOM → 设置面板输入框。
+    assert!(script.contains("capacityAutoRetry: false"));
+    assert!(script.contains("capacityAutoRetry: \"codexAppCapacityAutoRetry\""));
+    assert!(script.contains("容量错误自动重试"));
+    assert!(script.contains("data-codex-plus-setting=\"capacityAutoRetry\""));
+    assert!(script.contains("data-codex-plus-capacity-retry-max-attempts=\"true\""));
+    assert!(script.contains("data-codex-plus-capacity-retry-interval=\"true\""));
+
+    // 运行逻辑：横幅识别只看语义结构（aside + 重试按钮），不绑 Codex 的 hash 类名。
+    assert!(script.contains("function findCapacityAutoRetryBanner"));
+    assert!(script.contains("function capacityAutoRetryTick"));
+    assert!(script.contains("function syncCodexPlusCapacityAutoRetry"));
+    assert!(script.contains("querySelectorAll(\"aside\")"));
+    assert!(script.contains("capacityAutoRetryLabelPattern"));
+    // 原生倒计时在跑时让路，避免和 Codex 自己的自动重试撞车。
+    assert!(script.contains("capacityAutoRetryCountdownPattern"));
+    assert!(script.contains("capacityAutoRetryNativeCountdownRunning"));
+    // 0 秒间隔必须合法（用户要求"失败就立刻重试"），但有 1 秒地板值防热循环。
+    assert!(script.contains("capacityAutoRetryMinIntervalMs = 1000"));
+    assert!(script.contains("capacityAutoRetryDefaultIntervalSeconds = 0"));
+    // 插进 DOM 的浮标必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
+    assert!(script.contains("data-codex-plus-ext\", \"capacity-auto-retry\""));
+    assert!(script.contains("syncCodexPlusCapacityAutoRetry);"));
+}
+
+#[test]
+fn injection_script_uses_an_icon_for_idle_dictation() {
+    let script = assets::injection_script(57321);
+
+    // 空闲态是图标按钮：文字按钮在 composer 底栏比原生图标宽一倍多。
+    assert!(script.contains("function codexPlusDictationMicButton"));
+    assert!(script.contains("function codexPlusDictationMicIcon"));
+    assert!(script.contains("codexPlusDictationMicButton(state.phase !== \"idle\")"));
+    // 不再有「空闲态渲染文字按钮」这条路径。
+    assert!(!script.contains("codexPlusDictationControl(\"start\", \"语音输入\""));
+    // 无障碍名称不能丢：图标按钮只能靠 aria-label / title 表达用途。
+    assert!(script.contains("button.setAttribute(\"aria-label\", \"语音输入\")"));
+    assert!(script.contains("button.setAttribute(\"title\", \"语音输入\")"));
+    // 录音/转写这些状态仍然带文字，图标说不清。
+    assert!(script.contains("codexPlusDictationControl(\"insert\", \"停止并插入\")"));
+}
+
+#[test]
+fn injection_script_exposes_the_usage_status_line() {
+    let script = assets::injection_script(57321);
+
+    // 开关接线：默认值 → 后端映射。
+    assert!(script.contains("usageStatusLine: true"));
+    assert!(script.contains("usageStatusLine: \"codexAppUsageStatusLine\""));
+    assert!(script.contains("usageStatusLine: false"));
+
+    // 数据源走尾部快照路由，不能退回按秒整读历史的 /thread-usage-history。
+    assert!(script.contains("postJson(\"/thread-usage-live\""));
+    assert!(script.contains("data-above-composer-conversation-id"));
+    assert!(script.contains("data-composer-surface-variant"));
+    // 插进 DOM 的节点必须带归属标记，否则会触发自喂扫描循环（issue #1960）。
+    assert!(script.contains("data-codex-plus-ext\", \"builtin-usage-statusline\""));
+    assert!(script.contains("registerCodexPlusExtensionSelector"));
+    // 设置面板里的开关要能立刻生效，不用等下一拍轮询。
+    assert!(script.contains("__CODEX_PLUS_USAGE_STATUSLINE_SYNC__"));
+}
+
+#[test]
+fn injection_script_recovers_a_stalled_codex_boot_shell() {
+    let script = assets::injection_script(57321);
+
+    // 空壳判定依据：有 #root、长不出 <main>、且里头一个字都没有。
+    assert!(script.contains("function bootShellRecoveryStuck"));
+    assert!(script.contains("function bootShellRecoverySettled"));
+    assert!(script.contains("document.querySelector(\"main\")"));
+    assert!(script.contains("root.innerText.trim() === \"\""));
+
+    // 只刷主页面：活动悬浮层 / quick-chat 带 initialRoute，本来就没有 <main>。
+    assert!(script.contains("function bootShellRecoveryAppliesHere"));
+    assert!(script.contains("/[?&]initialRoute=/"));
+    // 宽限要足够长，才能把「启动慢」和「真卡死」分开。
+    assert!(script.contains("bootShellRecoveryGraceMs = 20000"));
+    // 限次靠 sessionStorage + 冷却：写不进去就宁可不刷，避免刷新循环。
+    assert!(script.contains("bootShellRecoveryCooldownMs = 60000"));
+    assert!(script.contains("window.sessionStorage.getItem(bootShellRecoveryStorageKey)"));
+    assert!(script.contains("window.sessionStorage.setItem(bootShellRecoveryStorageKey"));
+    // 触发过要能从 codex-plus.log 复盘。
+    assert!(script.contains("boot_shell_recovery_reload"));
+    assert!(script.contains("window.location.reload();"));
+    // 模块末尾必须真的装上，否则整段是死代码。
+    assert!(script.contains("installBootShellRecovery();"));
 }
 
 #[test]
@@ -2983,7 +3110,7 @@ fn run_session_ref_contract_harness() -> serde_json::Value {
 const scriptPath = {script_path};
 function node() {{
   return {{
-    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}},
+    appendChild() {{}}, prepend() {{}}, remove() {{}}, setAttribute() {{}}, removeAttribute() {{}}, toggleAttribute() {{}},
     addEventListener() {{}}, querySelector() {{ return null; }}, querySelectorAll() {{ return []; }},
     closest() {{ return null; }}, getAttribute() {{ return null; }},
     classList: {{ add() {{}}, remove() {{}}, toggle() {{}}, contains() {{ return false; }} }},
@@ -3716,14 +3843,16 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["openAiNormalizationDisabled"], true);
     assert_eq!(cases["refreshedCustomProviderOverride"], "refreshed_vendor");
     assert_eq!(cases["refreshedOpenAiProvider"], "openai");
-    assert_eq!(cases["refreshedPureApiResumeProvider"], "openai");
+    assert_eq!(cases["refreshedPureApiResumeProvider"], "custom");
     assert_eq!(cases["refreshedPureApiResumeModel"], "gpt-5.6-terra");
     assert_eq!(cases["failedRefreshProviderUnchanged"], "openai");
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
     assert_eq!(cases["pureApiThreadStartProvider"], "custom");
-    assert_eq!(cases["pureApiThreadResumeUnchanged"], true);
-    assert_eq!(cases["pureApiNativeResumeUnchanged"], true);
+    assert_eq!(cases["pureApiThreadResumeProvider"], "custom");
+    assert_eq!(cases["pureApiNativeResumeProvider"], "custom");
+    assert_eq!(cases["pureApiExplicitResumePreserved"], true);
+    assert_eq!(cases["officialResumePreserved"], true);
     assert_eq!(cases["pureApiTurnStartProvider"], "custom");
     assert_eq!(cases["pureApiTurnWithoutProviderUnchanged"], true);
     assert_eq!(cases["pureApiOtherProviderUnchanged"], true);
@@ -3739,7 +3868,7 @@ fn injection_script_applies_fast_service_tier_contract() {
             "turn/start:"
         ])
     );
-    assert_eq!(cases["modelSwitchResumeProvider"], "");
+    assert_eq!(cases["modelSwitchResumeProvider"], "sub2api");
     assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
     assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
     assert_eq!(cases["delayedResumeWaited"], true);
@@ -3801,6 +3930,7 @@ function node() {{
     remove() {{}},
     setAttribute() {{}},
     removeAttribute() {{}},
+    toggleAttribute() {{}},
     addEventListener() {{}},
     querySelector() {{ return null; }},
     querySelectorAll() {{ return []; }},
@@ -4401,9 +4531,11 @@ const pureApiThreadResumeParams = {{
   threadId: "thread-mobile-pure-api",
   model_provider: "openai",
 }};
-const pureApiThreadResumeUnchanged = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams) === pureApiThreadResumeParams;
+const pureApiThreadResumeProvider = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams)?.modelProvider;
 const pureApiNativeResumeParams = {{ threadId: "thread-mobile-native-resume" }};
-const pureApiNativeResumeUnchanged = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams) === pureApiNativeResumeParams;
+const pureApiNativeResumeProvider = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams)?.modelProvider;
+const explicitResume = {{ threadId: "thread-other-provider", modelProvider: "other", model: "gpt-custom", reasoningEffort: "high" }};
+const pureApiExplicitResumePreserved = api.applyProviderOverride("thread/resume", explicitResume) === explicitResume;
 const pureApiTurnStartProvider = api.applyProviderOverride("turn/start", {{
   threadId: "thread-mobile-pure-api",
   modelProvider: "openai",
@@ -4423,6 +4555,8 @@ api.setBackendSettings({{
 }});
 const pureOfficialParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
 const pureOfficialProviderUnchanged = api.applyProviderOverride("thread/start", pureOfficialParams) === pureOfficialParams;
+const officialResume = {{ threadId: "thread-official", modelProvider: "openai" }};
+const officialResumePreserved = api.applyProviderOverride("thread/resume", officialResume) === officialResume;
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "per-model-context",
@@ -4764,8 +4898,10 @@ process.stdout.write(JSON.stringify({{
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
   pureApiThreadStartProvider,
-  pureApiThreadResumeUnchanged,
-  pureApiNativeResumeUnchanged,
+  pureApiThreadResumeProvider,
+  pureApiNativeResumeProvider,
+  pureApiExplicitResumePreserved,
+  officialResumePreserved,
   pureApiTurnStartProvider,
   pureApiTurnWithoutProviderUnchanged,
   pureApiOtherProviderUnchanged,

@@ -9,10 +9,11 @@ export type RelayModelRouteProfile = {
   name: string;
   baseUrl: string;
   apiKey: string;
-  protocol: "responses" | "chatCompletions";
+  protocol: "responses" | "chatCompletions" | "anthropicMessages";
   relayMode: "official" | "mixedApi" | "pureApi" | "aggregate";
   officialMixApiKey: boolean;
   noAuth?: boolean;
+  webSearchHistoryCompat?: boolean;
   modelRoutes?: RelayModelRoute[];
 };
 
@@ -71,6 +72,15 @@ export function findRelayModelRouteIssue(
   return null;
 }
 
+export function webSearchHistoryCompatEnabled(
+  profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat">,
+): boolean {
+  return profile.webSearchHistoryCompat === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+}
+
 export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): boolean {
   if (settings.enhancementsEnabled) return true;
   const active = settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId)
@@ -80,6 +90,7 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
     || active.protocol === "chatCompletions"
     || (active.relayMode === "pureApi" && active.noAuth === true)
     || (active.relayMode === "official" && active.officialMixApiKey)
+    || webSearchHistoryCompatEnabled(active)
     || normalizeRelayModelRoutes(active.modelRoutes).some(
       (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),
     );

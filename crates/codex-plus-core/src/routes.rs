@@ -159,9 +159,6 @@ pub trait BridgeRuntimeService: Send + Sync {
     async fn backend_status(&self) -> anyhow::Result<Value>;
     async fn codex_model_catalog(&self) -> anyhow::Result<Value>;
     async fn ads(&self) -> anyhow::Result<Value>;
-    async fn create_share(&self, payload: Value) -> anyhow::Result<Value> {
-        crate::share::create_share(payload).await
-    }
 }
 
 #[async_trait]
@@ -173,6 +170,11 @@ pub trait BridgeDataService: Send + Sync {
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
+    /// Codex 输入框下方状态栏的轻量用量快照：只给最近的 token 事件，不返回全量历史。
+    /// 内置状态栏专用，不进第三方拓展路由白名单。
+    async fn thread_usage_live(&self, _session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "本机用量快照暂不可用", "events": []}))
+    }
     async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
         Ok(json!({"status": "unavailable", "message": "当前后端暂不支持会话用量摘要"}))
     }
@@ -182,12 +184,6 @@ pub trait BridgeDataService: Send + Sync {
     ) -> anyhow::Result<Option<SessionRef>>;
     async fn recover_remote_control_session(&self, _thread_id: String) -> anyhow::Result<Value> {
         anyhow::bail!("Remote Control session recovery is unavailable")
-    }
-    async fn export_session_file(&self, _session: SessionRef) -> anyhow::Result<Value> {
-        anyhow::bail!("Session file export is unavailable")
-    }
-    async fn import_session_file(&self, _payload: Value) -> anyhow::Result<Value> {
-        anyhow::bail!("Session file import is unavailable")
     }
 }
 
@@ -277,7 +273,6 @@ pub async fn handle_bridge_request(
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
         "/ads" => ctx.runtime.ads().await,
-        "/share/create" => ctx.runtime.create_share(payload.clone()).await,
         "/script-market/list" => ctx.runtime.script_market_list().await,
         "/script-market/install" => ctx.runtime.script_market_install(payload.clone()).await,
         "/plugin-market/list" => ctx.runtime.plugin_market_list(payload.clone()).await,
@@ -318,6 +313,11 @@ pub async fn handle_bridge_request(
         "/thread-usage-history" => {
             ctx.data
                 .thread_usage_history(session_from_payload(&payload))
+                .await
+        }
+        "/thread-usage-live" => {
+            ctx.data
+                .thread_usage_live(session_from_payload(&payload))
                 .await
         }
         // 仅内置挂件使用，不加入第三方拓展路由白名单。
@@ -388,12 +388,6 @@ pub async fn handle_bridge_request(
                 .to_string();
             ctx.data.recover_remote_control_session(thread_id).await
         }
-        "/session/export" => {
-            ctx.data
-                .export_session_file(session_from_payload(&payload))
-                .await
-        }
-        "/session/import" => ctx.data.import_session_file(payload.clone()).await,
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.unknown_path",
@@ -773,6 +767,20 @@ fn settings_payload_value(
 #[cfg(test)]
 mod dictation_privacy_tests {
     use super::*;
+
+    #[test]
+    fn settings_bridge_preserves_session_share_choice_for_renderer_master_gating() {
+        for enabled in [false, true] {
+            let settings = BackendSettings {
+                codex_app_session_share: enabled,
+                enhancements_enabled: false,
+                ..BackendSettings::default()
+            };
+            let result = settings_payload_value(settings, String::new()).unwrap();
+            assert_eq!(result["codexAppSessionShare"], enabled);
+            assert_eq!(result["enhancementsEnabled"], false);
+        }
+    }
 
     #[test]
     fn dictation_settings_bridge_removes_asr_key() {

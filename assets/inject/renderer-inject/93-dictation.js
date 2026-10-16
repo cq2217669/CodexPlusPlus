@@ -293,6 +293,42 @@
     return encoded;
   }
 
+  // SenseVoice 接收 16 kHz/单声道 PCM WAV；MediaRecorder 在 Chromium 中通常只提供 WebM/Opus，
+  // 因此只在选择本地 provider 时通过浏览器音频解码器做一次无损 PCM 转换。
+  async function codexPlusDictationSenseVoiceWav(blob, signal) {
+    if (signal.aborted) throw new DOMException("转写已取消", "AbortError");
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    const OfflineContextCtor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!AudioContextCtor || !OfflineContextCtor) throw new Error("当前环境无法转换本地 SenseVoice 音频");
+    const context = new AudioContextCtor();
+    try {
+      const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+      if (signal.aborted) throw new DOMException("转写已取消", "AbortError");
+      const frames = Math.max(1, Math.ceil(decoded.duration * 16000));
+      const offline = new OfflineContextCtor(1, frames, 16000);
+      const source = offline.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offline.destination);
+      source.start();
+      const rendered = await offline.startRendering();
+      const samples = rendered.getChannelData(0);
+      const bytes = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(bytes);
+      const write = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+      write(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); write(8, "WAVE");
+      write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      write(36, "data"); view.setUint32(40, samples.length * 2, true);
+      for (let i = 0; i < samples.length; i++) {
+        const sample = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      }
+      return new Blob([bytes], { type: "audio/wav" });
+    } finally {
+      void context.close?.();
+    }
+  }
+
   async function transcribeCodexPlusDictation() {
     if (!codexPlusDictationEnabled()) { cancelCodexPlusDictation(); return; }
     if (!codexPlusDictation.blob) return;
@@ -313,14 +349,17 @@
         if (requestStarted) void postJson("/dictation/cancel", { requestId, helperToken: status.helperToken }).catch(() => {});
       };
       controller.signal.addEventListener("abort", cancelRequest, { once: true });
-      const audioBase64 = await codexPlusDictationAudioBase64(codexPlusDictation.blob, controller.signal);
+      const uploadBlob = status.provider === "sensevoice"
+        ? await codexPlusDictationSenseVoiceWav(codexPlusDictation.blob, controller.signal)
+        : codexPlusDictation.blob;
+      const audioBase64 = await codexPlusDictationAudioBase64(uploadBlob, controller.signal);
       if (revision !== codexPlusDictation.revision || controller.signal.aborted) return;
       if (!codexPlusDictationEnabled()) { cancelCodexPlusDictation(); return; }
-      const extension = codexPlusDictation.blob.type.includes("mp4") ? "m4a" : "webm";
+      const extension = uploadBlob.type.includes("wav") ? "wav" : uploadBlob.type.includes("mp4") ? "m4a" : "webm";
       requestStarted = true;
       // app:// 的 CSP 不允许 renderer 直接 fetch localhost；音频经既有特权桥接交给 Rust。
       const result = await postJson("/dictation/transcribe", {
-        requestId, audioBase64, mimeType: codexPlusDictation.blob.type || "audio/webm",
+        requestId, audioBase64, mimeType: uploadBlob.type || "audio/webm",
         filename: `dictation.${extension}`, helperToken: status.helperToken,
       });
       controller.signal.removeEventListener("abort", cancelRequest);
@@ -349,6 +388,40 @@
     return button;
   }
 
+  /**
+   * 空闲态的麦克风图标。
+   *
+   * 之前空闲态是一个带边框的「语音输入」文字按钮，在 composer 底栏里比原生图标按钮宽
+   * 一倍多，把「完全访问」和模型选择器挤得很开。改成和原生同规格的图标按钮，文字降级
+   * 成 aria-label / title。录音、转写这些状态仍然保留文字——那些状态要传达信息，
+   * 光靠图标说不清。
+   */
+  function codexPlusDictationMicIcon() {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("width", "16"); svg.setAttribute("height", "16");
+    svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.4"); svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round"); svg.setAttribute("aria-hidden", "true");
+    ["M8 2.4a2.2 2.2 0 0 1 2.2 2.2v3.4a2.2 2.2 0 0 1-4.4 0V4.6A2.2 2.2 0 0 1 8 2.4Z",
+      "M3.9 7.3a4.1 4.1 0 0 0 8.2 0", "M8 11.4v1.7", "M5.9 13.4h4.2"].forEach((d) => {
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
+  function codexPlusDictationMicButton(disabled) {
+    const button = codexPlusDictationControl("start", "", disabled);
+    button.className = "codex-plus-dictation-mic";
+    button.setAttribute("aria-label", "语音输入");
+    button.setAttribute("title", "语音输入");
+    button.append(codexPlusDictationMicIcon());
+    return button;
+  }
+
   function renderCodexPlusDictation() {
     const state = codexPlusDictation;
     document.querySelectorAll('[data-codex-plus-ext="builtin-dictation"][data-dictation-controls]').forEach((root) => {
@@ -362,7 +435,7 @@
         return;
       }
       root.dataset.renderKey = key; root.replaceChildren();
-      if (!active) { root.append(codexPlusDictationControl("start", "语音输入", state.phase !== "idle")); return; }
+      if (!active) { root.append(codexPlusDictationMicButton(state.phase !== "idle")); return; }
       const status = document.createElement("span"); status.setAttribute("role", "status");
       if (state.phase === "recording") status.setAttribute("aria-live", "off");
       status.textContent = state.phase === "requesting" ? "正在请求麦克风…"
@@ -418,6 +491,18 @@
     return root;
   }
 
+  function codexPlusDictationFooterScore(footer, editor) {
+    let score = footer.contains(editor) ? 4 : 0;
+    const send = codexPlusDictationSendButton(editor);
+    if (send && footer.contains(send)) score += 2;
+    return score;
+  }
+
+  function codexPlusDictationFooterControls(footer) {
+    const node = footer.querySelector('[data-dictation-controls]');
+    return node && node.closest(".composer-footer, [data-composer-footer-responsive]") === footer ? node : null;
+  }
+
   function installCodexPlusDictation() {
     if (!codexPlusDictationEnabled()) {
       if (codexPlusDictation.phase !== "idle" || codexPlusDictation.pendingSend) cancelCodexPlusDictation();
@@ -430,20 +515,44 @@
       style.textContent = `.codex-plus-dictation-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-inline:6px;font-size:12px;max-width:100%}
         .codex-plus-dictation-controls button{border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;padding:5px 8px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
         .codex-plus-dictation-controls button:disabled{opacity:.5;cursor:default}.codex-plus-dictation-controls button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+        /* 颜色取主文字色而不是继承 footer 的弱化文字：图标按钮没有边框和标签，
+           再叠一层弱化会被误读成禁用态。 */
+        .codex-plus-dictation-controls .codex-plus-dictation-mic{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-primary,currentColor);opacity:.9;cursor:pointer}
+        .codex-plus-dictation-controls .codex-plus-dictation-mic:hover{background:color-mix(in srgb,currentColor 12%,transparent);opacity:1}
+        .codex-plus-dictation-controls .codex-plus-dictation-mic:disabled{opacity:.4;cursor:default;background:transparent}
         #codex-plus-dictation-recovery{position:fixed;bottom:24px;right:24px;z-index:2147483000;padding:12px;border-radius:12px;background:var(--background,#252525);color:var(--foreground,#eee);box-shadow:0 4px 24px #0006;max-width:480px}
         #codex-plus-dictation-recovery textarea{width:100%;min-height:80px;color:inherit;background:transparent}`;
       document.head.append(style);
     }
+    // 同一输入框可能同时命中多个 footer（例如新版首页的顶部上下文栏和底部
+    // 控制行都带 data-composer-footer-responsive），一个输入框只挂一个入口，
+    // 否则会出现两个「语音输入」。优先挂在包含输入框的 footer 上，其次是
+    // 包含发送按钮的；同分时取文档中更靠后的（更内层）候选项。
+    const candidates = [];
     document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]").forEach((footer) => {
       if (!visibleElement(footer) || isExtensionUiNode(footer)) return;
       const scope = codexPlusDictationScope(footer);
       const editor = scope && codexPlusDictationEditor(scope);
       if (!editor) return;
-      let controls = footer.querySelector('[data-dictation-controls]');
-      if (!controls) { controls = createCodexPlusDictationControls(); footer.append(controls); }
-      const target = editor.dataset.codexPlusDictationTarget || editor.closest('[data-codex-plus-dictation-root]')?.dataset.codexPlusDictationRoot || "";
-      if (controls.dataset.dictationTarget !== target) { controls.dataset.dictationTarget = target; delete controls.dataset.renderKey; }
+      candidates.push({ footer, editor, score: codexPlusDictationFooterScore(footer, editor) });
     });
+    const hosts = new Map();
+    for (const item of candidates) {
+      const current = hosts.get(item.editor);
+      if (!current || item.score >= current.score) hosts.set(item.editor, item);
+    }
+    const hostFooters = new Set([...hosts.values()].map((item) => item.footer));
+    document.querySelectorAll('[data-codex-plus-ext="builtin-dictation"][data-dictation-controls]').forEach((node) => {
+      if (node.dataset.floating === "true") return;
+      const owner = node.closest(".composer-footer, [data-composer-footer-responsive]");
+      if (owner && !hostFooters.has(owner)) node.remove();
+    });
+    for (const item of hosts.values()) {
+      let controls = codexPlusDictationFooterControls(item.footer);
+      if (!controls) { controls = createCodexPlusDictationControls(); item.footer.append(controls); }
+      const target = item.editor.dataset.codexPlusDictationTarget || item.editor.closest('[data-codex-plus-dictation-root]')?.dataset.codexPlusDictationRoot || "";
+      if (controls.dataset.dictationTarget !== target) { controls.dataset.dictationTarget = target; delete controls.dataset.renderKey; }
+    }
     renderCodexPlusDictation();
   }
 

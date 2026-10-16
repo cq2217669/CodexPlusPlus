@@ -213,10 +213,12 @@ fn relay_profile_from_request(
         model_routes: Vec::new(),
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
-        rate_limit_cooldown_enabled: false,
-        channel_queue_enabled: false,
-        channel_requests_per_minute: crate::settings::default_channel_requests_per_minute(),
-        cooldown_error_statuses: crate::settings::default_cooldown_error_statuses(),
+        web_search_history_compat: false,
+        anthropic_auth_header: String::new(),
+        anthropic_max_tokens: 0,
+        anthropic_prompt_cache: true,
+        anthropic_impersonate_claude_code: false,
+        anthropic_thinking_mode: String::new(),
     }
 }
 
@@ -247,6 +249,9 @@ fn normalize_request(mut request: ProviderImportRequest) -> anyhow::Result<Provi
 fn relay_protocol(value: &str) -> RelayProtocol {
     match value.trim().to_ascii_lowercase().as_str() {
         "chat" | "chat_completions" | "chat-completions" => RelayProtocol::ChatCompletions,
+        "anthropic" | "anthropic_messages" | "anthropic-messages" | "messages" => {
+            RelayProtocol::AnthropicMessages
+        }
         _ => RelayProtocol::Responses,
     }
 }

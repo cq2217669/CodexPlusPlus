@@ -141,6 +141,29 @@ describe("客户端请求与插件故障隔离", () => {
   });
 });
 
+it("keeps background-resume scan scheduling bounded and independent of retired features", async () => {
+  const schedule = await readFile(
+    new URL("../../../assets/inject/renderer-inject/98-scan-schedule.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(schedule, /if \(document\.hidden\) \{\s*clearTimeout/);
+  assert.match(schedule, /window\.__codexSessionDeleteScanPending/);
+  assert.match(schedule, /window\.__codexSessionDeleteDeferredPending/);
+  assert.match(schedule, /requestAnimationFrame/);
+  assert.match(schedule, /document\.addEventListener\("visibilitychange", onScanVisibilityChange\)/);
+  assert.match(schedule, /window\.__codexPlusScanScheduleCleanup/);
+  assert.doesNotMatch(schedule, /scheduleZedRemoteMenuRefresh|__codexZedRemoteMenuRefresh/);
+  const view = await readFile(
+    new URL("../../../assets/inject/renderer-inject/95-conversation-view.js", import.meta.url),
+    "utf8",
+  );
+  const scan = view.match(/^  function scan\(\) \{[^]*?^  \}/m)?.[0];
+  assert.ok(scan);
+  assert.match(scan, /if \(document\.hidden\)/);
+  assert.match(scan, /scheduleDeferredScan\(\)/);
+  assert.doesNotMatch(scan, /requestAnimationFrame/);
+});
+
 const STEPWISE_FRAGMENT_PATHS = [
   "floating-panel/runtime/state.js",
   "floating-panel/core/appearance-runtime.js",
@@ -338,27 +361,10 @@ describe("renderer injection header compatibility", () => {
     assert.doesNotMatch(renderer, /\n\s*refreshSessionCopyMenuItems\(\);/);
   });
 
-  it("adds an encrypted session sharing button to the active Codex conversation", async () => {
+  it("does not install a session sharing button after sharing is retired", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-
-    assert.match(renderer, /sessionShareButtonClass\s*=\s*"codex-session-share-button"/);
-    assert.match(renderer, /function installSessionShareButton\(\)/);
-    assert.match(renderer, /function sessionShareMarkdown\(\)/);
-    assert.match(renderer, /crypto\.subtle\.generateKey\(\{ name: "AES-GCM", length: 256 \}/);
-    assert.match(renderer, /https:\/\/share\.codexpp\.cc/);
-    assert.match(renderer, /postJson\("\/share\/create", payload\)/);
-    assert.match(renderer, /postJson\("\/session\/export"/);
-    assert.match(renderer, /postJson\("\/session\/import"/);
-    assert.match(renderer, /codex-rollout/);
-    assert.match(renderer, /function sessionImportMarkdown\(session\)/);
-    assert.match(renderer, /codexpp-import-session/);
-    assert.match(renderer, /nativeShare\?\.closest\?\.\("\.ms-auto"\)/);
-    assert.match(renderer, /#k=\$\{encrypted\.key\}/);
-    assert.match(renderer, /navigator\.clipboard\.writeText\(shareUrl\)/);
-    assert.match(renderer, /data-testid\*=\"message\"/);
-    assert.match(renderer, /function sessionActionTrigger\(row\)/);
-    assert.match(renderer, /const sessionMenuEnabled = codexPlusBackendSettings\.enhancementsEnabled !== false/);
-    assert.doesNotMatch(renderer, /window\.location\.(?:href|assign)\s*=\s*[^;]*markdown/);
+    assert.doesNotMatch(renderer, /\n\s*installSessionShareButton\(\);/);
+    assert.doesNotMatch(renderer, /\n\s*installSessionShareImportListener\(\);/);
   });
 
   it("automatically renames a session through the native title suggestion", async () => {
@@ -370,6 +376,15 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /button\.classList\.contains\("text-info"\)/);
     assert.match(renderer, /\^\(保存\|Save\)\$/);
     assert.match(renderer, /Codex 未能生成新名称/);
+  });
+
+  it("accepts localized native rename labels introduced by newer Codex builds", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+
+    assert.match(renderer, /function isNativeSessionRenameMenuItem\(candidate\)/);
+    assert.match(renderer, /data-testid/);
+    assert.match(renderer, /自动重命名当前会话\|auto\.\?rename current session/);
+    assert.match(renderer, /\.find\(isNativeSessionRenameMenuItem\)/);
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {
@@ -1883,10 +1898,14 @@ describe("renderer inject 分片与产物一致", () => {
   const fragmentDir = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
   const artifactPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
 
-  async function assembleFromFragments(): Promise<{ source: string; names: string[] }> {
+  async function assembleFromFragments(): Promise<{
+    source: string;
+    names: string[];
+    fragments: Array<{ name: string; description?: string; lines: number }>;
+  }> {
     const manifest = JSON.parse(
       await readFile(new URL("manifest.json", fragmentDir), "utf8"),
-    ) as { fragments: Array<{ name: string; description?: string }> };
+    ) as { fragments: Array<{ name: string; description?: string; lines: number }> };
     assert.ok(
       Array.isArray(manifest.fragments) && manifest.fragments.length > 0,
       "manifest.json 必须有 fragments",
@@ -1900,7 +1919,11 @@ describe("renderer inject 分片与产物一致", () => {
         return body;
       }),
     );
-    return { source: bodies.join(""), names: manifest.fragments.map((f) => f.name) };
+    return {
+      source: bodies.join(""),
+      names: manifest.fragments.map((f) => f.name),
+      fragments: manifest.fragments,
+    };
   }
 
   it("分片按 manifest 顺序拼接后与产物逐字节一致", async () => {
@@ -1920,6 +1943,21 @@ describe("renderer inject 分片与产物一致", () => {
     assert.ok(source.includes("\n})();\n"), "必须包含主 IIFE 的收尾");
     // 语法解析（不执行）能抓出分片切坏造成的括号不匹配。
     assert.doesNotThrow(() => new Function(source));
+  });
+
+  it("manifest 的行数与分片内容保持一致且没有重复文件", async () => {
+    const { source, fragments } = await assembleFromFragments();
+    const names = fragments.map((fragment) => fragment.name);
+    assert.equal(new Set(names).size, names.length, "manifest 不得重复引用同一分片");
+    assert.ok(fragments.every((fragment) => Number.isInteger(fragment.lines) && fragment.lines > 0));
+    const manifestLines = fragments.reduce((total, fragment) => total + fragment.lines, 0);
+    const artifactLines = source.endsWith("\n") ? source.slice(0, -1).split("\n").length : source.split("\n").length;
+    assert.equal(manifestLines, artifactLines, "manifest 总行数必须覆盖完整产物");
+    for (const fragment of fragments) {
+      const body = await readFile(new URL(fragment.name, fragmentDir), "utf8");
+      const lineCount = body.endsWith("\n") ? body.slice(0, -1).split("\n").length : body.split("\n").length;
+      assert.equal(lineCount, fragment.lines, fragment.name);
+    }
   });
 
   it("测试辅助依赖的锚点仍落在同一个分片里且顺序不变", async () => {
@@ -2243,16 +2281,23 @@ function conversationViewRuntime(renderer: string) {
     dataset: Record<string, string>;
     rect: { left: number; width: number };
     vars: Record<string, string>;
+    computedMaxWidth: string;
     padding: { left: string; right: string };
     querySelectorAll(selector: string): FakeEl[];
     querySelector(selector: string): FakeEl | null;
     matches(selector: string): boolean;
     closest(selector: string): FakeEl | null;
+    contains(el: FakeEl): boolean;
     getBoundingClientRect(): { left: number; width: number; right: number; top: number; bottom: number; height: number };
   };
 
   function matches(el: FakeEl, selector: string): boolean {
+    if (selector.includes(",")) return selector.split(",").some((part) => matches(el, part.trim()));
+    const taggedAttribute = selector.match(/^([a-z]+)(\[.*\])$/);
+    if (taggedAttribute) return el.tagName.toLowerCase() === taggedAttribute[1] && matches(el, taggedAttribute[2]);
     if (selector === "div") return el.tagName === "DIV";
+    if (/^[a-z]+$/.test(selector)) return el.tagName.toLowerCase() === selector;
+    if (selector.startsWith("#")) return el.attrs.id === selector.slice(1);
     if (selector.startsWith("[") && selector.endsWith("]")) {
       const body = selector.slice(1, -1);
       const eq = body.indexOf("=");
@@ -2290,6 +2335,7 @@ function conversationViewRuntime(renderer: string) {
       dataset: {},
       rect: { left: 0, width: 0 },
       vars: {},
+      computedMaxWidth: "none",
       padding: { left: "", right: "" },
       querySelectorAll: (selector: string) => query(node, selector),
       querySelector: (selector: string) => query(node, selector)[0] ?? null,
@@ -2302,6 +2348,7 @@ function conversationViewRuntime(renderer: string) {
         }
         return null;
       },
+      contains: (el) => node === el || descendants(node).includes(el),
       getBoundingClientRect: () => ({
         left: node.rect.left,
         width: node.rect.width,
@@ -2368,6 +2415,7 @@ return {
       const style: Record<string, unknown> = {
         paddingLeft: node.padding.left,
         paddingRight: node.padding.right,
+        maxWidth: node.computedMaxWidth,
         length: Object.keys(node.vars).length,
         getPropertyValue: (name: string) => node.vars[name] ?? "",
       };
@@ -2478,6 +2526,7 @@ describe("renderer injection conversation view alignment", () => {
     // 既没有新版类名工具类，也没有 data-* 锚点，只剩 Codex 注入的 CSS 变量。
     const bare = runtime.append(host, runtime.el("div", "some-renamed-class"));
     bare.vars["--thread-body-max-width"] = "calc(900px + 0px)";
+    bare.computedMaxWidth = "900px";
     const found = runtime.api.findContent();
     assert.ok(found, "兜底候选应能反查到宿主节点");
     assert.equal(found, bare);
@@ -2532,5 +2581,62 @@ describe("renderer injection conversation view alignment", () => {
     const writeIndex = body.indexOf("conversationViewApplyNativeWidth(el");
     assert.ok(readIndex >= 0 && writeIndex > readIndex, "读取必须在写入之前");
     assert.match(body, /targets\.map\(\(el\) => conversationViewAvailableWidth\(el\)\)/);
+  });
+});
+
+describe("renderer model reasoning efforts patch", () => {
+  // 补全逻辑只依赖 codexPlusModelMetadata，抽出来单独跑，避免再复制一份实现。
+  function reasoningRuntime(renderer: string, metadata: Record<string, unknown> | null) {
+    const start = renderer.indexOf("function modelReasoningEfforts(");
+    const end = renderer.indexOf("\n  function applyCodexPlusModelMetadata(", start);
+    assert.ok(start >= 0 && end > start, "产物里找不到 modelReasoningEfforts");
+    const source = renderer.slice(start, end);
+    const create = new Function(
+      "codexPlusModelMetadata",
+      `${source}\nreturn modelReasoningEfforts;`,
+    ) as (
+      readMetadata: () => Record<string, unknown> | null,
+    ) => (modelName: string) => Array<{ reasoningEffort: string }>;
+    return create(() => metadata);
+  }
+
+  const threeLevelDeclaration = {
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low", description: "Fast responses with lighter reasoning" },
+      { reasoningEffort: "high", description: "Greater reasoning depth for complex problems" },
+      { reasoningEffort: "max", description: "Maximum reasoning depth for the hardest problems" },
+    ],
+  };
+
+  it("不会给只声明三档的 deepseek 模型补出 ultra", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, threeLevelDeclaration)("cpx-relay-mv5bil9a/deepseek-flash");
+
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "high", "max"],
+    );
+  });
+
+  it("仍为名单内确认支持 ultra 的模型补 max 与 ultra", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, {
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort })),
+    })("gpt-5.6-sol");
+
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "medium", "high", "xhigh", "max", "ultra"],
+    );
+  });
+
+  it("没有档位声明时仍回落到完整兜底列表", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, null)("deepseek-flash");
+
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "medium", "high", "xhigh", "max", "ultra"],
+    );
   });
 });

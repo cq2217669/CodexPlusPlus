@@ -14,36 +14,6 @@
   });
   const codexPlusPluginMarketPageSize = 50;
 
-  function codexPlusPluginMarketIconMarkup() {
-    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9h18l-2-5H5L3 9Z"/><path d="M3 9v3a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0V9M5 15v5h14v-5M10 20v-5h4v5"/></svg>';
-  }
-
-  function installCodexPlusPluginMarketSidebarNavigation(parent, anchor, template) {
-    let wrapper = document.getElementById(codexPlusSidebarPluginMarketId);
-    if (!wrapper || wrapper.parentElement !== parent) {
-      wrapper?.remove();
-      wrapper = document.createElement("div");
-      wrapper.id = codexPlusSidebarPluginMarketId;
-      wrapper.className = "codex-plus-plugin-sidebar";
-      markCodexPlusExtensionNode(wrapper, "builtin-plugin-market");
-      const button = template ? template.cloneNode(true) : document.createElement("button");
-      if (!(button instanceof HTMLElement)) return;
-      button.type = "button";
-      if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
-      ["id", "disabled", "aria-disabled", "aria-current", "data-state", "data-sidebar-destination", "data-selected", "data-suppress-active-style"].forEach((name) => button.removeAttribute(name));
-      button.setAttribute("aria-label", "CodeX 插件市场");
-      button.setAttribute("title", "CodeX 插件市场");
-      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true">${codexPlusPluginMarketIconMarkup()}</span><span class="codex-plus-plugin-sidebar-label">CodeX 插件市场</span>`;
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openCodexPlusNativePluginMarket();
-      }, true);
-      wrapper.appendChild(button);
-    }
-    if (anchor.nextSibling !== wrapper) parent.insertBefore(wrapper, anchor.nextSibling);
-  }
-
   function codexPlusPluginMarketCatalog(source = codexPlusPluginMarketState.source) {
     if (!codexPlusPluginMarketState.catalogs[source]) {
       codexPlusPluginMarketState.catalogs[source] = {
@@ -255,8 +225,8 @@
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     const state = codexPlusPluginMarketState;
-    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="CodeX 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
-      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">CodeX 插件市场</div></div>
+    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="Codex 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
+      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">Codex 插件市场</div></div>
       <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-plugin-market-panel" data-codex-plugin-market-panel="true">
         <p class="codex-plus-plugin-intro">检索插件目录，选中后下载并安装。目录浏览仅获取索引，插件文件按需下载。</p>
         <div class="codex-plus-plugin-toolbar">

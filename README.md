@@ -28,7 +28,7 @@
   <br><sub>从供应商配置到界面增强，一个管理工具就够了。</sub>
 </p>
 
-Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理工具，通过 CDP 与本地辅助服务提供供应商切换、协议转换、会话管理和界面增强。它不修改官方应用的 `app.asar`，也不向安装目录写入补丁文件。
+Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的统一管理应用，通过 CDP 与内置运行服务提供供应商切换、协议转换、会话管理和界面增强。双击打开配置界面，再从界面启动官方应用。它不修改官方应用的 `app.asar`，也不向安装目录写入补丁文件。
 
 ## 交流与支持
 
@@ -102,11 +102,35 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
   </tr>
   <tr>
     <td align="center">
+      <a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8">
+        <img src="docs/images/sponsor-baikewei-ai.jpg" alt="百可为AI" height="80">
+      </a>
+    </td>
+    <td><a href="https://cn.hb-api.online/register?aff=8KA2ZKWNHND8"><strong>百可为AI</strong></a><br>百可为AI 是面向开发者、团队和 AI 工具用户的一站式大模型 API 服务平台，支持 Claude、OpenAI、Gemini、Codex 等主流模型能力接入。平台提供稳定中转、灵活计费、用量统计、余额管理和多场景 API 调用能力，适合 Claude Code、Codex、AI 生图、自动化脚本和各类智能应用长期使用。新用户注册可领取免费额度，开发者可快速接入、即开即用，让 AI 能力更稳定、更高效、更省心。</td>
+  </tr>
+  <tr>
+    <td align="center">
       <a href="https://s.qiniu.com/7zUJri">
         <img src="docs/images/sponsor-qiniu-ai.png" alt="七牛云" width="170">
       </a>
     </td>
     <td><a href="https://s.qiniu.com/7zUJri"><strong>七牛云</strong></a><br>感谢七牛云 AI 赞助本项目！七牛云 AI 是七牛云（02567.HK）旗下企业级大模型 MaaS 平台，可一站式调用全球 150 多个主流模型，兼容全球主流模型厂商协议，覆盖文本、图像、音频、视频、文件处理等全模态能力，服务超过 169 万企业及开发者用户。企业用户可免费领取 1200 万 Token，邀请好友最高可获得百亿 Token。</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://agent.tokenmy.ai">
+        <img src="docs/images/sponsor-tokenmy.png" alt="TokenMy" width="96">
+      </a>
+    </td>
+    <td><a href="https://agent.tokenmy.ai"><strong>TokenMy</strong></a><br>感谢 TokenMy 赞助本项目！TokenMy 是面向开发者与团队的统一 AI 模型 API 网关，汇聚 OpenAI、Anthropic、Google、DeepSeek、字节跳动、Suno 等厂商的模型，覆盖 GPT、Claude、Gemini 等对话模型，GPT Image 生图模型，Seedance、Veo 视频模型及 Suno 音乐生成模型。一个 API Key 即可接入多类 AI 能力，配合按量计费、用量监控与账单查询，满足智能体开发、多模态应用与影音内容创作需求。欢迎<a href="https://agent.tokenmy.ai">注册使用</a>，也可申请成为 TokenMy 代理或推广大使，携手拓展 AI 应用市场，享受推广佣金与合作激励。</td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://apinebula.ai/ref/IiCBg1nu">
+        <img src="docs/images/sponsor-apinebula.png" alt="APINEBULA" width="96">
+      </a>
+    </td>
+    <td><a href="https://apinebula.ai/ref/IiCBg1nu"><strong>APINEBULA</strong></a><br>感谢 APINEBULA 赞助本项目！APINEBULA 是银河录像局旗下的企业级 AI 聚合平台，背靠大平台资源，面向开发者、团队与企业用户提供稳定、高性价比的大模型 API 接入服务。平台聚合 Claude、GPT、Gemini 等主流满血模型，一个接口接入全球顶尖 AI 大模型，各大模型价格低至 1 折起，支持企业级高并发、正式合同、对公打款与开票服务，适合 AI 编程、Agent 开发、业务系统集成等多种场景！<a href="https://apinebula.ai/ref/IiCBg1nu">使用此链接注册</a>并在充值时填写「PLUSPLUS」优惠码可享九折优惠！</td>
   </tr>
 </table>
 
@@ -145,6 +169,18 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
       用量挂件、可更换的桌宠角色、任务状态和预算提醒，搭配皮肤与自定义图片，让界面更有自己的风格。
     </td>
   </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <h3>📊 用量状态栏</h3>
+      在输入框下方实时显示生成速度、缓存命中率和上下文占用；数据取自本机 Codex 会话记录，上下文占比按 Codex 识别到的每模型窗口计算。默认开启，可在「Codex 增强 → 常用增强 → 用量状态栏」关闭。
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <h3>🧵 Codex 多开</h3>
+      为每个供应商身份启动相互隔离的 Codex 实例：独立配置、会话和用户数据目录，可与其他单一供应商同时运行；运行中的实例集中列出，可单独重启或结束。
+    </td>
+  </tr>
 </table>
 
 另外，微信连接支持扫码连接本机 Codex，每个联系人映射到独立会话，并可配置允许访问的微信用户。
@@ -163,6 +199,22 @@ Codex++ 是面向 OpenAI Codex / ChatGPT 桌面应用的外部启动器与管理
 </p>
 
 </details>
+
+### 输入框下方，用量一目了然
+
+「用量状态栏」在输入框下方实时显示生成速度、缓存命中率和上下文占用，数据取自 Codex 自己写入的本机会话记录，口径与 Codex 一致：缓存命中为 `cached_input_tokens / input_tokens`，上下文占用为最近一次调用的 Token 与 Codex 识别到的每模型窗口之比——「每个模型，各有空间」配置的窗口会直接反映在这里。默认开启，可在管理器「Codex 增强 → 常用增强 → 用量状态栏」关闭；速度是相邻 Token 事件之间的吞吐估算，包含工具执行时间，读数会低于纯解码速度。
+
+<p align="center">
+  <img src="docs/images/usage-statusline.png" alt="输入框下方的用量状态栏：51 tok/s、缓存命中 99.9%、上下文占用 19%" width="100%">
+</p>
+
+### 同一台电脑，多个 Codex 互不打扰
+
+「Codex多开」为每个供应商身份启动相互隔离的 Codex 实例：每个实例使用独立的配置、会话和用户数据目录，可与其它单一 Responses / Chat Completions 供应商同时运行。运行中的主 Codex 与多开实例集中在列表里，可单独重启或结束，不影响彼此会话。
+
+<p align="center">
+  <img src="docs/images/codex-multi-launch.png" alt="Codex 多开：列出运行中的 DeepSeek 与 Zhipu GLM 实例，可单独重启或结束" width="100%">
+</p>
 
 ### 让拓展适应你的工作流
 
@@ -210,20 +262,17 @@ Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」�
 
 **鲸鱼功能来源与鸣谢：**原始功能、完整界面引擎、鲸鱼角色及内置音效/动图来自 [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)，本项目将其适配为 Codex++ 内置功能；Codex 桌面版技术路线另参考 [Yang-huai406/Codex-Whale-Public](https://github.com/Yang-huai406/Codex-Whale-Public)。原始代码与素材声明见随项目保留的 [LICENSE](assets/inject/upstream/whale-widget/LICENSE) 和 [PROVENANCE.md](assets/inject/upstream/whale-widget/PROVENANCE.md)，素材不重新声明为本项目原创。
 
-### 2. 打开管理工具，完成配置
+### 2. 打开 Codex++，完成配置
 
-安装后有两个入口：
+安装后只有一个 **Codex++** 入口。Windows 提供桌面与开始菜单快捷方式，macOS 将 DMG 内的 **Codex++.app** 拖入「应用程序」。双击始终打开界面，可以检查应用路径与运行状态，配置供应商、模型和增强功能，管理更新与诊断。
 
-| 入口 | 用来做什么 |
-| --- | --- |
-| **Codex++ 管理工具** | 检查应用路径与运行状态，配置供应商、模型和增强功能，管理更新与诊断。 |
-| **Codex++** | 静默启动官方桌面应用，并加载已保存的供应商与增强配置。 |
+首次使用先确认官方应用路径，再选择供应商模式，按需开启增强功能并保存。
 
-首次使用先打开 **Codex++ 管理工具**，确认应用路径，再选择供应商模式，按需开启增强功能并保存。
+**旧版 macOS 用户：**新发布的 DMG 会保留一个隐藏的兼容壳，让 v1.7.x 的旧更新器可以自动替换两个旧 app；更新后首次启动会自动将兼容壳移到 `~/.codex-session-delete/legacy-migrations`，Applications 中只保留 Codex++。v1.5/v1.6 的旧版本只会打开 DMG，请把其中可见的 **Codex++.app** 拖入「应用程序」替换一次；新版启动时同样会自动归档旧的 **Codex++ 管理工具.app**。原有配置与会话数据继续沿用。
 
-### 3. 从 Codex++ 入口开始工作
+### 3. 在界面中启动 Codex
 
-从 **Codex++** 启动桌面应用。依赖注入脚本的设置通常需要保存后重启 Codex++ 才会生效。
+在 **Codex++** 界面中点击「启动」，加载已保存的供应商与增强配置并打开官方桌面应用。依赖注入脚本的设置通常需要保存后，在界面中重启 Codex 才会生效。
 
 所有界面增强均可单独关闭；关闭增强总开关后，仍可使用供应商与启动管理能力。后续可在管理工具的「关于」页检查并启动更新。
 
@@ -236,9 +285,21 @@ Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」�
 | **官方登录** | 使用 ChatGPT / Codex 官方账号。 |
 | **官方登录 + API** | 保留官方登录状态与插件入口，模型请求始终走配置的兼容 API。 |
 | **纯 API** | 使用自定义 Base URL / Key，无需官方账号。 |
-| **聚合供应商** | 在多个 API 供应商之间故障转移，或按会话、请求、权重轮转。 |
+| **聚合供应商** | 分「故障转移」与「模型聚合」两类：故障转移在多个供应商之间失败切换、按会话/请求/权重轮转；模型聚合按模型把请求固定到指定成员。成员既可以是 API 供应商，也可以是已登录的官方账号。 |
 
 官方登录 + API 模式下，模型请求不消耗官方额度；它没有「先用官方额度，耗尽再切 API」的行为。Chat Completions 供应商可通过本地代理转换为 Codex 使用的 Responses 协议。
+
+创建聚合供应商时先选择「故障转移」或「模型聚合」，两种类型的表单和运行方式彼此独立。模型聚合会把成员模型合并到 Codex 模型列表，带 `cpx-供应商ID/模型名` 前缀的条目固定发送到对应成员；故障转移则使用失败切换、轮转和权重策略。成员的模型列表、上下文窗口和自动压缩设置沿用各自供应商配置。
+
+成员可以是普通 API 供应商，也可以是完成 ChatGPT 登录的官方账号：代理会用该账号的 OAuth 凭据把请求发往 chatgpt.com 后端，access token 过期时自动用 refresh token 刷新并写回供应商快照，请求返回 401 时会强制刷新后重试一次。官方账号同时用于直连时，会优先采用 live auth.json 里的新凭据，避免 refresh token 轮换后失效。
+
+### 模型选择器：按供应商分组折叠
+
+模型聚合会把多个成员的模型合进同一份目录。原生模型选择器现在按供应商折叠成组：表头显示供应商名与模型数量，模型名不再重复「（供应商）」后缀，默认成员那一组带「默认」标志；右上角「全部展开 / 全部折叠」一键切换，折叠状态按供应商记忆。打开时若已选中某个模型，就只展开它所在的分组；没有选中时展开默认供应商；单供应商（直连供应商）保持原生列表不动。
+
+<p align="center">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组折叠：供应商 4 组（默认，7 个模型）与 DeepSeek 组（2 个模型）" width="560">
+</p>
 
 ### 给每个模型设置自己的上下文窗口
 
@@ -259,7 +320,7 @@ another-model[128000]
 <details>
   <summary><strong>启动后，为什么没有 Codex++ 菜单？</strong></summary>
 
-确认从 **Codex++** 入口启动。打开管理工具的「安装维护」与「关于」页面，检查应用路径、启动状态和诊断日志。
+确认在 **Codex++** 界面中点击「启动」打开官方应用。打开「安装维护」与「关于」页面，检查应用路径、启动状态和诊断日志。
 
 </details>
 
